@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.pixi.project]
+platforms = ["linux-64"]
+
+[project]
+name = "vesuvio_analysis"
+version = "0.1.0"
+description = "Data Analysis scripts for the VESUVIO@ISIS instrument (Rutherford Appleton Laboratory, UK), extending functionalities of the Mantid Project. Based on Fortran code by Matthew Krzystyniak, Python port and further development by Gui Maciel Pereira."
+readme = "README.md"
+requires-python = ">=3.10"
+#requires-python = "~=3.10" option to contrain versioning further
+#license = {text = "MIT"} # the original repo has no license. Required for publication.
+
+# @GuiMacielPereira is the author of this Python package
+authors = [
+  { name = "Gui Maciel Pereira" },
+  { name = "Matthew Krzystyniak" }
+]
+
+# You can list yourself as a maintainer if you are modifying it for your thesis
+maintainers = [
+  { name = "Mark Buje Hein Sørensen" } 
+]
+
+dependencies = [
+    "numpy",
+    "pyyaml",
+    "matplotlib",
+    "scipy",
+    "iminuit",
+    "jacobi",
+
+]
+
+[project.urls]
+"Original Repository" = "https://github.com/GuiMacielPereira/scatt_scripts/"
+
+[tool.hatch]
+version.source = "vcs"
+#build.hooks.vcs.version-file = "src/qchem_plotter/_version.py"
+
+#[tool.setuptools.packages.find]
+#where = ["."]
+#include = ["vesuvio_analysis*"]
+
+# Editable installs
+[tool.pixi.pypi-dependencies]
+pixi_py = { path = "./vesuvio_analysis/", editable = true }
