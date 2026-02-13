@@ -3,7 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from mantid.api import AnalysisDataService, mtd
+from mantid.api import mtd
 from mantid.simpleapi import CloneWorkspace, Load, SaveNexus, SumSpectra
 from scipy import stats
 
@@ -24,11 +24,9 @@ currentPath = Path(__file__).parent.absolute()
 def runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
     checkValidInput(bootIC)
 
-    checkOutputDirExists(
-        bckwdIC, fwdIC, bootIC
-    )  # Checks to see if those directories exits already
+    # Check to see if those directories exits already
+    checkOutputDirExists(bckwdIC, fwdIC, bootIC)
     askUserConfirmation(bckwdIC, fwdIC, bootIC)
-    AnalysisDataService.clear()
 
     if bootIC.bootstrapType == "JACKKNIFE":
         return JackknifeProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName)
@@ -38,55 +36,65 @@ def runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
 
 def checkValidInput(bootIC):
     boot = bootIC.bootstrapType
-    assert (
-        (boot == "JACKKNIFE") | (boot == "BOOT_GAUSS_ERRS") | (boot == "BOOT_RESIDUALS")
-    ), (
+    assert boot in ["JACKKNIFE", "BOOT_GAUSS_ERRS", "BOOT_RESIDUALS"], (
         "bootstrapType not recognized. Options: 'JACKKNIFE', 'BOOT_GAUSS_ERRS', 'BOOT_RESIDUALS'"
     )
 
 
 def checkOutputDirExists(bckwdIC, fwdIC, bootIC):
-    if bootIC.runningTest:
+    if bootIC.runningTest or bootIC.allowOverwrite:
         return
 
     proc = bootIC.procedure
-    if (proc == "BACKWARD") | (proc == "JOINT"):
-        checkOutDirIC(bckwdIC)
-    if (proc == "FORWARD") | (proc == "JOINT"):
-        checkOutDirIC(fwdIC)
+    if (proc == "BACKWARD") or (proc == "JOINT"):
+        checkOutDirIC(bckwdIC, bootIC)
+    if (proc == "FORWARD") or (proc == "JOINT"):
+        checkOutDirIC(fwdIC, bootIC)
     return
 
 
-def checkOutDirIC(IC):
+def checkOutDirIC(IC, bootIC):
     if IC.bootSavePath.is_file() or IC.bootYFitSavePath.is_file():
         print(
             f"\nOutput data files were detected:"
             f"\n{IC.bootSavePath.name}\n{IC.bootYFitSavePath.name}"
             f"\nAborting Run of Bootstrap to prevent overwriting data."
-            f"\nTo avoid this issue you can change the number of samples to run."
+            f"\nTo avoid this issue you can change the number of samples to run, "
+            f"or set 'allowOverwrite' to True in BootstrapInitialConditions."
         )
-        raise ValueError("Output data directories already exist. Aborted Bootstrap.")
+        raise FileExistsError(
+            f"Output results already exist at {IC.bootSavePath}. "
+            "Aborted Bootstrap to prevent overwrite."
+        )
     return
 
 
 def JackknifeProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
-    assert bootIC.procedure != None
+    assert bootIC.procedure is not None
 
     proc = bootIC.procedure
-    if (proc == "FORWARD") | (proc == "BACKWARD"):
+    if (proc == "FORWARD") or (proc == "BACKWARD"):
         return bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName)
 
     elif proc == "JOINT":  # Do the Jackknife procedure separately
         # Run original procedure to change fwdIC from running backward
-        runOriginalBeforeBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
+        parentResults, parentWSnNCPs, bckwdIC, fwdIC, yFitIC = (
+            runOriginalBeforeBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
+        )
 
-        bootIC.procedure = "BACKWARD"
-        bootIC.fitInYSpace = "BACKWARD"
-        bckwdJackRes = bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName)
+        bckwd_bootIC = bootIC.model_copy(
+            update={"procedure": "BACKWARD", "fitInYSpace": "BACKWARD"}
+        )
+        bckwdJackRes = bootstrapProcedure(
+            bckwdIC, fwdIC, bckwd_bootIC, yFitIC, scriptName
+        )
 
-        bootIC.procedure = "FORWARD"
-        bootIC.fitInYSpace = "FORWARD"
-        fwdJackRes = bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName)
+        fwd_bootIC = bootIC.model_copy(
+            update={"procedure": "FORWARD", "fitInYSpace": "FORWARD"}
+        )
+        fwdJackRes = bootstrapProcedure(
+            bckwd_bootIC, fwdIC, fwd_bootIC, yFitIC, scriptName
+        )
 
         return {**bckwdJackRes, **fwdJackRes}  # For consistency
     else:
@@ -105,9 +113,7 @@ def bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
             "'JOINT' mode should not have reached Jackknife here."
         )
 
-    AnalysisDataService.clear()
-
-    parentResults, parentWSnNCPs = runOriginalBeforeBootstrap(
+    parentResults, parentWSnNCPs, bckwdIC, fwdIC, yFitIC = runOriginalBeforeBootstrap(
         bckwdIC, fwdIC, bootIC, yFitIC
     )
     corrCoefs = autoCorrResiduals(parentWSnNCPs)
@@ -122,10 +128,7 @@ def bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
 
     # Form each bootstrap workspace and run ncp fit with MS corrections
     for i in range(iStart, iEnd):
-        AnalysisDataService.clear()
-        plt.close(
-            "all"
-        )  # Not sure if previous step clears plt figures, so introduced this step to be safe
+        plt.close("all")
 
         try:
             sampleInputWS, parentWS = createSampleWS(
@@ -134,16 +137,19 @@ def bootstrapProcedure(bckwdIC, fwdIC, bootIC, yFitIC, scriptName):
         except JackMaskCol:
             continue  # If Jackknife column already masked, skip to next column
 
-        formSampleIC(bckwdIC, fwdIC, bootIC, sampleInputWS, parentWS)
+        # Update models for this sample
+        curr_bckwdIC, curr_fwdIC = formSampleIC(
+            bckwdIC, fwdIC, bootIC, sampleInputWS, parentWS
+        )
         try:
             iterResults = runMainProcedure(
-                bckwdIC, fwdIC, bootIC, yFitIC
+                curr_bckwdIC, curr_fwdIC, bootIC, yFitIC
             )  # Conversion to YSpace with masked column
         except AssertionError:
             continue  # If the procedure fails, skip to next iteration
 
         storeBootIter(bootResults, i, iterResults)  # Stores results for each iteration
-        saveBootstrapResults(bootResults, bckwdIC, fwdIC)
+        saveBootstrapResults(bootResults, curr_bckwdIC, curr_fwdIC)
     return bootResults
 
 
@@ -159,19 +165,15 @@ def askUserConfirmation(bckwdIC, fwdIC, bootIC):
 
     proc = bootIC.procedure
     runTime = 0
-    if (proc == "BACKWARD") | (proc == "JOINT"):
+    if (proc == "BACKWARD") or (proc == "JOINT"):
         runTime += calcRunTime(bckwdIC, tDict["tBackNoMS"], tDict["tBackPerMS"], bootIC)
 
-    if (proc == "FORWARD") | (proc == "JOINT"):
+    if (proc == "FORWARD") or (proc == "JOINT"):
         runTime += calcRunTime(fwdIC, tDict["tFowNoMS"], tDict["tFowPerMS"], bootIC)
 
-    userInput = input(
-        f"\n\nEstimated time for Bootstrap procedure: {runTime / 60:.1f} hours.\nProceed? (y/n): "
-    )
-    if (userInput == "y") or (userInput == "Y"):
-        return
-    else:
-        raise KeyboardInterrupt("Bootstrap procedure interrupted.")
+    print(f"\nEstimated time for Bootstrap procedure: {runTime / 60:.1f} hours.\n")
+    # Interactive confirmation removed for automation.
+    return
 
 
 def storeRunnningTime(fwdIC, bckwdIC, bootIC):
@@ -193,9 +195,10 @@ def storeRunnningTime(fwdIC, bckwdIC, bootIC):
                 resDict = eval(line)
 
     if len(resDict) < 4:
-        ans = input(
-            "Did not find necessary information to estimate runtime. Will run a short routine to store an estimate. Please wait until this is finished. Press any key to continue."
-        )
+        if bootIC.userConfirmation:
+            print(
+                "Did not find necessary information to estimate runtime. Running short routine to store an estimate..."
+            )
         resDict = buildRunTimes(fwdIC, bckwdIC)
 
         with open(savePath, "a") as txtFile:
@@ -207,15 +210,12 @@ def storeRunnningTime(fwdIC, bckwdIC, bootIC):
 def buildRunTimes(fwdIC, bckwdIC):
     resDict = {}
     for IC, mode in zip([bckwdIC, fwdIC], ["Back", "Fow"]):
-        oriMS = IC.noOfMSIterations
         for NIter, key in zip([0, 1], ["NoMS", "PerMS"]):
-            IC.noOfMSIterations = NIter
+            curr_IC = IC.model_copy(update={"noOfMSIterations": NIter})
             t0 = time.time()
-            runIndependentIterativeProcedure(IC)
+            runIndependentIterativeProcedure(curr_IC)
             t1 = time.time()
             resDict["t" + mode + key] = (t1 - t0) / 60
-        # Restore starting value
-        IC.noOfMSIterations = oriMS
 
         # Correct times of only MS by subtacting time spend on fitting ncps
         resDict["t" + mode + "PerMS"] -= 2 * resDict["t" + mode + "NoMS"]
@@ -247,12 +247,11 @@ def chooseLoopRange(bootIC, nSamples):
 
 def runOriginalBeforeBootstrap(bckwdIC, fwdIC, bootIC, yFitIC):
     """Runs unaltered procedure to store parent results and select parent ws"""
-
-    setICsToDefault(bckwdIC, fwdIC, yFitIC)
+    bckwdIC, fwdIC, yFitIC = setICsToDefault(bckwdIC, fwdIC, yFitIC)
     parentResults = runMainProcedure(bckwdIC, fwdIC, bootIC, yFitIC)
     parentWSnNCPs = selectParentWorkspaces(bckwdIC, fwdIC, bootIC)
 
-    return parentResults, parentWSnNCPs
+    return parentResults, parentWSnNCPs, bckwdIC, fwdIC, yFitIC
 
 
 def chooseNSamples(bootIC, parentWSnNCPs: dict):
@@ -279,23 +278,23 @@ def chooseNSamples(bootIC, parentWSnNCPs: dict):
 def setICsToDefault(bckwdIC, fwdIC, yFitIC):
     """Disables some features of yspace fit, makes sure the default"""
 
-    # Disable Minos
+    yFit_update = {}
     if yFitIC.runMinos:
-        yFitIC.runMinos = False
-
-    # Disable global fit
+        yFit_update["runMinos"] = False
     if yFitIC.globalFit:
-        yFitIC.globalFit = False
-
-    # Don't show plots
+        yFit_update["globalFit"] = False
     if yFitIC.showPlots:
-        yFitIC.showPlots = False
+        yFit_update["showPlots"] = False
+
+    if yFit_update:
+        yFitIC = yFitIC.model_copy(update=yFit_update)
 
     if bckwdIC.runningSampleWS:
-        bckwdIC.runningSampleWS = False
+        bckwdIC = bckwdIC.model_copy(update={"runningSampleWS": False})
     if fwdIC.runningSampleWS:
-        fwdIC.runningSampleWS = False
-    return
+        fwdIC = fwdIC.model_copy(update={"runningSampleWS": False})
+
+    return bckwdIC, fwdIC, yFitIC
 
 
 def runMainProcedure(bckwdIC, fwdIC, bootIC, yFitIC):
@@ -322,7 +321,7 @@ def runMainProcedure(bckwdIC, fwdIC, bootIC, yFitIC):
                 resultsDict[key + "YFit"] = bckwdYFitRes
 
     elif bootIC.procedure == "JOINT":
-        ws, bckwdScatRes, fwdScatRes = runJointBackAndForwardProcedure(
+        ws, bckwdScatRes, fwdScatRes, bckwdIC, fwdIC = runJointBackAndForwardProcedure(
             bckwdIC, fwdIC, clearWS=False
         )
         resultsDict["bckwdScat"] = bckwdScatRes
@@ -660,16 +659,29 @@ def loadWorkspacesFromPath(*savePaths):
 
 
 def formSampleIC(bckwdIC, fwdIC, bootIC, sampleInputWS: dict, parentWS: dict):
-    """Adds atributes to initial conditions to start procedure with sample ws."""
+    """Adds attributes to initial conditions to start procedure with sample ws."""
 
-    for mode, IC, key in zip(
-        ["FORWARD", "BACKWARD"], [fwdIC, bckwdIC], ["fwd", "bckwd"]
-    ):
-        if (bootIC.procedure == mode) | (bootIC.procedure == "JOINT"):
-            IC.runningSampleWS = True
+    new_fwdIC = fwdIC
+    new_bckwdIC = bckwdIC
 
-            if bootIC.skipMSIterations:
-                IC.noOfMSIterations = 0
+    if (bootIC.procedure == "FORWARD") or (bootIC.procedure == "JOINT"):
+        update = {
+            "runningSampleWS": True,
+            "sampleWS": sampleInputWS["fwdWS"],
+            "parentWS": parentWS["fwdWS"],
+        }
+        if bootIC.skipMSIterations:
+            update["noOfMSIterations"] = 0
+        new_fwdIC = fwdIC.model_copy(update=update)
 
-            IC.sampleWS = sampleInputWS[key + "WS"]
-            IC.parentWS = parentWS[key + "WS"]
+    if (bootIC.procedure == "BACKWARD") or (bootIC.procedure == "JOINT"):
+        update = {
+            "runningSampleWS": True,
+            "sampleWS": sampleInputWS["bckwdWS"],
+            "parentWS": parentWS["bckwdWS"],
+        }
+        if bootIC.skipMSIterations:
+            update["noOfMSIterations"] = 0
+        new_bckwdIC = bckwdIC.model_copy(update=update)
+
+    return new_bckwdIC, new_fwdIC

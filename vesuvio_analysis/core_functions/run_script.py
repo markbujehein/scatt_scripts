@@ -19,31 +19,44 @@ from vesuvio_analysis.core_functions.procedures import (
 
 def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, bootIC):
     # Set extra attributes from user attributes
-    completeICFromInputs(fwdIC, scriptName, wsFrontIC)
-    completeICFromInputs(bckwdIC, scriptName, wsBackIC)
-    completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
-    completeYFitIC(yFitIC, scriptName)
+    fwdIC = completeICFromInputs(fwdIC, scriptName, wsFrontIC)
+    bckwdIC = completeICFromInputs(bckwdIC, scriptName, wsBackIC)
+    bootIC, bckwdIC, fwdIC = completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
+    yFitIC = completeYFitIC(yFitIC, scriptName)
+
+    # Ensure bootIC inherits procedure and fitInYSpace from userCtr if missing
+    # but only if bootstrapping is requested
+    if bootIC.runBootstrap:
+        update = {}
+        if bootIC.procedure is None:
+            update["procedure"] = userCtr.procedure
+        if bootIC.fitInYSpace is None:
+            update["fitInYSpace"] = userCtr.fitInYSpace
+
+        if update:
+            bootIC = bootIC.model_copy(update=update)
 
     checkInputs(userCtr)
     checkInputs(bootIC)
-    assert not (userCtr.runRoutine & bootIC.runBootstrap), (
+    assert not (userCtr.runRoutine and bootIC.runBootstrap), (
         "Main routine and bootstrap both set to run!"
     )
 
     def runProcedure():
         proc = userCtr.procedure  # Shorthad to make it easier to read
 
-        if proc == None:
+        if proc is None:
             return
 
+        nonlocal bckwdIC, fwdIC
         ranPreliminary = False
-        if (proc == "BACKWARD") | (proc == "JOINT"):
-            if isHPresent(fwdIC.masses) & (bckwdIC.HToMassIdxRatio == None):
-                HRatios, massIdxs = runPreProcToEstHRatio(
+        if (proc == "BACKWARD") or (proc == "JOINT"):
+            if isHPresent(fwdIC.masses) and (bckwdIC.HToMassIdxRatio is None):
+                HRatios, massIdxs, bckwdIC, fwdIC = runPreProcToEstHRatio(
                     bckwdIC, fwdIC
-                )  # Sets H ratio to bckwdIC automatically
+                )
                 ranPreliminary = True
-            assert isHPresent(fwdIC.masses) != (bckwdIC.HToMassIdxRatio == None), (
+            assert isHPresent(fwdIC.masses) != (bckwdIC.HToMassIdxRatio is None), (
                 "When H is not present, HToMassIdxRatio has to be set to None"
             )
 
@@ -52,7 +65,9 @@ def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, 
         if proc == "FORWARD":
             res = runIndependentIterativeProcedure(fwdIC)
         if proc == "JOINT":
-            res = runJointBackAndForwardProcedure(bckwdIC, fwdIC)
+            res, bckwdScatResults, fwdScatResults, bckwdIC, fwdIC = (
+                runJointBackAndForwardProcedure(bckwdIC, fwdIC)
+            )
 
         # If preliminary procedure ran, make TableWS with H ratios values
         if ranPreliminary:
@@ -63,7 +78,7 @@ def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, 
     wsNames = []
     ICs = []
     for mode, IC in zip(["BACKWARD", "FORWARD"], [bckwdIC, fwdIC]):
-        if (userCtr.fitInYSpace == mode) | (userCtr.fitInYSpace == "JOINT"):
+        if (userCtr.fitInYSpace == mode) or (userCtr.fitInYSpace == "JOINT"):
             wsNames.append(buildFinalWSName(scriptName, mode, IC))
             ICs.append(IC)
 
@@ -71,8 +86,8 @@ def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, 
     if bootIC.runBootstrap:
         assert (
             (bootIC.procedure == "FORWARD")
-            | (bootIC.procedure == "BACKWARD")
-            | (bootIC.procedure == "JOINT")
+            or (bootIC.procedure == "BACKWARD")
+            or (bootIC.procedure == "JOINT")
         ), "Invalid Bootstrap procedure."
         return runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC, scriptName), None
 
@@ -98,34 +113,39 @@ def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, 
 
 
 def checkUserClearWS():
-    """If any workspace is loaded, check if user is sure to start new procedure."""
+    """If any workspace is loaded, log a warning about cleaning all workspaces."""
 
     if len(mtd) != 0:
-        userInput = input(
-            "This action will clean all current workspaces to start anew. Proceed? (y/n): "
-        )
-        if (userInput == "y") | (userInput == "Y"):
-            pass
-        else:
-            raise KeyboardInterrupt("Run of procedure canceled.")
+        print("WARNING: This action will clean all current workspaces to start anew.")
     return
 
 
 def checkInputs(crtIC):
     try:
-        if ~crtIC.runRoutine:
-            return
+        is_active = crtIC.runRoutine
     except AttributeError:
-        if ~crtIC.runBootstrap:
-            return
+        is_active = crtIC.runBootstrap
 
-    for flag in [crtIC.procedure, crtIC.fitInYSpace]:
-        assert (
-            (flag == "BACKWARD")
-            | (flag == "FORWARD")
-            | (flag == "JOINT")
-            | (flag == None)
-        ), "Option not recognized."
+    if not is_active:
+        return
 
-    if (crtIC.procedure != "JOINT") & (crtIC.fitInYSpace != None):
-        assert crtIC.procedure == crtIC.fitInYSpace
+    # For active runs, procedure MUST be one of the options (not None)
+    assert crtIC.procedure in [
+        "BACKWARD",
+        "FORWARD",
+        "JOINT",
+    ], f"Procedure '{crtIC.procedure}' not recognized or missing."
+
+    # fitInYSpace is optional but must be valid if present
+    assert crtIC.fitInYSpace in [
+        "BACKWARD",
+        "FORWARD",
+        "JOINT",
+        None,
+    ], f"fitInYSpace '{crtIC.fitInYSpace}' not recognized."
+
+    if (crtIC.procedure != "JOINT") and (crtIC.fitInYSpace is not None):
+        assert crtIC.procedure == crtIC.fitInYSpace, (
+            f"Procedure '{crtIC.procedure}' and fitInYSpace '{crtIC.fitInYSpace}' "
+            "must match for non-JOINT runs."
+        )

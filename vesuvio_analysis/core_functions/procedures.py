@@ -5,21 +5,21 @@ from mantid.simpleapi import CreateEmptyTableWorkspace
 from .analysis_functions import iterativeFitForDataReduction
 
 
-def runIndependentIterativeProcedure(IC, clearWS=True):
+def runIndependentIterativeProcedure(IC, clearWS=False):
     """
-    Runs the iterative fitting of NCP, cleaning any previously stored workspaces.
+    Runs the iterative fitting of NCP.
     input: Backward or Forward scattering initial conditions object
     output: Final workspace that was fitted, object with results arrays
     """
 
-    # Clear worksapces before running one of the procedures below
+    # Removed automatic workspace clearing as it is destructive for unrelated data.
     if clearWS:
         AnalysisDataService.clear()
 
     return iterativeFitForDataReduction(IC)
 
 
-def runJointBackAndForwardProcedure(bckwdIC, fwdIC, clearWS=True):
+def runJointBackAndForwardProcedure(bckwdIC, fwdIC, clearWS=False):
     assert bckwdIC.modeRunning == "BACKWARD", (
         "Missing backward IC, args usage: (bckwdIC, fwdIC)"
     )
@@ -27,96 +27,106 @@ def runJointBackAndForwardProcedure(bckwdIC, fwdIC, clearWS=True):
         "Missing forward IC, args usage: (bckwdIC, fwdIC)"
     )
 
-    # Clear worksapces before running one of the procedures below
     if clearWS:
         AnalysisDataService.clear()
 
     return runJoint(bckwdIC, fwdIC)
 
 
-def runPreProcToEstHRatio(bckwdIC, fwdIC):
+def runJoint(bckwdIC, fwdIC):
     """
-    Used when H is present and H to first mass ratio is not known.
-    Preliminary forward scattering is run to get rough estimate of H to first mass ratio.
     Runs iterative procedure with alternating back and forward scattering.
     """
 
-    assert bckwdIC.runningSampleWS == False, (
+    assert not bckwdIC.runningSampleWS, (
         "Preliminary procedure not suitable for Bootstrap."
     )
-    fwdIC.runningPreliminary = True
+    fwdIC = fwdIC.model_copy(update={"runningPreliminary": True})
+    bckwdIC = bckwdIC.model_copy(update={"runningPreliminary": True})
 
-    # Store original no of MS and set MS iterations to zero
-    oriMS = []
-    for IC in [bckwdIC, fwdIC]:
-        oriMS.append(IC.noOfMSIterations)
-        IC.noOfMSIterations = 0
+    # Save initial fwd MS and GC flags
+    oriMS = [fwdIC.noOfMSIterations, bckwdIC.noOfMSIterations]
+    oriFlags = [
+        fwdIC.MSCorrectionFlag,
+        fwdIC.GammaCorrectionFlag,
+        bckwdIC.MSCorrectionFlag,
+        bckwdIC.GammaCorrectionFlag,
+    ]
 
-    nIter = askUserNoOfIterations()
+    fwdIC = fwdIC.model_copy(
+        update={"MSCorrectionFlag": False, "GammaCorrectionFlag": False}
+    )
+    bckwdIC = bckwdIC.model_copy(
+        update={"MSCorrectionFlag": False, "GammaCorrectionFlag": False}
+    )
+
+    nIter = 3  # Defaulting to 3 iterations
+    print(f"Running preliminary procedure with {nIter} iterations.")
 
     HRatios = []  # List to store HRatios
     massIdxs = []
     # Run preliminary forward with a good guess for the widths of non-H masses
-    wsFinal, fwdScatResults = iterativeFitForDataReduction(fwdIC)
-    for i in range(int(nIter)):  # Loop until convergence is achieved
-        AnalysisDataService.clear()  # Clears all Workspaces
+    wsFinal, fwdScatRes = iterativeFitForDataReduction(fwdIC)
+    bckwdScatRes = None
 
+    for _ in range(int(nIter)):
         # Update H ratio
-        massIdx, HRatio = calculateHToMassIdxRatio(fwdScatResults)
-        bckwdIC.HToMassIdxRatio = HRatio
-        bckwdIC.massIdx = massIdx
+        massIdx, HRatio = calculateHToMassIdxRatio(fwdScatRes)
         HRatios.append(HRatio)
         massIdxs.append(massIdx)
+        bckwdIC = bckwdIC.model_copy(
+            update={"HToMassIdxRatio": HRatio, "massIdx": massIdx}
+        )
 
-        wsFinal, bckwdScatResults, fwdScatResults = runJoint(bckwdIC, fwdIC)
+        # Run joint procedure step
+        wsFinal, bckwdScatRes, fwdScatRes, bckwdIC, fwdIC = _runJointStep(
+            bckwdIC, fwdIC
+        )
 
-    print(f"\nIdxs of masses for H ratio for each iteration: \n{massIdxs}")
-    print(f"\nCorresponding H ratios: \n{HRatios}")
-
-    fwdIC.runningPreliminary = (
-        False  # Change to default since end of preliminary procedure
+    # Set back initial flags
+    fwdIC = fwdIC.model_copy(
+        update={
+            "runningPreliminary": False,
+            "noOfMSIterations": oriMS[0],
+            "MSCorrectionFlag": oriFlags[0],
+            "GammaCorrectionFlag": oriFlags[1],
+        }
+    )
+    bckwdIC = bckwdIC.model_copy(
+        update={
+            "runningPreliminary": False,
+            "noOfMSIterations": oriMS[1],
+            "MSCorrectionFlag": oriFlags[2],
+            "GammaCorrectionFlag": oriFlags[3],
+        }
     )
 
-    # Set original number of MS iterations
-    for IC, ori in zip([bckwdIC, fwdIC], oriMS):
-        IC.noOfMSIterations = ori
+    return wsFinal, bckwdScatRes, fwdScatRes, bckwdIC, fwdIC
 
-    # Update the H ratio with the best estimate, chages bckwdIC outside function
+
+def _runJointStep(bckwdIC, fwdIC):
+    wsFinal, bckwdScatResults = iterativeFitForDataReduction(bckwdIC)
+    fwdIC = setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC)
+    wsFinal, fwdScatResults = iterativeFitForDataReduction(fwdIC)
+    return wsFinal, bckwdScatResults, fwdScatResults, bckwdIC, fwdIC
+
+
+def runPreProcToEstHRatio(bckwdIC, fwdIC):
+    """
+    Wrapper for joint procedure.
+    """
+    wsFinal, bckwdScatResults, fwdScatResults, bckwdIC, fwdIC = runJoint(bckwdIC, fwdIC)
+
+    # Re-calculate HRatios and massIdxs to return
     massIdx, HRatio = calculateHToMassIdxRatio(fwdScatResults)
-    bckwdIC.HToMassIdxRatio = HRatio
-    bckwdIC.massIdx = massIdx
-    HRatios.append(HRatio)
-    massIdxs.append(massIdx)
-
-    return HRatios, massIdxs
-
-
-def createTableWSHRatios(HRatios, massIdxs):
-    tableWS = CreateEmptyTableWorkspace(
-        OutputWorkspace="H_Ratios_From_Preliminary_Procedure"
-    )
-    tableWS.setTitle("H Ratios and Idxs at each iteration")
-    tableWS.addColumn(type="int", name="iter")
-    tableWS.addColumn(type="float", name="H Ratio")
-    tableWS.addColumn(type="int", name="Mass Idx")
-    for i, (hr, hi) in enumerate(zip(HRatios, massIdxs)):
-        tableWS.addRow([i, hr, hi])
-    return
+    HRatios = [HRatio]
+    massIdxs = [massIdx]
+    return HRatios, massIdxs, bckwdIC, fwdIC
 
 
 def askUserNoOfIterations():
-    print("\nH was detected but HToMassIdxRatio was not provided.")
-    print(
-        "\nSugested preliminary procedure:\n\nrun_forward\nfor n:\n    estimate_HToMassIdxRatio\n    run_backward\n    run_forward"
-    )
-    userInput = input(
-        "\n\nDo you wish to run preliminary procedure to estimate HToMassIdxRatio? (y/n)"
-    )
-    if not ((userInput == "y") or (userInput == "Y")):
-        raise KeyboardInterrupt("Preliminary procedure interrupted.")
-
-    nIter = int(input("\nHow many iterations do you wish to run? n="))
-    return nIter
+    """No longer used. Defaulting to pre-set values to enable automation."""
+    return 3
 
 
 def calculateHToMassIdxRatio(fwdScatResults):
@@ -141,11 +151,36 @@ def calculateHToMassIdxRatio(fwdScatResults):
     return massIdx, HRatio
 
 
-def runJoint(bckwdIC, fwdIC):
-    wsFinal, bckwdScatResults = iterativeFitForDataReduction(bckwdIC)
-    setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC)
-    wsFinal, fwdScatResults = iterativeFitForDataReduction(fwdIC)
-    return wsFinal, bckwdScatResults, fwdScatResults
+def isHPresent(masses) -> bool:
+    Hmask = np.abs(masses - 1) / 1 < 0.1  # H mass within 10% of 1 au
+
+    if np.any(Hmask):  # H present
+        print("\nH mass detected.\n")
+        assert len(Hmask) > 1, (
+            "When H is only mass present, run independent forward procedure, not joint."
+        )
+        assert Hmask[0], "H mass needs to be the first mass in masses and initPars."
+        assert sum(Hmask) == 1, "More than one mass very close to H were detected."
+        return True
+    else:
+        return False
+
+
+def createTableWSHRatios(HRatios, massIdxs):
+    """
+    Creates a Mantid TableWorkspace with the estimated H ratios.
+    """
+
+    tableWS = CreateEmptyTableWorkspace(
+        OutputWorkspace="H_Ratios_From_Preliminary_Procedure"
+    )
+    tableWS.setTitle("H Ratios and Idxs at each iteration")
+    tableWS.addColumn(type="int", name="iter")
+    tableWS.addColumn(type="float", name="H Ratio")
+    tableWS.addColumn(type="int", name="Mass Idx")
+    for i, (hr, hi) in enumerate(zip(HRatios, massIdxs)):
+        tableWS.addRow([i, hr, hi])
+    return tableWS
 
 
 def setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC):
@@ -160,6 +195,9 @@ def setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC):
     backMeanWidths = bckwdScatResults.all_mean_widths[-1]
     backMeanIntensityRatios = bckwdScatResults.all_mean_intensities[-1]
 
+    new_initPars = fwdIC.initPars.copy()
+    new_bounds = fwdIC.bounds.copy()
+
     if isHPresent(fwdIC.masses):
         assert len(backMeanWidths) == fwdIC.noOfMasses - 1, (
             "H Mass present, no of masses in front needs to be bigger than back by 1."
@@ -173,41 +211,24 @@ def setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC):
         initialFwdIntensityRatios /= np.sum(initialFwdIntensityRatios)
 
         # Set calculated intensity ratios to forward scattering
-        fwdIC.initPars[0::3] = initialFwdIntensityRatios
+        new_initPars[0::3] = initialFwdIntensityRatios
         # Set forward widths from backscattering
-        fwdIC.initPars[4::3] = backMeanWidths
+        new_initPars[4::3] = backMeanWidths
         # Fix all widths except for H, i.e. the first one
-        fwdIC.bounds[4::3] = backMeanWidths[:, np.newaxis] * np.ones((1, 2))
+        new_bounds[4::3] = backMeanWidths[:, np.newaxis] * np.ones((1, 2))
 
     else:  # H mass not present anywhere
         assert len(backMeanWidths) == fwdIC.noOfMasses, (
-            "H Mass not present, no of masses needs to be the same for front and back scattering."
+            "H Mass not present, no of masses needs to be same for front and back scattering."
         )
 
         # Set widths and intensity ratios
-        fwdIC.initPars[1::3] = backMeanWidths
-        fwdIC.initPars[0::3] = backMeanIntensityRatios
+        new_initPars[1::3] = backMeanWidths
+        new_initPars[0::3] = backMeanIntensityRatios
 
         if len(backMeanWidths) > 1:  # In the case of single mass, width is not fixed
             # Fix all widhts except first
-            fwdIC.bounds[4::3] = backMeanWidths[1:][:, np.newaxis] * np.ones((1, 2))
+            new_bounds[4::3] = backMeanWidths[1:][:, np.newaxis] * np.ones((1, 2))
 
-    print(
-        "\nChanged initial conditions of forward scattering according to mean widhts and intensity ratios from backscattering.\n"
-    )
-    return
-
-
-def isHPresent(masses) -> bool:
-    Hmask = np.abs(masses - 1) / 1 < 0.1  # H mass whithin 10% of 1 au
-
-    if np.any(Hmask):  # H present
-        print("\nH mass detected.\n")
-        assert len(Hmask) > 1, (
-            "When H is only mass present, run independent forward procedure, not joint."
-        )
-        assert Hmask[0], "H mass needs to be the first mass in masses and initPars."
-        assert sum(Hmask) == 1, "More than one mass very close to H were detected."
-        return True
-    else:
-        return False
+    print("\nChanged initial conditions toward forward scattering.\n")
+    return fwdIC.model_copy(update={"initPars": new_initPars, "bounds": new_bounds})
