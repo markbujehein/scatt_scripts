@@ -1,4 +1,6 @@
 
+from typing import Any, Optional, Tuple
+
 from matplotlib.afm import CharMetrics
 from vesuvio_analysis.core_functions.ICHelpers import buildFinalWSName, completeICFromInputs, completeBootIC, completeYFitIC
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
@@ -7,7 +9,66 @@ from vesuvio_analysis.core_functions.procedures import runIndependentIterativePr
 from mantid.api import mtd
 
 
-def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, bootIC):
+def runScript(
+    userCtr: Any,
+    scriptName: str,
+    wsBackIC: Any,
+    wsFrontIC: Any,
+    bckwdIC: Any,
+    fwdIC: Any,
+    yFitIC: Any,
+    bootIC: Any,
+) -> Optional[Tuple[Any, Any]]:
+    """Dispatch the VESUVIO analysis pipeline according to user flags.
+
+    This is the top-level orchestrator called from every submission script.
+    It completes the initial-condition objects, validates inputs, and
+    branches into one of three paths:
+
+    * **Bootstrap** (``bootIC.runBootstrap``): delegates to
+      ``bootstrap.runBootstrap`` and returns immediately.
+    * **Routine** (``userCtr.runRoutine``): runs the iterative NCP
+      fitting procedure (``BACKWARD``, ``FORWARD``, or ``JOINT``),
+      followed by fitting in y-space via
+      ``fit_in_yspace.fitInYSpaceProcedure``.
+    * **No-op**: if neither flag is set, nothing is executed.
+
+    ``runRoutine`` and ``runBootstrap`` are mutually exclusive; an
+    ``AssertionError`` is raised if both are ``True``.
+
+    Expects the Mantid AnalysisDataService (``mtd``) to be available.
+    When ``runRoutine`` is ``True`` and the final workspace already
+    exists in ``mtd``, the NCP fitting is skipped and only the
+    y-space fit is performed.
+
+    Args:
+        userCtr: ``UserScriptControls`` class with ``runRoutine``,
+            ``procedure``, and ``fitInYSpace`` flags.
+        scriptName: Base name of the submission script (without
+            ``.py``), used to construct workspace and file names.
+        wsBackIC: ``LoadVesuvioBackParameters`` class with run numbers,
+            spectra, mode, and ip-file for backward scattering.
+        wsFrontIC: ``LoadVesuvioFrontParameters`` class with the same
+            fields for forward scattering.
+        bckwdIC: ``BackwardInitialConditions`` class with masses,
+            fit parameters, bounds, and correction flags.
+        fwdIC: ``ForwardInitialConditions`` class with masses,
+            fit parameters, bounds, and correction flags.
+        yFitIC: ``YSpaceFitInitialConditions`` class controlling
+            rebinning, symmetrisation, model selection, and Minos.
+        bootIC: ``BootstrapInitialConditions`` class controlling
+            the resampling procedure.
+
+    Returns:
+        A 2-tuple ``(res, resYFit)`` where *res* is the result object
+        from the iterative NCP fit (or ``None``) and *resYFit* is the
+        ``ResultsYFitObject`` from the y-space fit (or ``None``).
+        When bootstrap is active, returns ``(bootResult, None)``.
+
+    Raises:
+        AssertionError: If both ``runRoutine`` and ``runBootstrap`` are
+            ``True``, or if input flags contain invalid values.
+    """
 
     # Set extra attributes from user attributes
     completeICFromInputs(fwdIC, scriptName, wsFrontIC)
@@ -73,8 +134,16 @@ def runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, 
         return res, resYFit   # Return results used only in tests
 
 
-def checkUserClearWS():
-    """If any workspace is loaded, check if user is sure to start new procedure."""
+def checkUserClearWS() -> None:
+    """Prompt the user before clearing all loaded Mantid workspaces.
+
+    If any workspaces are present in the AnalysisDataService, the user
+    is asked to confirm.  A ``KeyboardInterrupt`` is raised if the user
+    declines.
+
+    Raises:
+        KeyboardInterrupt: If the user does not confirm the action.
+    """
 
     if len(mtd) != 0:
         userInput = input("This action will clean all current workspaces to start anew. Proceed? (y/n): ")
@@ -86,7 +155,23 @@ def checkUserClearWS():
 
 
 
-def checkInputs(crtIC):
+def checkInputs(crtIC: Any) -> None:
+    """Validate procedure and fitInYSpace flags on a control class.
+
+    Checks that ``crtIC.procedure`` and ``crtIC.fitInYSpace`` are among
+    the accepted values (``"BACKWARD"``, ``"FORWARD"``, ``"JOINT"``, or
+    ``None``) and that they are consistent with each other.  Silently
+    returns when the corresponding run flag is ``False``.
+
+    Args:
+        crtIC: A ``UserScriptControls`` or ``BootstrapInitialConditions``
+            class whose ``procedure`` and ``fitInYSpace`` attributes are
+            validated.
+
+    Raises:
+        AssertionError: If any flag value is invalid or if ``procedure``
+            and ``fitInYSpace`` are inconsistent.
+    """
 
     try:
         if ~crtIC.runRoutine:

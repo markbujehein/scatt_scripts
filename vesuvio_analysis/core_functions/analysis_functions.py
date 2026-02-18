@@ -1,3 +1,5 @@
+from typing import Any, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 from mantid.simpleapi import *
@@ -9,7 +11,35 @@ from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 np.set_printoptions(suppress=True, precision=4, linewidth=100, threshold=sys.maxsize)
 
 
-def iterativeFitForDataReduction(ic):
+def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
+    """Run the iterative NCP fitting and optional MS/GC correction loop.
+
+    This is the core data-reduction routine.  It loads and crops the
+    raw/empty workspaces, then iterates ``noOfMSIterations + 1`` times:
+
+    1. Fit the Neutron Compton Profile (NCP) to every spectrum via
+       ``fitNcpToWorkspace``.
+    2. Compute mean widths and intensity ratios (with sigma-clipping).
+    3. Unless on the final iteration, apply multiple-scattering and/or
+       gamma-background corrections and subtract them from the
+       workspace for the next iteration.
+
+    Expects the Mantid AnalysisDataService to be available.  At
+    completion, the corrected workspace for the last iteration and all
+    intermediate workspaces (``ic.name + "0"`` … ``ic.name + str(N)``)
+    are present in ``mtd``.
+
+    Args:
+        ic: A completed ``BackwardInitialConditions`` or
+            ``ForwardInitialConditions`` object (after
+            ``completeICFromInputs``).
+
+    Returns:
+        A 2-tuple ``(wsFinal, fittingResults)`` where *wsFinal* is the
+        Mantid workspace from the last iteration and *fittingResults* is
+        a ``resultsObject`` containing all per-iteration arrays.
+    """
+
     createTableInitialParameters(ic)
 
     initialWs = loadRawAndEmptyWsFromUserPath(ic)  # Do this before alternative bootstrap to extract name()   
@@ -55,10 +85,21 @@ def iterativeFitForDataReduction(ic):
     return wsFinal, fittingResults
 
 
-def remaskValues(wsName, wsToMaskName):
-    """
-    Uses the ws before the MS correction to look for masked columns or dataE 
-    and implement the same masked values after the correction.
+def remaskValues(wsName: str, wsToMaskName: str) -> None:
+    """Re-apply column masks after an MS or gamma-background correction.
+
+    Copies the zero-column pattern from the pre-correction workspace
+    onto the post-correction workspace so that masked bins remain
+    masked.
+
+    Expects workspaces ``wsName`` and ``wsToMaskName`` to be present
+    in the AnalysisDataService.
+
+    Args:
+        wsName: Name of the workspace **before** correction, used as the
+            masking reference.
+        wsToMaskName: Name of the workspace **after** correction, whose
+            dataY columns are zeroed where the reference has zeros.
     """
     ws = mtd[wsName]
     dataX, dataY, dataE = extractWS(ws)
@@ -73,7 +114,18 @@ def remaskValues(wsName, wsToMaskName):
     return
 
 
-def createTableInitialParameters(ic):
+def createTableInitialParameters(ic: Any) -> None:
+    """Create a Mantid TableWorkspace listing the starting fit parameters.
+
+    Writes a table named ``ic.name + "_Initial_Parameters"`` into the
+    AnalysisDataService, with columns for mass, initial widths/bounds,
+    initial intensities/bounds, and initial centres/bounds.
+
+    Args:
+        ic: Completed initial-conditions object whose ``masses``,
+            ``initPars``, and ``bounds`` arrays are read.
+    """
+
     print("\nRUNNING ", ic.modeRunning, " SCATTERING.\n")
     if ic.modeRunning == "BACKWARD":
         print(f"\nH ratio to mass with idx={ic.massIdx}: {ic.HToMassIdxRatio}\n")
@@ -97,7 +149,27 @@ def createTableInitialParameters(ic):
     print("\n")    
 
 
-def loadRawAndEmptyWsFromUserPath(ic):
+def loadRawAndEmptyWsFromUserPath(ic: Any) -> Any:
+    """Load cached raw and empty Nexus files, rebin, scale, and subtract.
+
+    Loads the raw workspace from ``ic.userWsRawPath``, rebins to
+    ``ic.tofBinning``, and scales by ``ic.scaleRaw``.  If
+    ``ic.subEmptyFromRaw`` is ``True``, the empty workspace is loaded,
+    rebinned, scaled, and subtracted.  Sum spectra workspaces are
+    created for diagnostic plots.
+
+    Expects the Nexus files to already exist (cached by
+    ``ICHelpers.saveWSFromLoadVesuvio``).
+
+    Args:
+        ic: Completed initial-conditions object with ``userWsRawPath``,
+            ``userWsEmptyPath``, ``tofBinning``, ``scaleRaw``,
+            ``scaleEmpty``, and ``subEmptyFromRaw``.
+
+    Returns:
+        The Mantid workspace ready for cropping, named
+        ``ic.name + "uncroped_unmasked"``.
+    """
 
     print('\nLoading local workspaces ...\n')
     Load(Filename=str(ic.userWsRawPath), OutputWorkspace=ic.name+"raw")
