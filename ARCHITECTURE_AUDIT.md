@@ -20,7 +20,9 @@ BaH2_500C.py
 │   ├── BackwardInitialConditions   — masses, initPars, bounds, MS/GC flags, H-ratio
 │   ├── ForwardInitialConditions    — masses, initPars, bounds, MS/GC flags
 │   ├── YSpaceFitInitialConditions  — fitModel, rebinPars, symmetrisation, Minos, global fit
-│   ├── UserScriptControls          — runRoutine, procedure, fitInYSpace
+│   ├── UserScriptControls          — runRoutine, procedure, fitInYSpace,
+│   │                                  runOutlierDetection, runPhysicsClustering,
+│   │                                  runBayesianBootstrap
 │   ├── BootstrapInitialConditions  — runBootstrap, bootstrapType, nSamples
 │   └── BootstrapAnalysis           — runAnalysis, plot flags
 │
@@ -37,7 +39,7 @@ BaH2_500C.py
 | `BackwardInitialConditions` | `masses`, `initPars`, `bounds`, `HToMassIdxRatio`, `noOfMSIterations`, `MSCorrectionFlag`, `GammaCorrectionFlag` | `analysis_functions.iterativeFitForDataReduction` |
 | `ForwardInitialConditions` | Same (no H-ratio) | Same |
 | `YSpaceFitInitialConditions` | `fitModel`, `rebinParametersForYSpaceFit`, `symmetrisationFlag`, `runMinos`, `globalFit` | `fit_in_yspace.fitInYSpaceProcedure` |
-| `UserScriptControls` | `runRoutine`, `procedure`, `fitInYSpace` | `run_script.runScript` (branching logic) |
+| `UserScriptControls` | `runRoutine`, `procedure`, `fitInYSpace`, `runOutlierDetection`, `runPhysicsClustering`, `runBayesianBootstrap` | `run_script.runScript` (branching logic), `run_script._runStatisticalAnalysis` (Phase 6) |
 | `BootstrapInitialConditions` | `runBootstrap`, `bootstrapType`, `nSamples` | `bootstrap.runBootstrap` |
 
 ---
@@ -69,8 +71,13 @@ runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, boot
     │   └── procedure == "JOINT"    → runJointBackAndForwardProcedure(bckwdIC, fwdIC)
     │       └── (if H present & HToMassIdxRatio is None → runPreProcToEstHRatio first)
     │
-    └── for each wsName in [BACKWARD, FORWARD, JOINT as requested]:
-        └── fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+    ├── for each wsName in [BACKWARD, FORWARD, JOINT as requested]:
+    │   └── fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+    │
+    └── _runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)  ← Phase 6 (post-fit)
+        ├── [if runOutlierDetection]  → HardwareOutlierDetector.fit_predict(spectra)
+        ├── [if runPhysicsClustering] → PhysicsTrendClusterer.fit_predict([L1, theta])
+        └── [if runBayesianBootstrap] → BayesianBootstrap.compute_weighted_residuals(residuals)
 ```
 
 ### Critical Boolean Gates
@@ -84,6 +91,23 @@ runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, boot
 | `userCtr.fitInYSpace` | Selects which final ws to fit in y-space (can differ from procedure) |
 | `IC.MSCorrectionFlag` | Enables multiple-scattering correction in iterative loop |
 | `IC.GammaCorrectionFlag` | Enables gamma-background correction |
+| `userCtr.runOutlierDetection` | Enables PCA + EllipticEnvelope hardware outlier detection (Phase 6; requires `runRoutine == True`) |
+| `userCtr.runPhysicsClustering` | Enables DBSCAN physics-trend clustering on (L1, θ) features (Phase 6; requires `runRoutine == True`) |
+| `userCtr.runBayesianBootstrap` | Enables Dirichlet-weighted Bayesian Bootstrap on NCP residuals (Phase 6; requires `runRoutine == True`) |
+| `analysisIC.runAnalysis` | Enables post-hoc analysis of stored bootstrap results (independent of runRoutine/runBootstrap) |
+
+#### Phase 6 Activation Rules
+
+The Phase 6 statistical analysis steps (`_runStatisticalAnalysis`) are only executed when
+**all** of the following conditions are met:
+
+1. `userCtr.runRoutine == True` — the main fitting pipeline must be active
+2. At least one of `runOutlierDetection`, `runPhysicsClustering`, or `runBayesianBootstrap` is `True`
+3. `res is not None` — the fitting procedure must have produced results
+
+When `bootIC.runBootstrap == True`, the Phase 6 pipeline is **not** executed because
+`runBootstrap` and `runRoutine` are mutually exclusive.  When `analysisIC.runAnalysis == True`,
+it runs independently after `runScript()` returns and does not interact with Phase 6.
 
 ---
 
@@ -199,6 +223,41 @@ runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
 │   └── storeBootIter(...)      ← Accumulate results
 │
 └── saveBootstrapResults(...)
+```
+
+### 3.4 Statistical Post-Processing (`statistical_plugins.py`) — Phase 6
+
+```
+_runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)
+│
+├── Gate: any_enabled = runOutlierDetection OR runPhysicsClustering OR runBayesianBootstrap
+├── Gate: res is not None
+│
+├── Extract resultsObject(s) from res:
+│   ├── BACKWARD/FORWARD → [(res[1], bckwdIC or fwdIC)]
+│   └── JOINT            → [(res[1], bckwdIC), (res[2], fwdIC)]
+│
+├── For each (resultsObject, ic):
+│   ├── spectra    = results.all_fit_workspaces[-1]    ← last-iteration fitted spectra
+│   ├── ncp_total  = results.all_tot_ncp[-1]           ← last-iteration total NCP
+│   │
+│   ├── [runOutlierDetection]:
+│   │   └── HardwareOutlierDetector(n_components=5, contamination=0.1)
+│   │       ├── StandardScaler → PCA → EllipticEnvelope
+│   │       └── labels: -1 = outlier, 0 = inlier
+│   │
+│   ├── [runPhysicsClustering]:
+│   │   ├── loadInstrParsFileIntoArray(ic.InstrParsPath, ic.firstSpec, ic.lastSpec)
+│   │   ├── features = [L1 (col 5), theta (col 2)]
+│   │   └── PhysicsTrendClusterer(eps=0.5, min_samples=3)
+│   │       ├── StandardScaler → DBSCAN
+│   │       └── get_cluster_groups(labels) → {cluster_id: [indices]} (noise=-1 excluded)
+│   │
+│   └── [runBayesianBootstrap]:
+│       ├── residuals = spectra - ncp_total
+│       └── BayesianBootstrap(n_samples=1000, seed=42)
+│           ├── Dirichlet(1,...,1) → weights, shape (n_samples, n_spectra)
+│           └── compute_weighted_residuals → weights @ residuals
 ```
 
 ---
@@ -388,6 +447,65 @@ confirm the correctness of the Phase 3 implementation:
 **No Numba or iMinuit code may call Mantid algorithms.** All acceleration is confined to
 the pure-NumPy computation layer between `extractWS()` and `passDataIntoWS()`.
 
+### 6.5 Phase 5 — Numba Regression Testing ✅
+
+**Goal:** Validate that Numba-accelerated resolution functions produce results identical
+to the original NumPy implementations within floating-point tolerance.
+
+- `tests/test_numba_regression.py` — Regression tests for `pseudoVoigt`, `calculateNcpSpec`
+- Benchmarks compare Numba vs NumPy execution time
+- Pre-existing failures (7×) due to `np.trapz` removal in NumPy 2.x are unrelated
+
+### 6.6 Phase 6 — Statistical Post-Processing Pipeline ✅
+
+**Goal:** Add a multi-stage statistical analysis pipeline that runs after the main
+NCP fitting procedure, providing hardware outlier detection, physics-trend clustering,
+and uncertainty quantification via Bayesian Bootstrap.
+
+**Module:** `vesuvio_analysis/core_functions/statistical_plugins.py`
+
+**Classes:**
+
+1. **`HardwareOutlierDetector`** — Identifies broken detectors using PCA dimensionality
+   reduction followed by robust covariance scoring (`EllipticEnvelope`).
+   - Input: fitted spectra array, shape `(n_spectra, n_bins)`
+   - Pipeline: `StandardScaler` → `PCA(n_components)` → `EllipticEnvelope(contamination)`
+   - Output: labels array (`-1` = outlier, `0` = inlier)
+
+2. **`PhysicsTrendClusterer`** — Groups detectors by physical features (flight-path L,
+   scattering angle θ) using density-based clustering (`DBSCAN`).
+   - Input: feature matrix `[L1, theta]`, shape `(n_spectra, 2)`
+   - Pipeline: `StandardScaler` → `DBSCAN(eps, min_samples)`
+   - Output: cluster labels; noise points (`-1`) explicitly excluded from `get_cluster_groups()`
+
+3. **`BayesianBootstrap`** — Rubin-style Weighted Bayesian Bootstrap using symmetric
+   Dirichlet(1, ..., 1) weights for fast residual resampling without re-fitting.
+   - Input: residuals = spectra - ncp_total, shape `(n_spectra, n_bins)`
+   - Pipeline: `Dirichlet(alpha=1)` → weight matrix → `weights @ residuals`
+   - Output: weighted residual profiles, shape `(n_samples, n_bins)`
+
+**Integration in `run_script.py`:**
+
+- `_runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)` is called post-fit within
+  the `runRoutine` branch, after `fitInYSpaceProcedure` completes.
+- Extracts `resultsObject` from the `res` tuple (handles both 2-tuple and 3-tuple formats).
+- Each step is independently gated by its own boolean flag on `UserScriptControls`.
+- Loads instrument parameters from IC objects (`ic.InstrParsPath`, `ic.firstSpec`, `ic.lastSpec`)
+  for physics-trend clustering via `loadInstrParsFileIntoArray`.
+
+**User-facing flags in `BaH2_500C.py` (`UserScriptControls`):**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `runOutlierDetection` | `False` | Run PCA + EllipticEnvelope on fitted spectra |
+| `runPhysicsClustering` | `False` | Run DBSCAN on (L1, θ) instrument features |
+| `runBayesianBootstrap` | `False` | Compute Dirichlet-weighted bootstrap residuals |
+
+**Tests:** `tests/test_statistical_workflow.py` — 12 tests covering all three classes
+against synthetic data (no Mantid dependency).
+
+**Dependency:** `scikit-learn` added to `pyproject.toml`.
+
 ---
 
 ## 7. File-Level Dependency Graph
@@ -412,6 +530,13 @@ BaH2_500C.py
     │   │   ├── jacobi              ← propagate (error propagation)
     │   │   └── mantid.simpleapi    ← ConvertToYSpace, VesuvioResolution, Fit
     │   │
+    │   ├── statistical_plugins.py ← Phase 6: _runStatisticalAnalysis (post-fit)
+    │   │   ├── sklearn.decomposition  ← PCA
+    │   │   ├── sklearn.covariance     ← EllipticEnvelope
+    │   │   ├── sklearn.cluster        ← DBSCAN
+    │   │   ├── sklearn.preprocessing  ← StandardScaler
+    │   │   └── analysis_functions.py  ← loadInstrParsFileIntoArray (for clustering features)
+    │   │
     │   └── bootstrap.py           ← runBootstrap
     │       ├── procedures.py       ← reuses same fitting pipeline
     │       ├── fit_in_yspace.py    ← reuses y-space fitting
@@ -432,16 +557,21 @@ BaH2_500C.py
 | Mantid workspace lifecycle broken | All Numba code operates only on extracted NumPy arrays |
 | Bootstrap results change | Bootstrap calls the same `iterativeFitForDataReduction`; if inner functions are accelerated, results must match within tolerance |
 | `@njit` incompatibility with object attributes | Pass all IC parameters as plain arrays/scalars, not class instances |
+| Phase 6 outlier detection flags good detectors | `contamination` parameter is configurable; validate against known-good runs |
+| Phase 6 DBSCAN finds wrong number of clusters | `eps` and `min_samples` tuned per instrument geometry; standardisation handles scale differences |
+| Phase 6 runs when no fit results available | Gated by `res is not None` check; no-op when fitting is skipped |
 
 ---
 
 ## 9. Recommended Implementation Order
 
-1. **Create `numba_routines.py`** with `@njit` versions of resolution functions
-2. **Add `NCPCostFunction` class** for iMinuit-based NCP fitting
+1. **Create `numba_routines.py`** with `@njit` versions of resolution functions ✅
+2. **Add `NCPCostFunction` class** for iMinuit-based NCP fitting ✅
 3. **Wire into `fitNcpToSingleSpec()`** with dual-optimizer logic
-4. **Add regression tests** comparing scipy vs iMinuit results
-5. **Benchmark** Numba-accelerated vs original NumPy on a representative dataset
+4. **Add regression tests** comparing scipy vs iMinuit results ✅
+5. **Benchmark** Numba-accelerated vs original NumPy on a representative dataset ✅
 6. **Document** performance results and any numerical differences
+7. **Add `statistical_plugins.py`** with outlier detection, clustering, and bootstrap ✅
+8. **Wire Phase 6** into `runScript()` as post-fit pipeline ✅
 
 All work to be performed on the `dev` branch.
