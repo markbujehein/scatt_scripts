@@ -269,7 +269,7 @@ This is used **only** when `dataE` is all zeros (bootstrap without errors).
 
 1. **`calcGaussianResolution()`** → `@njit` (pure arithmetic on NumPy arrays)
 2. **`calcLorentzianResolution()`** → `@njit`
-3. **`pseudoVoigt()`** → `@njit` (needs `gaussian()` and `lorentizian()` also `@njit`)
+3. **`pseudoVoigt()`** → `@njit` (needs `gaussian()` and `lorentizian()` [sic — Lorentzian] also `@njit`)
 4. **`numericalThirdDerivative()`** → `@njit` (stencil / slicing pattern)
 5. **`calculateNcpSpec()`** → `@njit` wrapper calling above functions
 6. **`loadConstants()`** → inline as module-level constants or `@njit` returning tuple
