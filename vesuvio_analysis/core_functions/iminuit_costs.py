@@ -33,7 +33,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-from iminuit import Minuit
+from iminuit import Minuit, cost
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,81 @@ class NCPCostFunction:
             return float(np.sum((ncpFilt - dataYFilt) ** 2))
 
         return float(np.sum((ncpFilt - dataYFilt) ** 2 / dataEFilt ** 2))
+
+    @property
+    def ndata(self) -> int:
+        """Number of non-zero data points."""
+        return int(np.sum(self._dataY != 0))
+
+
+# ------------------------------------------------------------------
+# Global-fit cost function
+# ------------------------------------------------------------------
+
+class GlobalNCPCostFunction(cost.Cost):
+    """Weighted least-squares cost for one detector group in a global fit.
+
+    Inherits from ``cost.Cost`` so that instances can be combined with
+    ``+`` to form a ``CostSum``.  Parameters with the same name across
+    groups are automatically treated as shared by ``CostSum``.
+
+    Implements the modern iMinuit v2.x class-based cost-function
+    pattern with ``errordef``, ``_value``, ``_ndata``, and automatic
+    ``_parameters`` / ``ndata`` propagation via the ``cost.Cost`` base.
+
+    Attributes:
+        errordef: Set to ``Minuit.LEAST_SQUARES`` so Minuit computes
+            parameter errors correctly.
+    """
+
+    errordef: float = Minuit.LEAST_SQUARES
+
+    def __init__(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        yerr: np.ndarray,
+        model: Any,
+        parameter_names: list,
+        verbose: int = 0,
+    ) -> None:
+        """Initialise the cost function for one detector group.
+
+        Args:
+            x: Abscissa values (non-zero selected), shape ``(n,)``.
+            y: Observed values, same shape.
+            yerr: Errors, same shape.
+            model: Convolved model callable ``model(x, *pars)``.
+            parameter_names: Ordered parameter names with per-group
+                suffixes for local params and shared names for global
+                params (e.g. ``['x', 'y00', 'A0', 'x00', 'sigma']``).
+                The first entry is the independent variable and is
+                skipped for ``_parameters``.
+            verbose: Verbosity level for ``cost.Cost``.
+        """
+        self._x = np.asarray(x)
+        self._y = np.asarray(y)
+        self._yerr = np.asarray(yerr)
+        self._model = model
+        # parameter_names includes 'x...' as first entry; skip it
+        params = {name: None for name in parameter_names[1:]}
+        super().__init__(params, verbose)
+
+    def _value(self, args):
+        """Evaluate the weighted sum of squared residuals."""
+        ym = self._model(self._x, *args)
+        return float(np.sum(((self._y - ym) / self._yerr) ** 2))
+
+    def _ndata(self):
+        """Number of non-masked (non-zero) data points."""
+        return len(self._x)
+
+    def _has_grad(self):
+        """This cost function does not provide an analytic gradient."""
+        return False
+
+    def _grad(self, args):
+        raise NotImplementedError
 
 
 # ------------------------------------------------------------------
