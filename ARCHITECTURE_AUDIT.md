@@ -330,7 +330,7 @@ class NCPCostFunction:
 - Store iMinuit results in a parallel column of the results table (e.g., `"Minuit Chi2"`)
 - **Do NOT remove** `scipy.optimize.minimize` — it remains the primary optimizer for regression safety
 
-### 6.3 Phase 3 — Extend `MyLeastSquares` Pattern ✅
+### 6.3 Phase 3 — Unify Cost-Function Interface ✅
 
 **Goal:** Unify the cost-function interface across the codebase.
 
@@ -339,7 +339,40 @@ class NCPCostFunction:
 - `GlobalNCPCostFunction` created: inherits from `cost.Cost`, supports `CostSum` for global fits
 - `calcCostFun` refactored: returns `GlobalNCPCostFunction` instead of generic `cost.LeastSquares`
 - All custom cost classes expose: `errordef`, `__call__`, `_parameters`, `ndata`
-- Verification: `tests/test_interface_unification.py` (zero Mantid dependency)
+- Verification: `tests/test_interface_unification.py` (zero Mantid dependency, 23 tests)
+
+**Documentation Verification** (scikit-hep.org/iminuit, v2.x):
+
+The following findings from the official iminuit documentation at scikit-hep.org
+confirm the correctness of the Phase 3 implementation:
+
+1. **`_parameters` dict** — `describe()` docs (Method 1 in Notes): "Users are
+   encouraged to use this mechanism to provide signatures for objects that
+   otherwise would not have a detectable signature." Maps parameter names to
+   `(lower, upper)` limit tuples or `None` for unbounded.  `func_code` is
+   confirmed deprecated: "still supported for legacy code, but should not be
+   used anymore in new code."
+
+2. **`CostSum` shared-parameter merging** — `simultaneous_fits.html` tutorial:
+   "The σ parameter is shared between the data sets."  Reference docs confirm
+   "The parameters of CostSum are the union of all parameters of its
+   constituents." Parameters with the same name are automatically shared.
+
+3. **`ndata` / GoF metrics** — `Minuit.ndof` docs: "To support this feature,
+   the cost function has to report the number of data points with a property
+   called `ndata`."  `generic_least_squares.html` tutorial: "iminuit
+   automatically reports the reduced chi2 value χ²/ndof if the cost function has
+   `errordef` equal to `Minuit.LEAST_SQUARES` and reports the number of data
+   points."  `CostSum.ndata` aggregates constituent `ndata` values.
+
+4. **`errordef` attribute** — Reference docs: "If FCN has an attribute
+   `errordef`, its value is used automatically."
+   `Minuit.LEAST_SQUARES = 1.0`, `Minuit.LIKELIHOOD = 0.5`.
+
+5. **Annotation propagation** — `generic_least_squares.html` best practice uses
+   `describe(model, annotations=True)` to propagate type-annotation limits
+   (e.g. `Annotated[float, 0:]`) through `_parameters`.  Applied to
+   `MyLeastSquares` and `fitProfileMinuit`.
 
 ### 6.4 Phase 4 — Mantid Workspace Lifecycle Preservation
 

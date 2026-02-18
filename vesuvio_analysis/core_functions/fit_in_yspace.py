@@ -733,9 +733,14 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
         return y0 + signal.convolve(model(x, *pars), resDense, mode="same") * xDelta
 
     signature = describe(model)[:]      # Build signature of convolved function
+    annotations = describe(model, annotations=True)
     signature[1:1] = ["y0"]     # Add intercept as first fitting parameter after range 'x'
 
-    convolvedModel._parameters = {name: None for name in signature[1:]}
+    # Propagate model annotations for limits; y0 is unbounded (None)
+    convolvedModel._parameters = {"y0": None}
+    for name in signature[2:]:  # skip 'x' and 'y0'
+        original_name = name  # name matches original model's param name
+        convolvedModel._parameters[name] = annotations.get(original_name)
     defaultPars["y0"] = 0    # Add initialization of parameter to dictionary
 
     # Fit only valid values, ignore cut-offs 
@@ -1015,7 +1020,13 @@ class MyLeastSquares:
         self.model = model  # model predicts y for given x
         self.x = np.asarray(x)
         self.y = np.asarray(y)
-        self._parameters = {name: None for name in describe(model)[1:]}
+        # Use annotations=True to propagate any type-annotation limits
+        # from the model signature, following iminuit best practice
+        # (see: scikit-hep.org/iminuit/notebooks/generic_least_squares.html)
+        pars = describe(model, annotations=True)
+        model_args = iter(pars)
+        next(model_args)  # skip the first argument (independent variable x)
+        self._parameters = {k: pars[k] for k in model_args}
 
     def __call__(self, *par: float) -> float:
         """Evaluate the unweighted sum of squared residuals.

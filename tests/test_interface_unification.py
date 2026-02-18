@@ -50,6 +50,9 @@ class _MyLeastSquaresReplica:
 
     Validates that the *interface contract* (``_parameters``, ``ndata``,
     ``errordef``, ``__call__``) is satisfied by the current design.
+    Uses ``describe(model, annotations=True)`` to propagate model parameter
+    limits, following the official iminuit best practice
+    (see: scikit-hep.org/iminuit/notebooks/generic_least_squares.html).
     """
 
     errordef = Minuit.LEAST_SQUARES
@@ -58,7 +61,11 @@ class _MyLeastSquaresReplica:
         self.model = model
         self.x = np.asarray(x)
         self.y = np.asarray(y)
-        self._parameters = {name: None for name in describe(model)[1:]}
+        # Use annotations=True to propagate any type-annotation limits
+        pars = describe(model, annotations=True)
+        model_args = iter(pars)
+        next(model_args)  # skip the first argument (independent variable x)
+        self._parameters = {k: pars[k] for k in model_args}
 
     def __call__(self, *par):
         ym = self.model(self.x, *par)
@@ -113,6 +120,28 @@ class TestMyLeastSquaresInterface(unittest.TestCase):
         c = self._make_cost()
         m = Minuit(c, a=1, b=0, c=0)
         self.assertEqual(m.parameters, ("a", "b", "c"))
+
+    def test_annotations_propagated(self):
+        """Verify that type annotations (limits) are propagated through _parameters.
+
+        This follows the official iminuit best practice from
+        scikit-hep.org/iminuit/notebooks/generic_least_squares.html
+        which uses ``describe(model, annotations=True)`` to capture
+        parameter limits declared via ``Annotated`` types.
+        """
+        from typing import Annotated
+
+        def model(x, a: float, b: Annotated[float, 0:]):
+            return a + b * x
+
+        x = np.linspace(-5, 5, 10)
+        y = 1 + 2 * x
+        c = _MyLeastSquaresReplica(x, y, model)
+
+        # 'a' has no limits → None
+        self.assertIsNone(c._parameters["a"])
+        # 'b' has lower limit 0 → (0, inf)
+        self.assertEqual(c._parameters["b"], (0, np.inf))
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +352,26 @@ class TestCostSumIntegration(unittest.TestCase):
         # Both amplitudes should be recovered
         self.assertAlmostEqual(m.values["A0"], 5.0, delta=1.0)
         self.assertAlmostEqual(m.values["A1"], 3.0, delta=1.0)
+
+    def test_ndof_gof_metric(self):
+        """Verify Minuit.ndof uses ndata for GoF (χ²/ndof) reporting.
+
+        Per the iminuit docs: 'To support this feature, the cost function
+        has to report the number of data points with a property called ndata.'
+        (scikit-hep.org/iminuit/reference.html — Minuit.ndof)
+        """
+        c0, c1 = self._make_costs()
+        total = c0 + c1
+
+        m = Minuit(total, y00=0, A0=1, x00=0, y01=0, A1=1, x01=0, sigma=5)
+        m.limits["A0"] = (0, None)
+        m.limits["A1"] = (0, None)
+        m.simplex()
+        m.migrad()
+
+        # ndof = ndata - npar = 60 - 7 = 53
+        self.assertEqual(m.ndof, total.ndata - m.npar)
+        self.assertEqual(m.ndof, 53)
 
 
 class TestMultipleSharedParams(unittest.TestCase):
