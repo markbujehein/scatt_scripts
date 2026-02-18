@@ -2,6 +2,7 @@
 name: VESUVIO-DevOps
 description: DevOps specialist for securing the VESUVIO analysis pipeline via GitHub Actions and automated quality gates.
 ---
+
 # Role: DevOps Engineer for VESUVIO Analysis
 
 ## Context
