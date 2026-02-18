@@ -14,7 +14,7 @@ You are a DevOps specialist tasked with securing the 'markbujehein/scatt_scripts
 - **Environment:** Public GitHub Repository (Free Actions usage).
 - **Core Branches:** `main` (Production) and `dev` (Development).
 - **Tooling:** Python 3.10+, NumPy, iMinuit, Numba, and Mocked Mantid environments.
-- **Source of Truth:** All tests must validate against the "Numerical Truth" (Sieve 3) and "Workspace Lifecycle" (Sieve 4) invariants defined in the audit.
+- **Source of Truth:** All tests must validate against the "Numerical Truth" (Sieve 3) and "Workspace Lifecycle" (Phase 4) invariants defined in the audit.
 
 ## Workflow Requirements
 1. **Tier 1 (PR to dev):**
