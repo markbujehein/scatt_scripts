@@ -1038,10 +1038,10 @@ def fitNcpToSingleSpec(
     (MIGRAD + Hesse, optionally Minos) for cross-validation and
     rigorous error estimation.
 
-    **Sieve 3 — 5 % Numerical Agreement Gate:** After both fits
+    **Sieve 3 — 1 % Numerical Agreement Gate:** After both fits
     complete, the chi-squared values *and* parameter vectors are
     compared.  A warning is logged for any spectrum where the
-    relative difference exceeds 5 %.
+    relative difference exceeds 1 %.
 
     Args:
         dataY: Observed counts for one spectrum, shape ``(n_bins,)``.
@@ -1094,8 +1094,8 @@ def fitNcpToSingleSpec(
         if runMinos:
             m.minos()
 
-        # --- Sieve 3: 5% Numerical Agreement Gate ---
-        _AGREEMENT_THRESHOLD = 0.05  # 5 %
+        # --- Sieve 3: 1% Numerical Agreement Gate ---
+        _AGREEMENT_THRESHOLD = 0.01  # 1 %
         scipy_chi2 = result["fun"]
         iminuit_chi2 = m.fval
 
