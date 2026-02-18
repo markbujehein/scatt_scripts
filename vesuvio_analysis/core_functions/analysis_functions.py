@@ -7,6 +7,16 @@ from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 
+# ---------------------------------------------------------------------------
+# Numba acceleration toggle — set to False to revert to pure-NumPy paths
+# ---------------------------------------------------------------------------
+USE_NUMBA = True
+
+try:
+    from .numba_routines import calculateNcpSpec_numba as _calculateNcpSpec_numba
+except ImportError:
+    USE_NUMBA = False
+
 # Format print output of arrays
 np.set_printoptions(suppress=True, precision=4, linewidth=100, threshold=sys.maxsize)
 
@@ -1091,8 +1101,12 @@ def calculateNcpSpec(
     TOF-space counts:
     ``NCP_m = I_m * (J(y) + FSE) * E0 * E0^{-0.92} * M / deltaQ``
 
-    **Numba candidate** — all operations are pure NumPy arithmetic on
-    pre-extracted arrays.
+    When ``USE_NUMBA`` is ``True`` (default), the IC object is
+    *unrolled*: ``ic.masses`` (1-D array) and ``ic.normVoigt`` (bool)
+    are extracted as plain scalars/arrays and forwarded to the
+    ``@njit``-compiled ``calculateNcpSpec_numba`` in
+    ``numba_routines.py``.  This avoids passing any Python object into
+    the Numba nopython boundary.
 
     Args:
         ic: Completed initial-conditions object (``normVoigt`` flag
@@ -1111,7 +1125,21 @@ def calculateNcpSpec(
         A 2-tuple ``(ncpForEachMass, ncpTotal)`` where the first has
         shape ``(n_masses, n_bins)`` and the second ``(n_bins,)``.
     """
-    
+
+    # --- Numba-accelerated path (IC unrolling) ---
+    if USE_NUMBA:
+        # Flatten IC object attributes into plain scalars/arrays:
+        #   ic.masses  → 1-D float64 array  (n_masses,)
+        #   ic.normVoigt → Python bool
+        masses_1d = np.asarray(ic.masses, dtype=np.float64)
+        normVoigt = bool(ic.normVoigt)
+        return _calculateNcpSpec_numba(
+            masses_1d, pars, ySpacesForEachMass,
+            resolutionPars, instrPars, kinematicArrays,
+            normVoigt,
+        )
+
+    # --- Legacy NumPy path ---
     masses, intensities, widths, centers = prepareArraysFromPars(ic, pars) 
     v0, E0, deltaE, deltaQ = kinematicArrays
     

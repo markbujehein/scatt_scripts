@@ -32,6 +32,7 @@ dependencies = [
     "scipy",
     "iminuit",
     "jacobi",
+    "numba",
 
 ]
 
