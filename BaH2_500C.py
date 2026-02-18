@@ -1,6 +1,7 @@
 import time
 import numpy as np
 from pathlib import Path
+from typing import Optional
 from vesuvio_analysis.core_functions.bootstrap_analysis import runAnalysisOfStoredBootstrap
 from vesuvio_analysis.core_functions.run_script import runScript
 
@@ -116,7 +117,7 @@ class BackwardInitialConditions(GeneralInitialConditions):
     scaleEmpty: float = 0.9
     scaleRaw: int = 1
 
-    HToMassIdxRatio: int = 21  # Set to None when either unknown or H not present
+    HToMassIdxRatio: Optional[int] = 21  # Set to None when either unknown or H not present
     massIdx: int = 0
 
     # Masses, instrument parameters and initial fitting parameters
