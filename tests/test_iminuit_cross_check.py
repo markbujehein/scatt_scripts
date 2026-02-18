@@ -215,6 +215,8 @@ class TestMigradMatchesScipy(unittest.TestCase):
             f["instrPars"], f["kinArrays"], ic,
         )
         m = Minuit(cost, *scipy_res.x)
+        # simplex() helps MIGRAD converge from the scipy-seeded start point
+        # on the complex NCP landscape with random dummy data.
         m.simplex()
         m.migrad()
         m.hesse()
@@ -285,6 +287,8 @@ class TestHesseAndMinos(unittest.TestCase):
             f["instrPars"], f["kinArrays"], ic,
         )
         m = Minuit(cost, *scipy_res.x)
+        # simplex() helps MIGRAD converge from the scipy-seeded start point
+        # on the complex NCP landscape with random dummy data.
         m.simplex()
         m.migrad()
         m.hesse()
