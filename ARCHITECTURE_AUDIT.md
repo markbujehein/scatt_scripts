@@ -528,11 +528,7 @@ BaH2_500C.py
     │   │   └── mantid.simpleapi    ← ConvertToYSpace, VesuvioResolution, Fit
     │   │
     │   ├── statistical_plugins.py ← Phase 6: _runStatisticalAnalysis (post-fit)
-    │   │   ├── sklearn.decomposition  ← PCA
-    │   │   ├── sklearn.covariance     ← EllipticEnvelope
-    │   │   ├── sklearn.cluster        ← DBSCAN
-    │   │   ├── sklearn.preprocessing  ← StandardScaler
-    │   │   └── analysis_functions.py  ← loadInstrParsFileIntoArray (for clustering features)
+    │   │   └── scikit-learn, analysis_functions.py  ← TODO: expand in future phase
     │   │
     │   └── bootstrap.py           ← runBootstrap
     │       ├── procedures.py       ← reuses same fitting pipeline
