@@ -33,6 +33,8 @@ dependencies = [
     "iminuit",
     "jacobi",
     "numba",
+    "scikit-learn",
+    "seaborn",
 
 ]
 

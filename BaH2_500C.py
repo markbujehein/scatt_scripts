@@ -285,6 +285,10 @@ class UserScriptControls:
         fitInYSpace: Scattering direction(s) whose final workspace is
             fitted in y-space. Options: ``None``, ``"BACKWARD"``,
             ``"FORWARD"``, ``"JOINT"``.
+        runSieve1: Enable Sieve 1 (PCA hardware-outlier detection).
+        runSieve2: Enable Sieve 2 (DBSCAN physics-trend clustering).
+        runSieve4: Enable Sieve 4 (Bayesian Bootstrap with Dirichlet
+            weights).
     """
 
     runRoutine: bool = False
@@ -293,6 +297,11 @@ class UserScriptControls:
     procedure: str = "FORWARD"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
     fitInYSpace: str = "FORWARD"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
+
+    # Phase 6 statistical sieve toggles
+    runSieve1: bool = False   # PCA hardware-outlier detection
+    runSieve2: bool = False   # DBSCAN physics-trend clustering
+    runSieve4: bool = False   # Bayesian Bootstrap (Dirichlet weights)
 
 
 class BootstrapInitialConditions:
