@@ -211,10 +211,10 @@ def _make_fixtures(n_masses=3, n_bins=144, seed=42):
         E0_arr + Ef - 2.0 * np.sqrt(E0_arr * Ef) * np.cos(angle_rad)
     )
     kinArrays = np.array([
-        np.abs(v0_arr),
-        np.abs(E0_arr),
-        np.abs(deltaE_arr),
-        np.abs(deltaQ_arr) + 1.0,
+        v0_arr,
+        E0_arr,
+        deltaE_arr,
+        deltaQ_arr + 1.0,
     ])
 
     # --- Instrument parameters [det, plick, angle, T0, L0, L1] ---
