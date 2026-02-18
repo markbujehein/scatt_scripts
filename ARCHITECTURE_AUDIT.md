@@ -447,14 +447,11 @@ confirm the correctness of the Phase 3 implementation:
 **No Numba or iMinuit code may call Mantid algorithms.** All acceleration is confined to
 the pure-NumPy computation layer between `extractWS()` and `passDataIntoWS()`.
 
-### 6.5 Phase 5 — Numba Regression Testing ✅
+### 6.5 Phase 5 — State of the Union (SoTU) & Audit Alignment ✅
 
-**Goal:** Validate that Numba-accelerated resolution functions produce results identical
-to the original NumPy implementations within floating-point tolerance.
-
-- `tests/test_numba_regression.py` — Regression tests for `pseudoVoigt`, `calculateNcpSpec`
-- Benchmarks compare Numba vs NumPy execution time
-- Pre-existing failures (7×) due to `np.trapz` removal in NumPy 2.x are unrelated
+**Goal:** Cross-check Phases 1–4 against the architecture audit, implement the 1 %
+numerical agreement gate between scipy and iMinuit, fix NumPy 2.x compatibility,
+and synchronise the roadmap.  See **Section 10** for full details.
 
 ### 6.6 Phase 6 — Statistical Post-Processing Pipeline ✅
 
@@ -567,10 +564,10 @@ BaH2_500C.py
 
 1. **Create `numba_routines.py`** with `@njit` versions of resolution functions ✅
 2. **Add `NCPCostFunction` class** for iMinuit-based NCP fitting ✅
-3. **Wire into `fitNcpToSingleSpec()`** with dual-optimizer logic
+3. **Wire into `fitNcpToSingleSpec()`** with dual-optimizer logic ✅
 4. **Add regression tests** comparing scipy vs iMinuit results ✅
 5. **Benchmark** Numba-accelerated vs original NumPy on a representative dataset ✅
-6. **Document** performance results and any numerical differences
+6. **Document** performance results and any numerical differences ✅
 7. **Add `statistical_plugins.py`** with outlier detection, clustering, and bootstrap ✅
 8. **Wire Phase 6** into `runScript()` as post-fit pipeline ✅
 
@@ -653,27 +650,45 @@ cost-function evaluation), so they propagate directly into the full
 
 ---
 
-## 11. Roadmap: Phase 6 — Full-Stack Statistical Workflow
+## 11. Phase 6 — Full-Stack Statistical Workflow ✅
 
-Phase 6 will introduce statistical plugins for publication-quality
-uncertainty quantification.  Prerequisites (Phases 1–5) are now complete.
+> **Date:** 2026-02-18
+> **Status:** ✅ Complete (this PR)
 
-### 11.1 Planned Steps
+Phase 6 implements the statistical post-processing pipeline described in the
+Phase 5 roadmap.  See **Section 6.6** for architecture details and **Section 3.4**
+for the call graph.
 
-1. **Profile-likelihood scans** — Use `m.mnprofile()` to compute
-   profile-likelihood intervals for each NCP parameter.  Store results
-   alongside the existing `arrFitPars` table.
-2. **Goodness-of-fit dashboard** — Aggregate reduced χ²/ndof across
-   spectra and iterations.  Flag spectra with χ²/ndof > 2.0 for manual
-   review.
-3. **Bootstrap uncertainty propagation** — Integrate the Sieve 3 gate
-   into the bootstrap loop so that each replica's dual-optimizer
-   comparison is recorded, enabling a per-parameter agreement
-   distribution.
-4. **Systematic error budget** — Propagate resolution-parameter
-   uncertainties (dE1, dTOF, dTheta, dL0, dL1) through the NCP model
-   via the Jacobian (`jacobi.propagate`), producing a systematic error
-   band on J(y).
-5. **Publication export** — Generate LaTeX-ready tables of best-fit
-   parameters with Hesse and Minos errors, formatted for Physical
-   Review journals.
+### 11.1 Implemented vs Planned
+
+| Planned Step | Status | Notes |
+|---|---|---|
+| Hardware outlier detection | ✅ `HardwareOutlierDetector` | PCA + EllipticEnvelope on last-iteration spectra |
+| Physics-trend clustering | ✅ `PhysicsTrendClusterer` | DBSCAN on (L1, θ); noise label excluded |
+| Bayesian Bootstrap resampling | ✅ `BayesianBootstrap` | Dirichlet(1,...,1) weights on NCP residuals |
+| Integration with `runRoutine` | ✅ `_runStatisticalAnalysis` | Post-fit; gated by per-step booleans |
+| Profile-likelihood scans | ⬚ | Deferred to a future phase |
+| Goodness-of-fit dashboard | ⬚ | Deferred to a future phase |
+| Systematic error budget | ⬚ | Deferred to a future phase |
+| Publication export | ⬚ | Deferred to a future phase |
+
+### 11.2 Test Coverage
+
+`tests/test_statistical_workflow.py` — 12 tests (no Mantid dependency):
+
+| Test class | Tests | Validates |
+|---|---|---|
+| `TestHardwareOutlierDetector` | 3 | Injected outlier detection, label shape, clean-data false-positive rate |
+| `TestPhysicsTrendClusterer` | 4 | Cluster count, noise exclusion, label shape, index accounting |
+| `TestBayesianBootstrap` | 5 | Weight sums, non-negativity, mean ≈ 1/n, residual shape, reproducibility |
+
+### 11.3 Updated Phase Status
+
+| Phase | Goal | Status | Test Coverage |
+|---|---|---|---|
+| 1 — Numba Acceleration | `@njit` resolution functions | ✅ | `test_numba_regression.py` (17 tests) |
+| 2 — iMinuit NCP Cost | `NCPCostFunction` class | ✅ | `test_iminuit_cross_check.py` (15 tests) |
+| 3 — Unified Interface | `_parameters`, `ndata`, `errordef` | ✅ | `test_interface_unification.py` (23 tests) |
+| 4 — Workspace Lifecycle | Entry/exit guards, naming | ✅ | `test_workspace_safety.py` (23 tests) |
+| 5 — SoTU & Audit Alignment | 1% gate, NumPy 2.x fix, roadmap | ✅ | `test_iminuit_cross_check.py` (+4 gate tests) |
+| 6 — Statistical Workflow | Outlier, clustering, bootstrap | ✅ | `test_statistical_workflow.py` (12 tests) |
