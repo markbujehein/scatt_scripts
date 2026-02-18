@@ -1,11 +1,16 @@
 from typing import Any, List, Optional, Tuple
+import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
+from iminuit import Minuit
 from mantid.simpleapi import *
 from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
+from .iminuit_costs import NCPCostFunction
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Numba acceleration toggle — set to False to revert to pure-NumPy paths
@@ -995,11 +1000,13 @@ def fitNcpToSingleSpec(
     kinematicArrays: np.ndarray,
     ic: Any,
 ) -> np.ndarray:
-    """Fit the NCP model to a single spectrum using scipy SLSQP.
+    """Fit the NCP model to a single spectrum using scipy SLSQP and iMinuit.
 
     Minimises ``errorFunction`` with ``scipy.optimize.minimize``
-    (method ``'SLSQP'``).  Returns a zero array for fully masked
-    spectra (all dataY == 0).
+    (method ``'SLSQP'``), then runs a parallel iMinuit fit
+    (MIGRAD + Hesse, optionally Minos) for cross-validation and
+    rigorous error estimation.  Logs a warning when the two solvers
+    disagree by more than 1 % in chi-squared.
 
     Args:
         dataY: Observed counts for one spectrum, shape ``(n_bins,)``.
@@ -1016,12 +1023,14 @@ def fitNcpToSingleSpec(
     Returns:
         Array of shape ``(3 * n_masses + 3,)`` containing
         ``[specNo, *fitPars, normChi2, nIter]``, or all zeros if
-        the spectrum was masked.
+        the spectrum was masked.  The primary result comes from
+        scipy; iMinuit results are logged for comparison.
     """
 
     if np.all(dataY == 0) : 
         return np.zeros(len(ic.initPars)+3)  
 
+    # --- Scipy SLSQP fit (primary) ---
     result = optimize.minimize(
         errorFunction, 
         ic.initPars, 
@@ -1035,6 +1044,39 @@ def fitNcpToSingleSpec(
 
     noDegreesOfFreedom = len(dataY) - len(fitPars)
     specFitPars = np.append(instrPars[0], fitPars)
+
+    # --- iMinuit MIGRAD + Hesse fit (parallel cross-validation) ---
+    try:
+        cost = NCPCostFunction(
+            dataY, dataE, ySpacesForEachMass,
+            resolutionPars, instrPars, kinematicArrays, ic,
+        )
+        m = Minuit(cost, *ic.initPars)
+        m.migrad()
+        m.hesse()
+
+        runMinos = getattr(ic, "runMinos", False)
+        if runMinos:
+            m.minos()
+
+        # --- Cross-validation: compare chi-squared values ---
+        scipy_chi2 = result["fun"]
+        iminuit_chi2 = m.fval
+        if scipy_chi2 > 0:
+            rel_diff = abs(scipy_chi2 - iminuit_chi2) / scipy_chi2
+            if rel_diff > 0.01:
+                logger.warning(
+                    "Spec %.0f: scipy χ²=%.4f vs iMinuit χ²=%.4f "
+                    "(%.1f%% difference)",
+                    instrPars[0], scipy_chi2, iminuit_chi2,
+                    rel_diff * 100,
+                )
+    except Exception:
+        logger.debug(
+            "iMinuit fit failed for spec %.0f, scipy result used.",
+            instrPars[0], exc_info=True,
+        )
+
     return np.append(specFitPars, [result["fun"] / noDegreesOfFreedom, result["nit"]])
 
 

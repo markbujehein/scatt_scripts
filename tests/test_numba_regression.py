@@ -166,17 +166,70 @@ from vesuvio_analysis.core_functions.numba_routines import (
 # ---------------------------------------------------------------------------
 
 def _make_fixtures(n_masses=3, n_bins=144, seed=42):
-    """Create reproducible dummy arrays matching docstring shapes."""
+    """Create reproducible fixture arrays mimicking VESUVIO DINS data.
+
+    The Neutron Compton Profile (NCP) is a Voigt function centred at
+    y ≈ 0 in the West scaling variable.  Accordingly:
+
+    * **y-spaces** are linearly spaced and centred at zero.  The range
+      narrows with increasing mass (heavier nuclei have narrower
+      momentum distributions under the impulse approximation).
+    * **Kinematic arrays** ``[v0, E0, ΔE, ΔQ]`` are smooth,
+      monotonically varying, and derived from the VESUVIO TOF→energy
+      conversion (Ef = 4906 meV gold-foil analyser, L0 = 11 m,
+      L1 = 0.5 m, back-scattering angle 135°).
+    * **Fit parameters** use NCP centres near zero and Gaussian widths
+      that grow with ``√mass`` (Debye-solid approximation).
+    """
     rng = np.random.default_rng(seed)
-    ySpaces = np.sort(rng.uniform(-30, 30, (n_masses, n_bins)), axis=1)
-    centers = rng.uniform(-2, 2, (n_masses, 1))
-    # kinematicArrays must be strictly positive for physics to be sensible
-    kinArrays = np.abs(rng.normal(100, 10, (4, n_bins))) + 1.0
+
+    # --- Atomic masses (H, C, O by default) ---
     masses_1d = np.array([1.008, 12.0, 16.0])[:n_masses]
     masses_col = masses_1d[:, np.newaxis]
-    resPars = np.array([0.1, 0.02, 0.005, 0.01, 0.01, 0.05])
+
+    # --- Y-space grids: linearly spaced, centred at y = 0 ---
+    ySpaces = np.zeros((n_masses, n_bins))
+    for i, m in enumerate(masses_1d):
+        half_range = 30.0 / np.sqrt(m / masses_1d[0])
+        ySpaces[i] = np.linspace(-half_range, half_range, n_bins)
+
+    # --- NCP centres: near y = 0 (impulse-approximation origin) ---
+    centers = rng.uniform(-0.5, 0.5, (n_masses, 1))
+
+    # --- Kinematic arrays [v0, E0, deltaE, deltaQ] ---
+    Ef = 4906.0                          # meV  (gold-foil analyser)
+    en_to_vel = 4.3737e-4                # √meV → m/µs
+    L0, L1 = 11.0, 0.5                  # primary / secondary flight paths (m)
+    vf = np.sqrt(Ef) * en_to_vel
+    t1 = L1 / vf                         # secondary flight-path time (µs)
+    tof = np.linspace(130, 330, n_bins)   # TOF range where E0 > Ef
+    v0_arr = L0 / (tof - t1)
+    E0_arr = (v0_arr / en_to_vel) ** 2
+    deltaE_arr = E0_arr - Ef
+    angle_rad = 135.0 * np.pi / 180
+    deltaQ_arr = np.sqrt(
+        E0_arr + Ef - 2.0 * np.sqrt(E0_arr * Ef) * np.cos(angle_rad)
+    )
+    kinArrays = np.array([
+        v0_arr,
+        E0_arr,
+        deltaE_arr,
+        deltaQ_arr + 1.0,
+    ])
+
+    # --- Instrument parameters [det, plick, angle, T0, L0, L1] ---
     instrPars = np.array([3.0, 1.0, 135.0, 0.0, 11.0, 0.5])
-    pars = rng.uniform(0.5, 5.0, 3 * n_masses)
+
+    # --- Resolution parameters [dE1, dTOF, dTheta, dL0, dL1, dE1_lorz] ---
+    resPars = np.array([0.1, 0.02, 0.005, 0.01, 0.01, 0.05])
+
+    # --- Fit parameters [I0, W0, C0, I1, W1, C1, ...] ---
+    pars = np.zeros(3 * n_masses)
+    for i, m in enumerate(masses_1d):
+        pars[3 * i + 0] = rng.uniform(1.0, 8.0)          # intensity
+        pars[3 * i + 1] = 4.0 + 0.5 * np.sqrt(m)         # width (Å⁻¹)
+        pars[3 * i + 2] = rng.uniform(-0.3, 0.3)          # centre ≈ 0
+
     return dict(
         ySpaces=ySpaces, centers=centers, kinArrays=kinArrays,
         masses_1d=masses_1d, masses_col=masses_col,
