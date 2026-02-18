@@ -1,3 +1,5 @@
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from dataclasses import replace
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,7 +15,39 @@ import time
 repoPath = Path(__file__).absolute().parent  # Path to the repository
 
 
-def fitInYSpaceProcedure(yFitIC, IC, wsTOF):
+def fitInYSpaceProcedure(yFitIC: Any, IC: Any, wsTOF: Any) -> "ResultsYFitObject":
+    """Perform the full y-space fitting procedure on a corrected TOF workspace.
+
+    Orchestrates the conversion from TOF to y-space, optional
+    symmetrisation, iMinuit fitting, Mantid Fit validation, and
+    optional global fit.  All intermediate workspaces are stored in the
+    AnalysisDataService.
+
+    Steps:
+        1. Extract NCP profiles from named workspaces.
+        2. Compute Mantid resolution for the first mass.
+        3. Subtract all masses except the first to isolate mass₀.
+        4. Convert to y-space, rebin, normalise, and weight-average.
+        5. Optionally symmetrise about y = 0.
+        6. Fit with iMinuit (``fitProfileMinuit``).
+        7. Fit with Mantid Fit (``fitProfileMantidFit``).
+        8. Optionally run a global fit across detector groups.
+
+    Expects workspace ``wsTOF.name()`` and its associated
+    ``_TOF_Fitted_Profile_*`` workspaces to be present in ``mtd``.
+
+    Args:
+        yFitIC: ``YSpaceFitInitialConditions`` controlling rebinning,
+            symmetrisation, model, Minos, and global fit.
+        IC: Completed ``BackwardInitialConditions`` or
+            ``ForwardInitialConditions`` object.
+        wsTOF: Mantid workspace containing the fully-corrected TOF
+            data from the last MS/GC iteration.
+
+    Returns:
+        A ``ResultsYFitObject`` containing y-space fit results and
+        saved to ``.npz``.
+    """
 
     ncpForEachMass = extractNCPFromWorkspaces(wsTOF, IC)
     wsResSum, wsRes = calculateMantidResolutionFirstMass(IC, yFitIC, wsTOF)
@@ -39,8 +73,23 @@ def fitInYSpaceProcedure(yFitIC, IC, wsTOF):
     return yfitResults
 
 
-def extractNCPFromWorkspaces(wsFinal, ic):
-    """Extra function to extract ncps from loaded ws in mantid."""
+def extractNCPFromWorkspaces(wsFinal: Any, ic: Any) -> np.ndarray:
+    """Extract per-mass NCP arrays from named Mantid workspaces.
+
+    Reads workspaces ``wsFinal.name() + "_TOF_Fitted_Profile_0"``
+    through ``…_Profile_{n-1}`` and stacks them into a single array
+    organised per spectrum.
+
+    Expects all per-mass NCP workspaces to be present in ``mtd``.
+
+    Args:
+        wsFinal: The final corrected TOF workspace.
+        ic: Completed initial-conditions object with ``noOfMasses``.
+
+    Returns:
+        NCP array organised by spectrum, shape
+        ``(n_spectra, n_masses, n_bins)``.
+    """
 
     ncpForEachMass = mtd[wsFinal.name()+"_TOF_Fitted_Profile_0"].extractY()[np.newaxis, :, :]
     for i in range(1, ic.noOfMasses):
@@ -59,7 +108,28 @@ def extractNCPFromWorkspaces(wsFinal, ic):
     return ncpForEachMass
 
 
-def calculateMantidResolutionFirstMass(IC, yFitIC, ws):
+def calculateMantidResolutionFirstMass(
+    IC: Any, yFitIC: Any, ws: Any
+) -> Tuple[Any, Any]:
+    """Compute the Mantid VesuvioResolution for the first mass.
+
+    Calls ``VesuvioResolution`` per spectrum, rebins to the y-space
+    grid, sums across spectra, and normalises.  The resolution
+    workspace is used for convolution in the y-space fit.
+
+    Args:
+        IC: Completed initial-conditions object with ``masses`` and
+            ``maskedDetectorIdx``.
+        yFitIC: Y-space fit configuration with
+            ``rebinParametersForYSpaceFit``.
+        ws: The corrected TOF workspace.
+
+    Returns:
+        A 2-tuple ``(wsResSum, wsRes)`` where *wsResSum* is the
+        normalised summed-spectra resolution and *wsRes* is the
+        per-spectrum resolution workspace.
+    """
+
     mass = IC.masses[0]
 
     resName = ws.name()+"_Resolution"
@@ -80,11 +150,25 @@ def calculateMantidResolutionFirstMass(IC, yFitIC, ws):
     return wsResSum, mtd[resName]
 
 
-def subtractAllMassesExceptFirst(ic, ws, ncpForEachMass):
-    """
-    Isolates TOF data from first mass only.
-    Input: ws containing TOF values, NCP for all mass profiles.
-    Output: ws with all profiles except first subtracted.
+def subtractAllMassesExceptFirst(
+    ic: Any, ws: Any, ncpForEachMass: np.ndarray
+) -> Any:
+    """Subtract all NCP profiles except the first mass from the TOF data.
+
+    Isolates the contribution of mass₀ (typically hydrogen) by
+    summing and subtracting the NCP of all heavier masses.  Masked
+    bins are preserved.
+
+    Args:
+        ic: Completed initial-conditions object with
+            ``maskedDetectorIdx``.
+        ws: The corrected TOF workspace.
+        ncpForEachMass: NCP per spectrum and mass, shape
+            ``(n_spectra, n_masses, n_bins)``.
+
+    Returns:
+        A Mantid workspace named ``ws.name() + "_Mass0"`` containing
+        only the mass₀ signal.
     """
 
     ncpForEachMass = switchFirstTwoAxis(ncpForEachMass)
@@ -109,15 +193,43 @@ def subtractAllMassesExceptFirst(ic, ws, ncpForEachMass):
     return wsSubMass
 
 
-def switchFirstTwoAxis(A):
-    """Exchanges the first two indices of an array A,
-    rearranges matrices per spectrum for iteration of main fitting procedure
+def switchFirstTwoAxis(A: np.ndarray) -> np.ndarray:
+    """Transpose the first two axes of a 3-D array.
+
+    Args:
+        A: Array with shape ``(a, b, c)``.
+
+    Returns:
+        Array with shape ``(b, a, c)``.
     """
     return np.stack(np.split(A, len(A), axis=0), axis=2)[0]
 
 
-def ySpaceReduction(wsTOF, mass0, yFitIC, ncp):
-    """Seperate procedures depending on masking specified."""
+def ySpaceReduction(
+    wsTOF: Any, mass0: float, yFitIC: Any, ncp: np.ndarray
+) -> Tuple[Any, Any]:
+    """Convert TOF data to y-space and produce a weighted-average spectrum.
+
+    Handles two masking strategies:
+
+    * **NAN**: Accumulates data points per y-space bin and performs a
+      weighted average that naturally handles missing data.
+    * **NCP**: Fills masked bins with the fitted NCP before standard
+      rebinning and normalisation.
+
+    If no masked columns are present, standard rebinning is used.
+
+    Args:
+        wsTOF: Mantid workspace with mass₀ TOF data.
+        mass0: Mass of the first atom in a.m.u.
+        yFitIC: Y-space fit configuration with
+            ``rebinParametersForYSpaceFit`` and ``maskTypeProcedure``.
+        ncp: NCP for mass₀ only, shape ``(n_spectra, n_bins)``.
+
+    Returns:
+        A 2-tuple ``(wsJoYN, wsJoYAvg)`` — the normalised per-spectrum
+        J(y) workspace and its weighted average.
+    """
     
     rebinPars = yFitIC.rebinParametersForYSpaceFit
     
@@ -154,21 +266,51 @@ def ySpaceReduction(wsTOF, mass0, yFitIC, ncp):
     return wsJoYN, wsJoYAvg
 
 
-def convertToYSpace(wsTOF, mass0):
+def convertToYSpace(wsTOF: Any, mass0: float) -> Any:
+    """Convert a TOF workspace to y-space via Mantid ``ConvertToYSpace``.
+
+    Args:
+        wsTOF: Input TOF workspace.
+        mass0: Atomic mass for the conversion (a.m.u.).
+
+    Returns:
+        The y-space Mantid workspace.
+    """
+
     wsJoY = ConvertToYSpace(wsTOF, Mass=mass0, OutputWorkspace=wsTOF.name()+"_JoY")
     return wsJoY
 
 
-def rebinAndNorm(wsJoY, rebinPars):
+def rebinAndNorm(wsJoY: Any, rebinPars: str) -> Tuple[Any, Any]:
+    """Rebin a y-space workspace and normalise by the integrated intensity.
+
+    Args:
+        wsJoY: Input y-space workspace.
+        rebinPars: Mantid rebin parameter string ``"start, step, end"``.
+
+    Returns:
+        A 2-tuple ``(wsJoYNorm, wsJoYInt)`` — the normalised workspace
+        and the integration workspace used for normalisation.
+    """
+
     wsJoYR = Rebin(InputWorkspace=wsJoY, Params=rebinPars, FullBinsOnly=True, OutputWorkspace=wsJoY.name()+"_Rebinned")
     wsJoYInt = Integration(wsJoYR, OutputWorkspace=wsJoYR.name()+"_Integrated")
     wsJoYNorm = Divide(wsJoYR, wsJoYInt, OutputWorkspace=wsJoYR.name()+"_Normalised")
     return wsJoYNorm, wsJoYInt
 
 
-def replaceZerosWithNCP(ws, ncp):
-    """
-    Replaces columns of bins with zeros on dataY with NCP provided.
+def replaceZerosWithNCP(ws: Any, ncp: np.ndarray) -> Any:
+    """Replace zero-masked columns in dataY with the NCP prediction.
+
+    Creates a clone named ``ws.name() + "_NCPMasked"`` with the
+    replacement applied.  Errors are not modified.
+
+    Args:
+        ws: Mantid workspace with masked columns (dataY == 0).
+        ncp: NCP values to fill in, shape ``(n_spectra, n_bins)``.
+
+    Returns:
+        A cloned workspace with zero columns replaced by NCP values.
     """
     dataX, dataY, dataE = extractWS(ws)
     mask = np.all(dataY==0, axis=0)    # Masked Cols 
@@ -181,18 +323,36 @@ def replaceZerosWithNCP(ws, ncp):
     return wsMasked  
 
 
-def buildXRangeFromRebinPars(yFitIC):
+def buildXRangeFromRebinPars(yFitIC: Any) -> np.ndarray:
+    """Build an array of bin centres from the rebin parameter string.
+
+    Args:
+        yFitIC: Y-space fit configuration with
+            ``rebinParametersForYSpaceFit``.
+
+    Returns:
+        Array of bin centres, shape ``(n_bins,)``.
+    """
     # Range used in case mask is set to NAN
     first, step, last = [float(s) for s in yFitIC.rebinParametersForYSpaceFit.split(",")]
     xp = np.arange(first, last, step) + step/2   # Correction to match Mantid range
     return xp
 
 
-def dataXBining(ws, xp):
-    """
-    Changes dataX of a workspace to values in range of bin centers xp.
-    Same as shifting dataY values to closest bin center.
-    Output ws has several dataY values per dataX point.
+def dataXBining(ws: Any, xp: np.ndarray) -> Any:
+    """Re-bin dataX to the closest centres in *xp*, allowing multiple dataY per bin.
+
+    Modifies the dataX values of a workspace so that each point is
+    snapped to the nearest bin centre from *xp*.  Points outside the
+    range are set to ``NaN``.  The output workspace may have several
+    dataY values per dataX point.
+
+    Args:
+        ws: Input Mantid workspace.
+        xp: Array of target bin centres, shape ``(n_bins,)``.
+
+    Returns:
+        A cloned workspace with modified dataX.
     """
 
     assert np.min(xp[:-1]-xp[1:]) == np.max(xp[:-1]-xp[1:]), "Bin widths need to be the same."
@@ -225,8 +385,17 @@ def dataXBining(ws, xp):
     return wsXBins
 
 
-def weightedAvgXBins(wsXBins, xp):
-    """Weighted average on ws where dataY points are grouped per dataX bin centers."""
+def weightedAvgXBins(wsXBins: Any, xp: np.ndarray) -> Any:
+    """Weighted average over grouped dataY points sharing the same bin centre.
+
+    Args:
+        wsXBins: Workspace from ``dataXBining`` with multiple dataY
+            per bin centre.
+        xp: Target bin centres, shape ``(n_bins,)``.
+
+    Returns:
+        A 1-spectrum workspace with the weighted average.
+    """
     dataX, dataY, dataE = extractWS(wsXBins)
 
     meansY, meansE = weightedAvgXBinsArr(dataX, dataY, dataE, xp)
@@ -235,12 +404,24 @@ def weightedAvgXBins(wsXBins, xp):
     return wsYSpaceAvg
 
 
-def weightedAvgXBinsArr(dataX, dataY, dataE, xp):
-    """
-    Weighted Average on arrays where several dataY points correspond to a single dataX point.
-    xp is the range over which to perform the average.
-    dataX points can only take values in xp.
-    Ignores any zero or NaN value.
+def weightedAvgXBinsArr(
+    dataX: np.ndarray, dataY: np.ndarray, dataE: np.ndarray, xp: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Weighted average over arrays where several dataY correspond to a single dataX.
+
+    Groups all dataY (and dataE) values that share the same bin centre
+    from *xp* and computes the inverse-variance weighted mean.  Zero
+    and NaN values are ignored.
+
+    Args:
+        dataX: X values (snapped to centres), shape
+            ``(n_spectra, n_pts)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        xp: Target bin centres, shape ``(n_bins,)``.
+
+    Returns:
+        A 2-tuple ``(meansY, meansE)`` each of shape ``(n_bins,)``.
     """
     meansY = np.zeros(len(xp))
     meansE = np.zeros(len(xp))
@@ -279,8 +460,15 @@ def weightedAvgXBinsArr(dataX, dataY, dataE, xp):
     return meansY, meansE
 
 
-def weightedAvgCols(wsYSpace):
-    """Returns ws with weighted avg of columns of input ws"""
+def weightedAvgCols(wsYSpace: Any) -> Any:
+    """Compute the inverse-variance weighted average across spectra.
+
+    Args:
+        wsYSpace: Per-spectrum y-space workspace.
+
+    Returns:
+        A 1-spectrum workspace with the weighted average.
+    """
     dataX, dataY, dataE = extractWS(wsYSpace)
     if np.all(dataE==0):      # Bootstrap case where errors are not used
         meanY = avgArr(dataY)
@@ -291,10 +479,17 @@ def weightedAvgCols(wsYSpace):
     return wsYSpaceAvg
 
 
-def avgArr(dataYO):
-    """
-    Average over columns of 2D dataY.
-    Ignores any zero values as being masked.
+def avgArr(dataYO: np.ndarray) -> np.ndarray:
+    """Simple mean over rows (spectra) ignoring zeros.
+
+    Zeros are treated as masked and replaced with ``NaN`` before
+    averaging.
+
+    Args:
+        dataYO: 2-D array, shape ``(n_spectra, n_bins)``.
+
+    Returns:
+        Row-averaged array, shape ``(n_bins,)``.
     """
 
     assert len(dataYO)>1, "Averaging needs more than one element."
@@ -308,10 +503,20 @@ def avgArr(dataYO):
     return meanY
 
 
-def weightedAvgArr(dataYO, dataEO):
-    """
-    Weighted average over columns of 2D arrays.
-    Ignores any zero or NaN value.
+def weightedAvgArr(
+    dataYO: np.ndarray, dataEO: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Inverse-variance weighted average over rows (spectra).
+
+    Zeros and NaNs are ignored.  The output masks columns that are
+    entirely zero.
+
+    Args:
+        dataYO: Y values, shape ``(n_spectra, n_bins)``.
+        dataEO: Error values, same shape.
+
+    Returns:
+        A 2-tuple ``(meanY, meanE)`` each of shape ``(n_bins,)``.
     """
 
     # Run some tests
@@ -344,20 +549,46 @@ def weightedAvgArr(dataYO, dataEO):
     return meanY, meanE
 
 
-def normalise_workspace(ws_name):
-    """Updates workspace with the normalised version."""
+def normalise_workspace(ws_name: Any) -> None:
+    """Normalise a workspace by its integrated intensity (in-place).
+
+    Args:
+        ws_name: Workspace name or handle to normalise.
+    """
     tmp_norm = Integration(ws_name)
     Divide(LHSWorkspace=ws_name,RHSWorkspace=tmp_norm,OutputWorkspace=ws_name)
     DeleteWorkspace("tmp_norm")
 
 
-def extractWS(ws):
-    """Directly exctracts data from workspace into arrays"""
+def extractWS(ws: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract dataX, dataY, and dataE arrays from a Mantid workspace.
+
+    Args:
+        ws: A Mantid MatrixWorkspace.
+
+    Returns:
+        A 3-tuple ``(dataX, dataY, dataE)``.
+    """
     return ws.extractX(), ws.extractY(), ws.extractE()
 
 
-def passDataIntoWS(dataX, dataY, dataE, ws):
-    "Modifies ws data to input data"
+def passDataIntoWS(
+    dataX: np.ndarray, dataY: np.ndarray, dataE: np.ndarray, ws: Any
+) -> Any:
+    """Write NumPy arrays back into a Mantid workspace in-place.
+
+    Modifies all spectra of *ws* to hold the values from the input
+    arrays.
+
+    Args:
+        dataX: X-axis values, shape ``(n_spectra, n_bins)``.
+        dataY: Y-axis values, same shape.
+        dataE: Error values, same shape.
+        ws: The Mantid workspace to modify.
+
+    Returns:
+        The modified workspace *ws*.
+    """
     for i in range(ws.getNumberHistograms()):
         ws.dataX(i)[:] = dataX[i, :]
         ws.dataY(i)[:] = dataY[i, :]
@@ -365,10 +596,19 @@ def passDataIntoWS(dataX, dataY, dataE, ws):
     return ws
 
 
-def symmetrizeWs(avgYSpace):
-    """
-    Symmetrizes workspace after weighted average.
-    Needs to have symmetric binning.
+def symmetrizeWs(avgYSpace: Any) -> Any:
+    """Symmetrise a y-space workspace about y = 0.
+
+    For weighted data, inverse-variance symmetrisation is used; for
+    data without errors (bootstrap), a simple mean of opposing points
+    is computed.  Requires symmetric rebinning.
+
+    Args:
+        avgYSpace: 1-spectrum y-space workspace (weighted average).
+
+    Returns:
+        A cloned, symmetrised workspace named
+        ``avgYSpace.name() + "_Symmetrised"``.
     """
 
     dataX, dataY, dataE = extractWS(avgYSpace)
@@ -384,11 +624,16 @@ def symmetrizeWs(avgYSpace):
     return wsSym
 
 
-def symArr(dataYO):
-    """
-    Performs averaging between two oposite points.
-    Takes only one 2D array.
-    Any zero gets assigned the oposite value.
+def symArr(dataYO: np.ndarray) -> np.ndarray:
+    """Average each y-point with its mirror image about y = 0.
+
+    Zeros are treated as absent and the mirror value is kept.
+
+    Args:
+        dataYO: 2-D array, shape ``(1, n_bins)`` (or general 2-D).
+
+    Returns:
+        Symmetrised array, same shape.
     """
 
     assert len(dataYO.shape) == 2, "Symmetrization is written for 2D arrays."
@@ -406,11 +651,22 @@ def symArr(dataYO):
     return dataYS
 
 
-def weightedSymArr(dataYO, dataEO):
-    """
-    Performs Inverse variance weighting between two oposite points.
-    When one of the points is a cut-off and the other is a valid point, 
-    the final value will be the valid point.
+def weightedSymArr(
+    dataYO: np.ndarray, dataEO: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Inverse-variance weighted symmetrisation of y-space data.
+
+    Combines each point with its mirror image using inverse-variance
+    weighting.  Cut-off values (zero-error points) are left
+    unchanged by setting their error to infinity before the
+    calculation.
+
+    Args:
+        dataYO: Y values, shape ``(1, n_bins)`` (or general 2-D).
+        dataEO: Error values, same shape.
+
+    Returns:
+        A 2-tuple ``(dataYS, dataES)`` of symmetrised arrays.
     """
     assert len(dataYO.shape) == 2, "Symmetrization is written for 2D arrays."
     assert np.all((dataYO==0)==(dataEO==0)), "Masked values should have zeros on both dataY and dataE."
@@ -445,7 +701,25 @@ def weightedSymArr(dataYO, dataEO):
     return dataYS, dataES
 
 
-def fitProfileMinuit(yFitIC, wsYSpaceSym, wsRes):
+def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
+    """Fit the y-space profile using iMinuit.
+
+    Builds a convolved model (J(y) model ⊗ resolution), creates the
+    appropriate cost function (``cost.LeastSquares`` with errors or
+    ``MyLeastSquares`` without), and minimises using Simplex → Migrad
+    (for Gaussian) or Simplex → constrained Scipy (for non-Gaussian
+    models).  Hessian errors are always computed.  Optionally runs
+    Minos for asymmetric errors.
+
+    Expects ``wsYSpaceSym`` and ``wsRes`` to be present in ``mtd``.
+
+    Args:
+        yFitIC: Y-space fit configuration with ``fitModel``,
+            ``runMinos``, and ``showPlots``.
+        wsYSpaceSym: The (optionally symmetrised) weighted-average
+            J(y) workspace (1 spectrum).
+        wsRes: The summed resolution workspace (1 spectrum).
+    """
 
     dataX, dataY, dataE = extractFirstSpectra(wsYSpaceSym)
     resX, resY, resE = extractFirstSpectra(wsRes)
@@ -524,19 +798,49 @@ def fitProfileMinuit(yFitIC, wsYSpaceSym, wsRes):
     return 
 
 
-def extractFirstSpectra(ws):
+def extractFirstSpectra(ws: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract the first spectrum from a workspace.
+
+    Args:
+        ws: Mantid workspace.
+
+    Returns:
+        A 3-tuple ``(dataX, dataY, dataE)`` each of shape
+        ``(n_bins,)``.
+    """
     dataY = ws.extractY()[0]
     dataX = ws.extractX()[0]
     dataE = ws.extractE()[0]
     return dataX, dataY, dataE
 
 
-def selectModelAndPars(modelFlag):
-    """
-    Selects the function to fit. 
-    Specifies the starting parameters of that function as default parameters.
-    The shared parameters are used in the global fit.
-    The defaultPars should be in the same order as the signature of the function
+def selectModelAndPars(
+    modelFlag: str,
+) -> Tuple[Callable, Dict[str, float], List[str]]:
+    """Return the J(y) model function, default parameters, and shared-parameter names.
+
+    The model is a plain Python callable with signature
+    ``model(x, *pars)``.  The *sharedPars* list identifies parameters
+    that are shared across detector groups in the global fit; they must
+    appear last in the function signature.
+
+    Supported models:
+        * ``"SINGLE_GAUSSIAN"``
+        * ``"GC_C4"``, ``"GC_C6"``, ``"GC_C4_C6"`` (Gram–Charlier)
+        * ``"DOUBLE_WELL"``
+        * ``"ANSIO_GAUSSIAN"``
+        * ``"MULTIVARIATE_GAUSSIAN"``
+
+    Args:
+        modelFlag: String identifier selecting the model.
+
+    Returns:
+        A 3-tuple ``(model, defaultPars, sharedPars)`` where *model*
+        is the callable, *defaultPars* is a dict of starting values,
+        and *sharedPars* is a list of parameter name strings.
+
+    Raises:
+        ValueError: If *modelFlag* is not recognised.
     """
 
     if modelFlag == "SINGLE_GAUSSIAN":
@@ -653,10 +957,21 @@ def selectModelAndPars(modelFlag):
     return model, defaultPars, sharedPars
 
 
-def selectNonZeros(dataX, dataY, dataE):
-    """
-    Selects non zero points.
-    Uses zeros in dataY becasue dataE can be all zeros in one of the bootstrap types.
+def selectNonZeros(
+    dataX: np.ndarray, dataY: np.ndarray, dataE: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Select only non-zero data points (mask removal).
+
+    Uses zeros in *dataY* as the mask indicator because *dataE* can be
+    all zeros in certain bootstrap types.
+
+    Args:
+        dataX: X values, shape ``(n_bins,)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+
+    Returns:
+        A 3-tuple of the non-zero subsets.
     """
     zeroMask = dataY==0  
 
@@ -666,31 +981,84 @@ def selectNonZeros(dataX, dataY, dataE):
     return dataXNZ, dataYNZ, dataENZ 
 
 
-class MyLeastSquares:  
-    """
-    Generic least-squares cost function without error.
-    This structure is required for high compatibility with Minuit. 
+class MyLeastSquares:
+    """Unweighted least-squares cost function compatible with iMinuit.
+
+    Used when ``dataE`` is all zeros (e.g. bootstrap replicas without
+    error propagation).  Implements the iMinuit class-based cost-function
+    pattern with ``errordef``, ``__call__``, ``func_code``, and
+    ``ndata``.
+
+    Attributes:
+        errordef: Set to ``Minuit.LEAST_SQUARES`` so Minuit computes
+            parameter errors correctly.
+        model: The model callable ``model(x, *par)``.
+        x: Abscissa values.
+        y: Observed values.
+        func_code: Autogenerated from the model's parameter signature.
     """
 
     errordef = Minuit.LEAST_SQUARES # for Minuit to compute errors correctly
-    
-    def __init__(self, x, y, model):
+
+    def __init__(self, x: np.ndarray, y: np.ndarray, model: Callable) -> None:
+        """Initialise the cost function.
+
+        Args:
+            x: Abscissa values, shape ``(n_points,)``.
+            y: Observed values, same shape.
+            model: Callable ``model(x, *par)`` returning predicted y.
+        """
+
         self.model = model  # model predicts y for given x
         self.x = np.asarray(x)
         self.y = np.asarray(y)
         self.func_code = make_func_code(describe(model)[1:])
 
-    def __call__(self, *par):  # we accept a variable number of model parameters
+    def __call__(self, *par: float) -> float:
+        """Evaluate the unweighted sum of squared residuals.
+
+        Args:
+            *par: Model parameters.
+
+        Returns:
+            Scalar cost value.
+        """
+
         ym = self.model(self.x, *par)
         return np.sum((self.y - ym) ** 2)
 
     @property
-    def ndata(self):
+    def ndata(self) -> int:
+        """Number of data points."""
         return len(self.x)
 
 
-def createFitResultsWorkspace(wsYSpaceSym, dataX, dataY, dataE, dataYFit, dataYSigma, Residuals):
-    """Creates workspace similar to the ones created by Mantid Fit."""
+def createFitResultsWorkspace(
+    wsYSpaceSym: Any,
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataYFit: np.ndarray,
+    dataYSigma: np.ndarray,
+    Residuals: np.ndarray,
+) -> Any:
+    """Create a 3-spectrum Mantid workspace with data, fit, and residuals.
+
+    Mimics the output format of the Mantid ``Fit`` algorithm.
+
+    Args:
+        wsYSpaceSym: The fitted workspace (used for naming).
+        dataX: X values, shape ``(n_bins,)``.
+        dataY: Observed Y values.
+        dataE: Observed errors.
+        dataYFit: Best-fit Y values.
+        dataYSigma: Confidence-band width.
+        Residuals: ``dataY - dataYFit``.
+
+    Returns:
+        A 3-spectrum workspace named
+        ``wsYSpaceSym.name() + "_Fitted_Minuit"``.
+    """
 
     wsMinFit = CreateWorkspace(DataX=np.concatenate((dataX, dataX, dataX)), 
                     DataY=np.concatenate((dataY, dataYFit, Residuals)), 
@@ -700,8 +1068,14 @@ def createFitResultsWorkspace(wsYSpaceSym, dataX, dataY, dataE, dataYFit, dataYS
     return wsMinFit
 
 
-def saveMinuitPlot(yFitIC, wsMinuitFit, mObj):
-    """Saves figure with Minuit Fit."""
+def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
+    """Save a PDF plot of the Minuit fit result.
+
+    Args:
+        yFitIC: Y-space fit configuration with ``figSavePath``.
+        wsMinuitFit: The 3-spectrum fit-result workspace.
+        mObj: The ``Minuit`` object (used for the legend).
+    """
 
     leg = ""
     for p, v, e in zip(mObj.parameters, mObj.values, mObj.errors):
@@ -722,7 +1096,18 @@ def saveMinuitPlot(yFitIC, wsMinuitFit, mObj):
     return
 
 
-def createCorrelationTableWorkspace(wsYSpaceSym, parameters, corrMatrix):
+def createCorrelationTableWorkspace(
+    wsYSpaceSym: Any, parameters: List[str], corrMatrix: np.ndarray
+) -> None:
+    """Create a Mantid TableWorkspace with the normalised correlation matrix.
+
+    Args:
+        wsYSpaceSym: The fitted workspace (used for naming).
+        parameters: List of parameter names.
+        corrMatrix: Correlation matrix (%), shape
+            ``(n_pars, n_pars)``.
+    """
+
     tableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsYSpaceSym.name()+"_Fitted_Minuit_NormalizedCovarianceMatrix")
     tableWS.setTitle("Minuit Fit")
     tableWS.addColumn(type='str',name="Name")
@@ -732,8 +1117,32 @@ def createCorrelationTableWorkspace(wsYSpaceSym, parameters, corrMatrix):
         tableWS.addRow([p] + list(arr))
  
 
-def runMinos(mObj, yFitIC, constrFunc, wsName):
-    """Outputs columns to be displayed in a table workspace"""
+def runMinos(
+    mObj: Minuit,
+    yFitIC: Any,
+    constrFunc: Callable,
+    wsName: str,
+) -> Tuple[List[str], List[float], List[float], List[np.ndarray], List[np.ndarray]]:
+    """Run Minos asymmetric error analysis and return formatted columns.
+
+    If ``yFitIC.runMinos`` is ``False``, returns zero-filled Minos
+    error columns.  For ``SINGLE_GAUSSIAN``, uses iMinuit's automatic
+    ``minos()``; for non-Gaussian models, uses a manual
+    profile-likelihood scan (``runAndPlotManualMinos``).
+
+    Args:
+        mObj: The ``Minuit`` object after the main fit.
+        yFitIC: Y-space fit configuration with ``runMinos``,
+            ``fitModel``, and ``showPlots``.
+        constrFunc: Positivity constraint callable (or no-op for
+            Gaussian).
+        wsName: Base workspace name (used for plot titles).
+
+    Returns:
+        A 5-tuple ``(parameters, values, errors, minosAutoErr,
+        minosManErr)`` suitable for
+        ``createFitParametersTableWorkspace``.
+    """
 
     # Extract info from fit before running any MINOS
     parameters = list(mObj.parameters)
@@ -781,10 +1190,30 @@ def runMinos(mObj, yFitIC, constrFunc, wsName):
     return    parameters, values, errors, minosAutoErr, minosManErr
 
 
-def runAndPlotManualMinos(minuitObj, constrFunc, bestFitVals, bestFitErrs, showPlots):
-    """
-    Runs brute implementation of minos algorithm and
-    plots the profile for each parameter along the way.
+def runAndPlotManualMinos(
+    minuitObj: Minuit,
+    constrFunc: Callable,
+    bestFitVals: Dict[str, float],
+    bestFitErrs: Dict[str, float],
+    showPlots: bool,
+) -> Tuple[Dict[str, np.ndarray], Any]:
+    """Brute-force Minos profile-likelihood scan with plots.
+
+    For each parameter, fixes the parameter, re-optimises, and records
+    the cost-function value across a grid.  Minos errors are extracted
+    from the ΔF = 1 intersection.
+
+    Args:
+        minuitObj: The ``Minuit`` object.
+        constrFunc: Positivity constraint callable.
+        bestFitVals: Best-fit parameter values.
+        bestFitErrs: Hessian errors at the best fit.
+        showPlots: Whether to display the profile plots.
+
+    Returns:
+        A 2-tuple ``(merrors, fig)`` where *merrors* is a dict mapping
+        parameter names to ``[lower, upper]`` error arrays and *fig*
+        is the Matplotlib figure.
     """
     # Reason for two distinct operations inside the same function is that its easier
     # to build the minos plots for each parameter as they are being calculated.
@@ -816,7 +1245,34 @@ def runAndPlotManualMinos(minuitObj, constrFunc, bestFitVals, bestFitErrs, showP
     return merrors, fig
 
 
-def runMinosForPar(minuitObj, constrFunc, var:str, bound:int, ax, bestFitVals, bestFitErrs, showPlots):
+def runMinosForPar(
+    minuitObj: Minuit,
+    constrFunc: Callable,
+    var: str,
+    bound: int,
+    ax: Any,
+    bestFitVals: Dict[str, float],
+    bestFitErrs: Dict[str, float],
+    showPlots: bool,
+) -> Tuple[float, float]:
+    """Run the profile-likelihood scan for a single parameter.
+
+    Scans a range of ``bound`` × ``σ`` around the best-fit value,
+    using both constrained Scipy and unconstrained Migrad.
+
+    Args:
+        minuitObj: The ``Minuit`` object.
+        constrFunc: Positivity constraint callable.
+        var: Name of the parameter to profile.
+        bound: Number of standard deviations for the scan range.
+        ax: Matplotlib axis for plotting.
+        bestFitVals: Best-fit parameter values.
+        bestFitErrs: Hessian errors.
+        showPlots: Whether to draw on *ax*.
+
+    Returns:
+        A 2-tuple ``(lerr, uerr)`` of lower and upper Minos errors.
+    """
 
     resetMinuit(minuitObj, bestFitVals, bestFitErrs)
     # Run Fitting procedures again to be on the safe side and reset to minimum
@@ -857,16 +1313,38 @@ def runMinosForPar(minuitObj, constrFunc, var:str, bound:int, ax, bestFitVals, b
     return lerr, uerr
 
 
-def resetMinuit(minuitObj, bestFitVals, bestFitErrs):
-    """Sets Minuit parameters to best fit values and errors."""
+def resetMinuit(
+    minuitObj: Minuit,
+    bestFitVals: Dict[str, float],
+    bestFitErrs: Dict[str, float],
+) -> None:
+    """Reset Minuit parameters to the best-fit values and errors.
+
+    Args:
+        minuitObj: The ``Minuit`` object.
+        bestFitVals: Dict mapping parameter names to best-fit values.
+        bestFitErrs: Dict mapping parameter names to Hessian errors.
+    """
     for p in bestFitVals:
         minuitObj.values[p] = bestFitVals[p]
         minuitObj.errors[p] = bestFitErrs[p]
     return
 
 
-def buildVarRange(bound, varVal, varErr):
-    """Range of points over which cost function is evaluated."""
+def buildVarRange(bound: int, varVal: float, varErr: float) -> np.ndarray:
+    """Build a quadratically-spaced scan range for the Minos profile.
+
+    The grid is denser near the minimum and spans ±``bound`` standard
+    deviations.
+
+    Args:
+        bound: Number of standard deviations to span.
+        varVal: Best-fit value of the parameter.
+        varErr: Hessian error on the parameter.
+
+    Returns:
+        Array of scan points, shape ``(30,)`` (even number required).
+    """
     # Create variable space more dense near the minima using a quadratic density
     limit = (bound*varErr)**(1/2)     # Square root is corrected below
     varSpace = np.linspace(-limit, limit, 30)
@@ -875,7 +1353,28 @@ def buildVarRange(bound, varVal, varErr):
     return varSpace
 
 
-def runMinosOnRange(minuitObj, var, varRange, minimizer, constrFunc):
+def runMinosOnRange(
+    minuitObj: Minuit,
+    var: str,
+    varRange: np.ndarray,
+    minimizer: str,
+    constrFunc: Callable,
+) -> np.ndarray:
+    """Evaluate the cost function with one parameter fixed across a range.
+
+    Fixes *var*, sets it to each value in *varRange*, re-optimises the
+    remaining parameters, and records the minimum cost at each point.
+
+    Args:
+        minuitObj: The ``Minuit`` object.
+        var: Name of the parameter to fix.
+        varRange: Scan values, shape ``(n_points,)``.
+        minimizer: ``"Scipy"`` (constrained) or ``"Migrad"``.
+        constrFunc: Positivity constraint callable.
+
+    Returns:
+        Array of cost-function values, shape ``(n_points,)``.
+    """
 
     result = np.zeros(varRange.size)
     minuitObj.fixed[var] = True
@@ -896,7 +1395,29 @@ def runMinosOnRange(minuitObj, var, varRange, minimizer, constrFunc):
     return result                    
 
 
-def errsFromMinosCurve(varSpace, varVal, fValsScipy, fValsMin, dChi2=1):
+def errsFromMinosCurve(
+    varSpace: np.ndarray,
+    varVal: float,
+    fValsScipy: np.ndarray,
+    fValsMin: float,
+    dChi2: float = 1,
+) -> Tuple[float, float]:
+    """Extract Minos errors from a profile-likelihood curve.
+
+    Interpolates the profile to a dense grid and finds the two
+    intersections with the ``ΔF = dChi2`` line.
+
+    Args:
+        varSpace: Scan-point values, shape ``(n_points,)``.
+        varVal: Best-fit value.
+        fValsScipy: Cost-function values at each scan point.
+        fValsMin: Cost-function value at the minimum.
+        dChi2: Delta chi-squared threshold (default 1 for 1σ).
+
+    Returns:
+        A 2-tuple ``(lerr, uerr)`` — lower and upper errors relative
+        to *varVal*.  Both are zero if intersections are not found.
+    """
     # Use intenpolation to create dense array of fmin values 
     varSpaceDense = np.linspace(np.min(varSpace), np.max(varSpace), 100000)
     fValsScipyDense = np.interp(varSpaceDense, varSpace, fValsScipy)
@@ -914,7 +1435,13 @@ def errsFromMinosCurve(varSpace, varVal, fValsScipy, fValsMin, dChi2=1):
     return lerr, uerr
 
 
-def plotAutoMinos(minuitObj, wsName):
+def plotAutoMinos(minuitObj: Minuit, wsName: str) -> None:
+    """Plot the automatic Minos profiles from iMinuit.
+
+    Args:
+        minuitObj: The ``Minuit`` object (after ``minos()``).
+        wsName: Base workspace name for the figure title.
+    """
     # Set format of subplots
     height = 2
     width = int(np.ceil(len(minuitObj.parameters)/2))
@@ -945,11 +1472,32 @@ def plotAutoMinos(minuitObj, wsName):
     fig.show()   
 
 
-def plotProfile(ax, var, varSpace, fValsMigrad, lerr, uerr, fValsMin, varVal, varErr):
-    """
-    Plots likelihood profilef for the Migrad fvals.
-    varSpace : x axis
-    fValsMigrad : y axis
+def plotProfile(
+    ax: Any,
+    var: str,
+    varSpace: np.ndarray,
+    fValsMigrad: np.ndarray,
+    lerr: float,
+    uerr: float,
+    fValsMin: float,
+    varVal: float,
+    varErr: float,
+) -> None:
+    """Plot a single parameter's likelihood profile on an axis.
+
+    Draws the cost-function curve, the Minos error band (red), and
+    the Hessian error band (green).
+
+    Args:
+        ax: Matplotlib axis.
+        var: Parameter name (used in title).
+        varSpace: Scan-point values.
+        fValsMigrad: Cost-function values (Migrad).
+        lerr: Lower Minos error.
+        uerr: Upper Minos error.
+        fValsMin: Cost-function minimum.
+        varVal: Best-fit value.
+        varErr: Hessian error.
     """
 
     ax.set_title(var+f" = {varVal:.3f} {lerr:.3f} {uerr:+.3f}")
@@ -964,7 +1512,28 @@ def plotProfile(ax, var, varSpace, fValsMigrad, lerr, uerr, fValsMin, varVal, va
     ax.axhline(fValsMin, 0.03, 0.97, color="k")
 
 
-def createFitParametersTableWorkspace(wsYSpaceSym, parameters, values, errors, minosAutoErr, minosManualErr, chi2):
+def createFitParametersTableWorkspace(
+    wsYSpaceSym: Any,
+    parameters: List[str],
+    values: List[float],
+    errors: List[float],
+    minosAutoErr: List[np.ndarray],
+    minosManualErr: List[np.ndarray],
+    chi2: float,
+) -> None:
+    """Create a Mantid TableWorkspace with all fit parameters and errors.
+
+    Includes Hessian errors and both automatic and manual Minos errors.
+
+    Args:
+        wsYSpaceSym: The fitted workspace (used for naming).
+        parameters: Parameter names.
+        values: Best-fit values.
+        errors: Hessian errors.
+        minosAutoErr: Automatic Minos ``[lower, upper]`` per parameter.
+        minosManualErr: Manual Minos ``[lower, upper]`` per parameter.
+        chi2: Normalised chi-squared value.
+    """
     # Create Parameters workspace
     tableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsYSpaceSym.name()+"_Fitted_Minuit_Parameters")
     tableWS.setTitle("Minuit Fit")
@@ -983,9 +1552,22 @@ def createFitParametersTableWorkspace(wsYSpaceSym, parameters, values, errors, m
     return
 
 
-def oddPointsRes(x, res):
-    """
-    Make a odd grid that ensures a resolution with a single peak at the center.
+def oddPointsRes(
+    x: np.ndarray, res: np.ndarray
+) -> Tuple[float, np.ndarray]:
+    """Resample the resolution to an odd-number grid for symmetric convolution.
+
+    Ensures a single peak at the centre by forcing an odd number of
+    grid points.
+
+    Args:
+        x: Abscissa values (must be symmetric about zero), shape
+            ``(n_bins,)``.
+        res: Resolution values, same shape.
+
+    Returns:
+        A 2-tuple ``(xDelta, resDense)`` — the grid spacing and the
+        resampled resolution array.
     """
 
     assert np.min(x) == -np.max(x), "Resolution needs to be in symetric range!"
@@ -1004,7 +1586,19 @@ def oddPointsRes(x, res):
     return xDelta, resDense
 
 
-def fitProfileMantidFit(yFitIC, wsYSpaceSym, wsRes):
+def fitProfileMantidFit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
+    """Fit the y-space profile using Mantid Fit for cross-validation.
+
+    Runs both Levenberg–Marquardt and Simplex minimisers on a convolved
+    ``UserFunction``.  Skipped for ``DOUBLE_WELL``,
+    ``ANSIO_GAUSSIAN``, and ``MULTIVARIATE_GAUSSIAN`` models.
+
+    Args:
+        yFitIC: Y-space fit configuration with ``fitModel``.
+        wsYSpaceSym: The (symmetrised) weighted-average J(y) workspace.
+        wsRes: The summed resolution workspace.
+    """
+
     print('\nFitting on the sum of spectra in the West domain ...\n')     
     for minimizer in ['Levenberg-Marquardt','Simplex']:
         
@@ -1055,7 +1649,16 @@ def fitProfileMantidFit(yFitIC, wsYSpaceSym, wsRes):
     return 
 
 
-def printYSpaceFitResults(wsJoYName):
+def printYSpaceFitResults(wsJoYName: str) -> None:
+    """Print a summary of y-space fit results from all available optimisers.
+
+    Reads ``_Fitted_Levenberg-Marquardt_Parameters``,
+    ``_Fitted_Simplex_Parameters``, and
+    ``_Fitted_Minuit_Parameters`` TableWorkspaces from ``mtd``.
+
+    Args:
+        wsJoYName: Base name of the weighted-average J(y) workspace.
+    """
     print("\nFit in Y Space results:")
     foundWS = []
     try:
@@ -1083,8 +1686,30 @@ def printYSpaceFitResults(wsJoYName):
 
 
 class ResultsYFitObject:
+    """Collector for y-space fit results.
 
-    def __init__(self, ic, yFitIC, wsFinalName, wsYSpaceAvgName):
+    Gathers the fitted J(y) data, resolution, best-fit parameters, and
+    errors from the AnalysisDataService.  Saved as an ``.npz`` file for
+    regression testing and post-hoc analysis.
+
+    Attributes:
+        finalRawDataY: DataY of the final corrected TOF workspace.
+        finalRawDataE: DataE of the final corrected TOF workspace.
+        HdataY: DataY of the mass₀-only workspace.
+        YSpaceSymSumDataY: DataY of the (symmetrised) weighted-average
+            J(y) workspace.
+        YSpaceSymSumDataE: DataE of the same.
+        resolution: Resolution Y values (summed).
+        popt: Best-fit parameters from each optimiser, shape
+            ``(n_optimisers, n_pars)``.
+        perr: Errors from each optimiser, same shape.
+        savePath: Path for the ``.npz`` output file.
+        fitModel: Model identifier string.
+    """
+
+    def __init__(
+        self, ic: Any, yFitIC: Any, wsFinalName: str, wsYSpaceAvgName: str
+    ) -> None:
         # Extract most relevant information from ws
         wsFinal = mtd[wsFinalName]
         wsResSum = mtd[wsFinalName + "_Resolution_Sum"]
@@ -1136,7 +1761,9 @@ class ResultsYFitObject:
         self.fitModel = yFitIC.fitModel
 
 
-    def save(self):
+    def save(self) -> None:
+        """Save all result arrays to an ``.npz`` file at ``self.savePath``."""
+
         np.savez(self.savePath,
                  YSpaceSymSumDataY=self.YSpaceSymSumDataY,
                  YSpaceSymSumDataE=self.YSpaceSymSumDataE,
@@ -1148,7 +1775,26 @@ class ResultsYFitObject:
                  perr=self.perr)
 
 
-def runGlobalFit(wsYSpace, wsRes, IC, yFitIC):
+def runGlobalFit(
+    wsYSpace: Any, wsRes: Any, IC: Any, yFitIC: Any
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Perform a simultaneous (global) fit across detector groups.
+
+    Groups detectors using k-means clustering in (L1, θ) space,
+    computes a summed ``cost.LeastSquares`` over all groups (with
+    shared line-shape parameters), and minimises with iMinuit.
+
+    Args:
+        wsYSpace: Per-spectrum J(y) workspace.
+        wsRes: Per-spectrum resolution workspace.
+        IC: Completed initial-conditions object.
+        yFitIC: Y-space fit configuration with ``nGlobalFitGroups``,
+            ``fitModel``, ``symmetrisationFlag``, and ``showPlots``.
+
+    Returns:
+        A 2-tuple ``(values, errors)`` of best-fit parameters and
+        their Hessian errors as NumPy arrays.
+    """
 
     print("\nRunning GLobal Fit ...\n")
 
@@ -1237,7 +1883,20 @@ def runGlobalFit(wsYSpace, wsRes, IC, yFitIC):
     return np.array(m.values), np.array(m.errors)     # Pass into array to store values in variable
 
 
-def extractData(ws, wsRes, ic):
+def extractData(
+    ws: Any, wsRes: Any, ic: Any
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract data arrays and instrument parameters for the global fit.
+
+    Args:
+        ws: Per-spectrum J(y) workspace.
+        wsRes: Per-spectrum resolution workspace.
+        ic: Completed initial-conditions object.
+
+    Returns:
+        A 5-tuple ``(dataX, dataY, dataE, dataRes, instrPars)``.
+    """
+
     dataY = ws.extractY()
     dataE = ws.extractE()
     dataX = ws.extractX()
@@ -1247,7 +1906,18 @@ def extractData(ws, wsRes, ic):
     return dataX, dataY, dataE, dataRes, instrPars    
 
 
-def loadInstrParsFileIntoArray(ic):
+def loadInstrParsFileIntoArray(ic: Any) -> np.ndarray:
+    """Load instrument parameters for the spectrum range in *ic*.
+
+    Args:
+        ic: Completed initial-conditions object with
+            ``InstrParsPath``, ``firstSpec``, and ``lastSpec``.
+
+    Returns:
+        Instrument parameters array, shape
+        ``(n_selected_spectra, 6)``.
+    """
+
     data = np.loadtxt(ic.InstrParsPath, dtype=str)[1:].astype(float)
     spectra = data[:, 0]
     select_rows = np.where((spectra >= ic.firstSpec) & (spectra <= ic.lastSpec))
@@ -1255,7 +1925,25 @@ def loadInstrParsFileIntoArray(ic):
     return instrPars
 
 
-def takeOutMaskedSpectra(dataX, dataY, dataE, dataRes, instrPars):
+def takeOutMaskedSpectra(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataRes: np.ndarray,
+    instrPars: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Remove fully masked (all-zero) spectra from all arrays.
+
+    Args:
+        dataX: X values, shape ``(n_spectra, n_bins)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        dataRes: Resolution values, same shape.
+        instrPars: Instrument parameters, shape ``(n_spectra, 6)``.
+
+    Returns:
+        The five input arrays with masked rows removed.
+    """
     zerosRowMask = np.all(dataY==0, axis=1)
     dataY = dataY[~zerosRowMask]
     dataE = dataE[~zerosRowMask]
@@ -1266,11 +1954,21 @@ def takeOutMaskedSpectra(dataX, dataY, dataE, dataRes, instrPars):
 
 # ------- Groupings 
 
-def groupDetectors(ipData, yFitIC):
-    """
-    Uses the method of k-means to find clusters in theta-L1 space.
-    Input: instrument parameters to extract L1 and theta of detectors.
-    Output: list of group lists containing the idx of spectra.
+def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
+    """Group detectors using k-means clustering in (L1, θ) space.
+
+    Normalises L1 and θ, applies k-means, and returns a list of index
+    groups.
+
+    Args:
+        ipData: Instrument parameters (unmasked), shape
+            ``(n_spectra, 6)``.
+        yFitIC: Y-space fit configuration with ``nGlobalFitGroups``
+            and ``showPlots``.
+
+    Returns:
+        A list of lists, each containing the row indices belonging to
+        one detector group.
     """
 
     checkNGroupsValid(yFitIC, ipData)
@@ -1306,8 +2004,19 @@ def groupDetectors(ipData, yFitIC):
     return idxList
 
 
-def checkNGroupsValid(yFitIC, ipData):
-    """Checks number of groups selected for global fit is valid."""
+def checkNGroupsValid(yFitIC: Any, ipData: np.ndarray) -> None:
+    """Validate the number of groups for the global fit.
+
+    Converts ``"ALL"`` to the actual number of spectra.
+
+    Args:
+        yFitIC: Y-space fit configuration with ``nGlobalFitGroups``.
+        ipData: Instrument parameters array (used for length).
+
+    Raises:
+        AssertionError: If the number is non-positive or exceeds
+            the number of unmasked spectra.
+    """
 
     nSpectra = len(ipData)  # Number of spectra in the workspace
 
@@ -1320,13 +2029,21 @@ def checkNGroupsValid(yFitIC, ipData):
     return 
 
 
-def kMeansClustering(points, centers):
-    """
-    Algorithm used to form groups of detectors.
-    Works best for spherical groups with similar scaling on x and y axis.
-    Fails in some rare cases, solution is to try a different number of groups.
-    Returns clusters in the form a int i assigned to each detector. 
-    Detectors with the same i assigned belong to the same group.
+def kMeansClustering(
+    points: np.ndarray, centers: np.ndarray
+) -> np.ndarray:
+    """K-means clustering in 2-D (L1, θ) space.
+
+    Iteratively assigns each point to its closest centre and
+    recalculates centres until convergence.
+
+    Args:
+        points: Data points, shape ``(n_points, 2)``.
+        centers: Initial cluster centres, shape ``(k, 2)``.
+
+    Returns:
+        Cluster assignments, shape ``(n_points,)`` with integer
+        labels 0 … k-1.
     """
 
     prevCenters = centers   # Starting centers
@@ -1345,11 +2062,17 @@ def kMeansClustering(points, centers):
     return clusters
 
 
-def closestCenter(points, centers):
-    """
-    Checks each point and assigns it to closest center.
-    Each center is represented by an int i.
-    Returns clusters with corresponding centers.
+def closestCenter(
+    points: np.ndarray, centers: np.ndarray
+) -> np.ndarray:
+    """Assign each point to its nearest cluster centre.
+
+    Args:
+        points: Data points, shape ``(n_points, 2)``.
+        centers: Cluster centres, shape ``(k, 2)``.
+
+    Returns:
+        Cluster assignments, shape ``(n_points,)``.
     """
 
     clusters = np.zeros(len(points))
@@ -1369,13 +2092,31 @@ def closestCenter(points, centers):
     return clusters
 
 
-def pairDistance(p1, p2):
-    "Calculates the distance between two points."
+def pairDistance(p1: np.ndarray, p2: np.ndarray) -> float:
+    """Euclidean distance between two points.
+
+    Args:
+        p1: First point.
+        p2: Second point.
+
+    Returns:
+        Scalar distance.
+    """
     return np.sqrt(np.sum(np.square(p1-p2)))
 
 
-def calculateCenters(points, clusters):
-    """Calculates centers for the given clusters"""
+def calculateCenters(
+    points: np.ndarray, clusters: np.ndarray
+) -> np.ndarray:
+    """Recalculate cluster centres from current assignments.
+
+    Args:
+        points: Data points, shape ``(n_points, 2)``.
+        clusters: Cluster assignments, shape ``(n_points,)``.
+
+    Returns:
+        Updated centres, shape ``(k, 2)``.
+    """
 
     nGroups = len(np.unique(clusters))
 
@@ -1385,8 +2126,16 @@ def calculateCenters(points, clusters):
     return centers
 
 
-def formIdxList(clusters):
-    """Converts assignment of clusters into a list of indexes."""
+def formIdxList(clusters: np.ndarray) -> List[List[int]]:
+    """Convert cluster assignment array to a list of index lists.
+
+    Args:
+        clusters: Integer cluster labels, shape ``(n_points,)``.
+
+    Returns:
+        A list of lists, one per cluster, containing the indices of
+        the assigned points.
+    """
 
     idxList = []
     for i in np.unique(clusters):
@@ -1403,8 +2152,16 @@ def formIdxList(clusters):
     return idxList
 
 
-def plotDetsAndInitialCenters(L1, theta, centers):
-    """Used in debugging."""
+def plotDetsAndInitialCenters(
+    L1: np.ndarray, theta: np.ndarray, centers: np.ndarray
+) -> None:
+    """Debug plot of detector positions and initial k-means centroids.
+
+    Args:
+        L1: Normalised L1 values.
+        theta: Normalised theta values.
+        centers: Initial centroids, shape ``(k, 2)``.
+    """
     fig, ax = plt.subplots(tight_layout=True, subplot_kw={'projection':'mantid'})  
     fig.canvas.setWindowTitle("Starting centroids for groupings")
     ax.scatter(L1, theta, alpha=0.3, color="r", label="Detectors")
@@ -1417,8 +2174,14 @@ def plotDetsAndInitialCenters(L1, theta, centers):
     fig.show()
 
 
-def plotFinalGroups(ax, ipData, idxList):
-    """Plot of groupings of detectors."""
+def plotFinalGroups(ax: Any, ipData: np.ndarray, idxList: List[List[int]]) -> None:
+    """Plot detector groupings on an axis.
+
+    Args:
+        ax: Matplotlib axis.
+        ipData: Instrument parameters, shape ``(n_spectra, 6)``.
+        idxList: List of index lists from ``formIdxList``.
+    """
 
     for i, idxs in enumerate(idxList):
         L1 = ipData[idxs, -1]
@@ -1436,10 +2199,30 @@ def plotFinalGroups(ax, ipData, idxList):
 
 # --------- Weighted Avg of detectors
 
-def avgWeightDetGroups(dataX, dataY, dataE, dataRes, idxList, yFitIC):
-    """
-    Performs weighted average on each detector group given by the index list.
-    The imput arrays do not include masked spectra.
+def avgWeightDetGroups(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataRes: np.ndarray,
+    idxList: List[List[int]],
+    yFitIC: Any,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Weighted average of data within each detector group.
+
+    Dispatches to ``avgGroupsWithBins`` (NAN masking) or
+    ``avgGroupsOverCols`` (standard/NCP masking).
+
+    Args:
+        dataX: X values (unmasked), shape ``(n_spectra, n_bins)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        dataRes: Resolution values, same shape.
+        idxList: Detector groupings from ``groupDetectors``.
+        yFitIC: Y-space fit configuration with ``maskTypeProcedure``.
+
+    Returns:
+        A 4-tuple ``(wDataX, wDataY, wDataE, wDataRes)`` of
+        group-averaged arrays, shape ``(n_groups, n_bins)``.
     """
     assert ~np.any(np.all(dataY==0, axis=1)), f"Input data should not include masked spectra at: {np.argwhere(np.all(dataY==0, axis=1))}"
 
@@ -1450,11 +2233,24 @@ def avgWeightDetGroups(dataX, dataY, dataE, dataRes, idxList, yFitIC):
     return avgGroupsOverCols(dataX, dataY, dataE, dataRes, idxList)
 
 
-def avgGroupsOverCols(dataX, dataY, dataE, dataRes, idxList):
-    """
-    Averaging used when JoY workspace is already Rebinned and Normalised.
-    Selects groups of detectors and performs the weighted average for each group.
-    Returns arrays with the group averages.
+def avgGroupsOverCols(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataRes: np.ndarray,
+    idxList: List[List[int]],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Weighted average per group when data is already rebinned.
+
+    Args:
+        dataX: X values, shape ``(n_spectra, n_bins)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        dataRes: Resolution values, same shape.
+        idxList: Detector groupings.
+
+    Returns:
+        Group-averaged arrays, shape ``(n_groups, n_bins)``.
     """
 
     wDataX, wDataY, wDataE, wDataRes = initiateZeroArr((len(idxList), len(dataY[0])))
@@ -1480,12 +2276,29 @@ def avgGroupsOverCols(dataX, dataY, dataE, dataRes, idxList):
     return wDataX, wDataY, wDataE, wDataRes
 
 
-def avgGroupsWithBins(dataX, dataY, dataE, dataRes, idxList, yFitIC):
-    """
-    Performed only when mask with NaNs and Bins is turned on.
-    Selection of groups is done as usual.
-    Weighted average uses altered function to account for the unique format.
-    Several dataY points correspond to each dataX point.
+def avgGroupsWithBins(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataRes: np.ndarray,
+    idxList: List[List[int]],
+    yFitIC: Any,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Weighted average per group when NAN bin-masking is active.
+
+    Uses ``weightedAvgXBinsArr`` to handle multiple dataY per bin
+    centre.
+
+    Args:
+        dataX: X values, shape ``(n_spectra, n_pts)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        dataRes: Resolution values, same shape.
+        idxList: Detector groupings.
+        yFitIC: Y-space fit configuration.
+
+    Returns:
+        Group-averaged arrays, shape ``(n_groups, n_bins)``.
     """
 
     # Build range to average over
@@ -1505,7 +2318,17 @@ def avgGroupsWithBins(dataX, dataY, dataE, dataRes, idxList, yFitIC):
     return wDataX, wDataY, wDataE, wDataRes
 
 
-def initiateZeroArr(shape):
+def initiateZeroArr(
+    shape: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Create four zero-filled arrays of the given shape.
+
+    Args:
+        shape: ``(n_groups, n_bins)``.
+
+    Returns:
+        A 4-tuple ``(wDataX, wDataY, wDataE, wDataRes)``.
+    """
     wDataX = np.zeros(shape)
     wDataY = np.zeros(shape)
     wDataE = np.zeros(shape)
@@ -1513,7 +2336,25 @@ def initiateZeroArr(shape):
     return  wDataX, wDataY, wDataE, wDataRes
 
 
-def extractArrByIdx(dataX, dataY, dataE, dataRes, idxs):
+def extractArrByIdx(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    dataRes: np.ndarray,
+    idxs: List[int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Select rows of multiple arrays by index list.
+
+    Args:
+        dataX: X values, shape ``(n_spectra, n_bins)``.
+        dataY: Y values, same shape.
+        dataE: Error values, same shape.
+        dataRes: Resolution values, same shape.
+        idxs: Row indices to select.
+
+    Returns:
+        A 4-tuple of the selected sub-arrays.
+    """
     groupE = dataE[idxs, :]
     groupY = dataY[idxs, :]
     groupX = dataX[idxs, :]
@@ -1521,8 +2362,33 @@ def extractArrByIdx(dataX, dataY, dataE, dataRes, idxs):
     return groupX, groupY, groupE, groupRes
 
 
-def calcCostFun(model, i, x, y, yerr, res, sharedPars):
-    "Returns cost function for one spectrum i to be summed to total cost function"
+def calcCostFun(
+    model: Callable,
+    i: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    yerr: np.ndarray,
+    res: np.ndarray,
+    sharedPars: List[str],
+) -> Any:
+    """Build a ``cost.LeastSquares`` for one detector group.
+
+    Constructs a convolved model, renames unshared parameters with
+    suffix *i*, and returns the cost function to be summed into the
+    global cost.
+
+    Args:
+        model: J(y) model callable.
+        i: Group index (appended to unshared parameter names).
+        x: Abscissa values, shape ``(n_bins,)``.
+        y: Observed values, same shape.
+        yerr: Errors, same shape.
+        res: Resolution values, same shape.
+        sharedPars: Parameter names shared across groups.
+
+    Returns:
+        An iMinuit ``cost.LeastSquares`` object.
+    """
    
     xDelta, resDense = oddPointsRes(x, res)
     def convolvedModel(xrange, y0, *pars):
@@ -1545,8 +2411,22 @@ def calcCostFun(model, i, x, y, yerr, res, sharedPars):
     return costFun
 
 
-def minuitInitialParameters(defaultPars, sharedPars, nSpec):
-    """Buids dictionary to initialize Minuit with starting global+local parameters"""
+def minuitInitialParameters(
+    defaultPars: Dict[str, float], sharedPars: List[str], nSpec: int
+) -> Dict[str, float]:
+    """Build the initial parameter dict for a global Minuit fit.
+
+    Shared parameters appear once; unshared parameters are replicated
+    with index suffixes ``0`` … ``nSpec-1``.
+
+    Args:
+        defaultPars: Default values for all model parameters.
+        sharedPars: Names of parameters shared across groups.
+        nSpec: Number of detector groups.
+
+    Returns:
+        A dict of initial values suitable for ``Minuit(**initPars)``.
+    """
     
     initPars = {}
     # Populate with initial shared parameters
@@ -1560,7 +2440,26 @@ def minuitInitialParameters(defaultPars, sharedPars, nSpec):
     return initPars
 
 
-def plotGlobalFit(dataX, dataY, dataE, mObj, totCost, wsName):
+def plotGlobalFit(
+    dataX: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    mObj: Minuit,
+    totCost: Any,
+    wsName: str,
+) -> None:
+    """Plot the global fit results per detector group.
+
+    Skipped if more than 10 groups are present.
+
+    Args:
+        dataX: X values per group, shape ``(n_groups, n_bins)``.
+        dataY: Y values per group, same shape.
+        dataE: Error values per group, same shape.
+        mObj: The ``Minuit`` object after the global fit.
+        totCost: The summed cost function (iterable over groups).
+        wsName: Base workspace name for the figure title.
+    """
 
     if len(dataY) > 10:    
         print("\nToo many axes to show in figure, skipping the plot ...\n")

@@ -198,8 +198,21 @@ def loadRawAndEmptyWsFromUserPath(ic: Any) -> Any:
     return wsToBeFitted
 
 
-def cropAndMaskWorkspace(ic, ws):
-    """Returns cloned and cropped workspace with modified name"""
+def cropAndMaskWorkspace(ic: Any, ws: Any) -> Any:
+    """Crop the workspace to the requested spectrum range and apply masks.
+
+    Uses Mantid ``CropWorkspace`` and ``MaskDetectors``.  Any resonance
+    peak TOF range specified by ``ic.maskTOFRange`` is zeroed out via
+    ``maskBinsWithZeros``.
+
+    Args:
+        ic: Completed initial-conditions object with ``firstSpec``,
+            ``lastSpec``, ``maskedDetectorIdx``, and ``maskTOFRange``.
+        ws: Input Mantid workspace (uncropped/unmasked).
+
+    Returns:
+        The cropped and masked Mantid workspace, named after ``ic.name``.
+    """
     # Read initial Spectrum number
     wsFirstSpec = ws.getSpectrumNumbers()[0]
     assert ic.firstSpec >= wsFirstSpec, "Can't crop workspace, firstSpec < first spectrum in workspace."
@@ -220,11 +233,18 @@ def cropAndMaskWorkspace(ic, ws):
     return wsCrop
 
 
-def maskBinsWithZeros(ws, IC):
-    """
-    Masks a given TOF range on ws with zeros on dataY.
-    Leaves errors dataE unchanged, as they are used by later treatments.
-    Used to mask resonance peaks.
+def maskBinsWithZeros(ws: Any, IC: Any) -> None:
+    """Zero out dataY bins inside a specified TOF range.
+
+    Sets dataY to zero for all spectra in the given TOF window,
+    leaving dataE unchanged (errors are needed downstream).  Used to
+    mask resonance peaks.  Does nothing if ``IC.maskTOFRange`` is
+    ``None``.
+
+    Args:
+        ws: Mantid workspace whose dataY is modified in-place.
+        IC: Initial-conditions object with ``maskTOFRange`` (a string
+            ``"start, end"`` or ``None``).
     """
 
     if IC.maskTOFRange==None:     # Masked TOF bins not found, skip
@@ -241,11 +261,23 @@ def maskBinsWithZeros(ws, IC):
     return 
 
 
-def fitNcpToWorkspace(IC, ws):
-    """
-    Performs the fit of ncp to the workspace.
-    Firtly the arrays required for the fit are prepared and then the fit is performed iteratively
-    on a spectrum by spectrum basis.
+def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
+    """Fit the Neutron Compton Profile to every spectrum in a workspace.
+
+    Prepares kinematic and resolution arrays, then fits each spectrum
+    independently via ``fitNcpToSingleSpec`` (scipy SLSQP).  The best
+    fit parameters are stored in a TableWorkspace and the synthetic NCP
+    profiles are written back as separate workspaces.
+
+    Args:
+        IC: Completed initial-conditions object with fit parameters,
+            masses, bounds, constraints, and path information.
+        ws: Mantid workspace containing the TOF data to fit, shape
+            ``(n_spectra, n_bins)``.
+
+    Returns:
+        ``ncpTotal``, the summed NCP over all masses for each spectrum,
+        shape ``(n_spectra, n_bins)``.
     """
     
     dataX, dataY, dataE = extractWS(ws)
@@ -268,17 +300,36 @@ def fitNcpToWorkspace(IC, ws):
     return ncpTotal
 
 
-def extractWS(ws):
-    """Directly exctracts data from workspace into arrays"""
+def extractWS(ws: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract dataX, dataY, and dataE arrays from a Mantid workspace.
+
+    Args:
+        ws: A Mantid MatrixWorkspace.
+
+    Returns:
+        A 3-tuple ``(dataX, dataY, dataE)`` of NumPy arrays, each of
+        shape ``(n_spectra, n_bins)`` (or ``n_bins + 1`` for histogram
+        dataX).
+    """
     return ws.extractX(), ws.extractY(), ws.extractE()
 
 
-def histToPointData(dataY, dataX, dataE):
-    """
-    Used only when comparing with original results.
-    Sets each dataY point to the center of bins.
-    Last column of data is removed.
-    Removed original scaling by bin widths
+def histToPointData(
+    dataY: np.ndarray, dataX: np.ndarray, dataE: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert histogram data to point data by centring bins.
+
+    Removes the last column and shifts dataX to bin centres.  Used only
+    for regression comparison with the original (histogram-based) results.
+
+    Args:
+        dataY: Histogram counts, shape ``(n_spectra, n_bins)``.
+        dataX: Bin edges, shape ``(n_spectra, n_bins)`` or ``n_bins + 1``.
+        dataE: Errors, same shape as *dataY*.
+
+    Returns:
+        A 3-tuple ``(dataYp, dataXp, dataEp)`` with the last column
+        removed and dataX shifted to bin centres.
     """
 
     histWidths = dataX[:, 1:] - dataX[:, :-1]
@@ -290,7 +341,27 @@ def histToPointData(dataY, dataX, dataE):
     return dataYp, dataXp, dataEp
 
 
-def prepareFitArgs(ic, dataX):
+def prepareFitArgs(
+    ic: Any, dataX: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build all arrays required by the NCP fitting loop.
+
+    Loads instrument parameters, computes resolution parameters,
+    kinematics (v0, E0, deltaE, deltaQ), and y-spaces for each mass.
+    All returned arrays are reshaped so that the first axis is the
+    spectrum index.
+
+    Args:
+        ic: Completed initial-conditions object with ``InstrParsPath``,
+            ``firstSpec``, ``lastSpec``, and ``masses``.
+        dataX: TOF bin centres, shape ``(n_spectra, n_bins)``.
+
+    Returns:
+        A 4-tuple ``(resolutionPars, instrPars, kinematicArrays,
+        ySpacesForEachMass)`` where each array has its leading axis
+        indexed per spectrum.
+    """
+
     instrPars = loadInstrParsFileIntoArray(ic.InstrParsPath, ic.firstSpec, ic.lastSpec)       
     resolutionPars = loadResolutionPars(instrPars)                                   
 
@@ -303,8 +374,22 @@ def prepareFitArgs(ic, dataX):
     return resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass
 
 
-def loadInstrParsFileIntoArray(InstrParsPath, firstSpec, lastSpec):
-    """Loads instrument parameters into array, from the file in the specified path"""
+def loadInstrParsFileIntoArray(
+    InstrParsPath: str, firstSpec: int, lastSpec: int
+) -> np.ndarray:
+    """Load the instrument parameter file and select the requested spectra.
+
+    The file is expected to have a header row followed by numeric data
+    with columns ``[spec, det, angle, T0, L0, L1]``.
+
+    Args:
+        InstrParsPath: Path to the ``.par`` instrument parameter file.
+        firstSpec: First spectrum number to include.
+        lastSpec: Last spectrum number to include.
+
+    Returns:
+        Instrument parameters array, shape ``(n_selected_spectra, 6)``.
+    """
 
     data = np.loadtxt(InstrParsPath, dtype=str)[1:].astype(float)
 
@@ -314,9 +399,21 @@ def loadInstrParsFileIntoArray(InstrParsPath, firstSpec, lastSpec):
     return instrPars
 
 
-def loadResolutionPars(instrPars):
-    """Resolution of parameters to propagate into TOF resolution
-       Output: matrix with each parameter in each column"""
+def loadResolutionPars(instrPars: np.ndarray) -> np.ndarray:
+    """Build the detector resolution parameter matrix from instrument data.
+
+    Assigns Gaussian and Lorentzian energy-resolution widths, TOF jitter,
+    angular uncertainty, and flight-path uncertainties based on whether
+    each spectrum is backward (< 135) or forward (>= 135).
+
+    Args:
+        instrPars: Instrument parameters, shape ``(n_spectra, 6)``.
+            Column 0 is the spectrum number.
+
+    Returns:
+        Resolution parameters, shape ``(n_spectra, 6)`` with columns
+        ``[dE1, dTOF, dTheta, dL0, dL1, dE1_lorz]``.
+    """
     spectrums = instrPars[:, 0] 
     L = len(spectrums)
     # For spec no below 135, back scattering detectors, mode is double difference
@@ -332,8 +429,28 @@ def loadResolutionPars(instrPars):
     return resolutionPars 
 
 
-def calculateKinematicsArrays(dataX, instrPars):          
-    """Kinematics quantities calculated from TOF data"""   
+def calculateKinematicsArrays(
+    dataX: np.ndarray, instrPars: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute neutron kinematics from TOF data and instrument geometry.
+
+    Calculates initial velocity *v0*, initial energy *E0*, energy
+    transfer *deltaE*, and momentum transfer *deltaQ* for every
+    (spectrum, bin) pair.
+
+    Physics: ``v0 = vf * L0 / (vf * t_us - L1)``,
+    ``E0 = (v0 / en_to_vel)^2``, ``deltaE = E0 - Ef``,
+    ``deltaQ = sqrt(2 mN (E0 + Ef - 2 sqrt(E0 Ef) cos(theta)) / hbar^2)``.
+
+    Args:
+        dataX: TOF values in microseconds, shape ``(n_spectra, n_bins)``.
+        instrPars: Instrument parameters, shape ``(n_spectra, 6)`` with
+            columns ``[det, plick, angle, T0, L0, L1]``.
+
+    Returns:
+        A 4-tuple ``(v0, E0, delta_E, delta_Q)`` each of shape
+        ``(n_spectra, n_bins)``.
+    """
 
     mN, Ef, en_to_vel, vf, hbar = loadConstants()    
     det, plick, angle, T0, L0, L1 = np.hsplit(instrPars, 6)     #each is of len(dataX)
@@ -347,16 +464,43 @@ def calculateKinematicsArrays(dataX, instrPars):
     return v0, E0, delta_E, delta_Q              #shape(no of spectrums, no of bins)
 
 
-def reshapeArrayPerSpectrum(A):
-    """
-    Exchanges the first two axes of an array A.
-    Rearranges array to match iteration per spectrum
+def reshapeArrayPerSpectrum(A: np.ndarray) -> np.ndarray:
+    """Transpose the first two axes so the leading axis is per-spectrum.
+
+    Used to rearrange arrays computed per-quantity into arrays indexed by
+    spectrum for the per-spectrum fitting loop.
+
+    Args:
+        A: Array with shape ``(n_quantities, n_spectra, n_bins)``.
+
+    Returns:
+        Array with shape ``(n_spectra, n_quantities, n_bins)``.
     """
     return np.stack(np.split(A, len(A), axis=0), axis=2)[0]
 
 
-def convertDataXToYSpacesForEachMass(dataX, masses, delta_Q, delta_E):
-    "Calculates y spaces from TOF data, each row corresponds to one mass" 
+def convertDataXToYSpacesForEachMass(
+    dataX: np.ndarray,
+    masses: np.ndarray,
+    delta_Q: np.ndarray,
+    delta_E: np.ndarray,
+) -> np.ndarray:
+    """Convert TOF data to y-space for each atomic mass via the y-scaling relation.
+
+    Applies the y-scaling equation:
+    ``y = M / (hbar^2 * deltaQ) * (deltaE - E_recoil)``
+    where ``E_recoil = (hbar * deltaQ)^2 / (2 * M)``.
+
+    Args:
+        dataX: TOF values, shape ``(n_spectra, n_bins)`` (unused in
+            computation but broadcast for alignment).
+        masses: Atomic masses in a.m.u., shape ``(n_masses,)``.
+        delta_Q: Momentum transfer, shape ``(n_spectra, n_bins)``.
+        delta_E: Energy transfer, shape ``(n_spectra, n_bins)``.
+
+    Returns:
+        y-spaces, shape ``(n_masses, n_spectra, n_bins)``.
+    """
     
     # Prepare arrays to broadcast
     dataX = dataX[np.newaxis, :, :]
@@ -371,8 +515,38 @@ def convertDataXToYSpacesForEachMass(dataX, masses, delta_Q, delta_E):
     return ySpacesForEachMass
 
 
-def fitNcpToArray(ic, dataY, dataE, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass):
-    """Takes dataY as a 2D array and returns the 2D array best fit parameters."""
+def fitNcpToArray(
+    ic: Any,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+) -> np.ndarray:
+    """Fit the NCP model to every spectrum in a 2-D data array.
+
+    Iterates over spectra and calls ``fitNcpToSingleSpec`` for each.
+    The result array has one row per spectrum with columns:
+    ``[specNo, *fitPars, normChi2, nIter]``.
+
+    Args:
+        ic: Completed initial-conditions object.
+        dataY: Observed counts, shape ``(n_spectra, n_bins)``.
+        dataE: Errors on counts, same shape as *dataY*.
+        resolutionPars: Per-spectrum resolution, shape
+            ``(n_spectra, 6)``.
+        instrPars: Per-spectrum instrument parameters, shape
+            ``(n_spectra, 6)``.
+        kinematicArrays: Per-spectrum ``[v0, E0, deltaE, deltaQ]``,
+            shape ``(n_spectra, 4, n_bins)``.
+        ySpacesForEachMass: Per-spectrum y-spaces, shape
+            ``(n_spectra, n_masses, n_bins)``.
+
+    Returns:
+        Best-fit parameter array, shape
+        ``(n_spectra, 3 * n_masses + 3)``.
+    """
 
     arrFitPars = np.zeros((len(dataY), len(ic.initPars)+3))
     for i in range(len(dataY)):
@@ -398,7 +572,22 @@ def fitNcpToArray(ic, dataY, dataE, resolutionPars, instrPars, kinematicArrays, 
     return arrFitPars
 
 
-def createTableWSForFitPars(wsName, noOfMasses, arrFitPars):
+def createTableWSForFitPars(
+    wsName: str, noOfMasses: int, arrFitPars: np.ndarray
+) -> None:
+    """Store NCP fit parameters in a Mantid TableWorkspace.
+
+    Creates a table named ``wsName + "_Best_Fit_NCP_Parameters"`` with
+    columns for spectrum index, per-mass intensity/width/centre, normalised
+    chi-squared, and number of optimiser iterations.
+
+    Args:
+        wsName: Base name of the workspace that was fitted.
+        noOfMasses: Number of atomic masses in the fit.
+        arrFitPars: Parameter array from ``fitNcpToArray``, shape
+            ``(n_spectra, 3 * n_masses + 3)``.
+    """
+
     tableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsName+"_Best_Fit_NCP_Parameters")
     tableWS.setTitle("SCIPY Fit")
     tableWS.addColumn(type='float', name="Spec Idx")
@@ -414,8 +603,36 @@ def createTableWSForFitPars(wsName, noOfMasses, arrFitPars):
     return 
 
 
-def calculateNcpArr(ic, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass):
-    """Calculates the matrix of NCP from matrix of best fit parameters"""
+def calculateNcpArr(
+    ic: Any,
+    arrBestFitPars: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Recalculate NCP arrays from the best-fit parameter matrix.
+
+    Iterates over spectra and calls ``calculateNcpRow`` for each.
+
+    Args:
+        ic: Completed initial-conditions object.
+        arrBestFitPars: Best-fit intensities/widths/centres, shape
+            ``(n_spectra, 3 * n_masses)``.
+        resolutionPars: Per-spectrum resolution, shape
+            ``(n_spectra, 6)``.
+        instrPars: Per-spectrum instrument parameters, shape
+            ``(n_spectra, 6)``.
+        kinematicArrays: Per-spectrum kinematics, shape
+            ``(n_spectra, 4, n_bins)``.
+        ySpacesForEachMass: Per-spectrum y-spaces, shape
+            ``(n_spectra, n_masses, n_bins)``.
+
+    Returns:
+        A 2-tuple ``(allNcpForEachMass, allNcpTotal)`` where the first
+        has shape ``(n_spectra, n_masses, n_bins)`` and the second
+        ``(n_spectra, n_bins)``.
+    """
 
     allNcpForEachMass = []
     for i in range(len(arrBestFitPars)):
@@ -436,9 +653,35 @@ def calculateNcpArr(ic, arrBestFitPars, resolutionPars, instrPars, kinematicArra
     return allNcpForEachMass, allNcpTotal
 
 
-def calculateNcpRow(initPars, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays, ic):
-    """input: all row shape
-       output: row shape with the ncpTotal for each mass"""
+def calculateNcpRow(
+    initPars: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+    ic: Any,
+) -> np.ndarray:
+    """Compute the NCP for each mass for a single spectrum.
+
+    Delegates to ``calculateNcpSpec``.  Returns zeros when the input
+    parameters are all zero (masked spectrum).
+
+    Args:
+        initPars: Flat fit parameters for this spectrum, shape
+            ``(3 * n_masses,)``.
+        ySpacesForEachMass: y-spaces for this spectrum, shape
+            ``(n_masses, n_bins)``.
+        resolutionPars: Resolution parameters for this spectrum, shape
+            ``(6,)``.
+        instrPars: Instrument parameters for this spectrum, shape
+            ``(6,)``.
+        kinematicArrays: Kinematics for this spectrum, shape
+            ``(4, n_bins)``.
+        ic: Completed initial-conditions object.
+
+    Returns:
+        NCP per mass, shape ``(n_masses, n_bins)``.
+    """
 
     if np.all(initPars==0):  
         return np.zeros(ySpacesForEachMass.shape) 
@@ -447,8 +690,31 @@ def calculateNcpRow(initPars, ySpacesForEachMass, resolutionPars, instrPars, kin
     return ncpForEachMass
 
 
-def createNcpWorkspaces(ncpForEachMass, ncpTotal, ws, ic):
-    """Creates workspaces from ncp array data"""
+def createNcpWorkspaces(
+    ncpForEachMass: np.ndarray,
+    ncpTotal: np.ndarray,
+    ws: Any,
+    ic: Any,
+) -> Tuple[Any, List[Any]]:
+    """Store NCP arrays as named Mantid workspaces.
+
+    Creates a total-NCP workspace and one workspace per mass.  Both the
+    full-spectra and summed-spectra variants are written to the
+    AnalysisDataService.
+
+    Args:
+        ncpForEachMass: NCP per mass, shape
+            ``(n_spectra, n_masses, n_bins)``.
+        ncpTotal: Total NCP, shape ``(n_spectra, n_bins)``.
+        ws: The data workspace (used for dataX and naming).
+        ic: Completed initial-conditions object with
+            ``maskedDetectorIdx``.
+
+    Returns:
+        A 2-tuple ``(wsTotNCPSum, wsMNCPSum)`` — the summed-spectra
+        workspace for the total NCP and a list of summed-spectra
+        workspaces, one per mass.
+    """
 
     # Need to rearrage array of yspaces into seperate arrays for each mass
     ncpForEachMass = switchFirstTwoAxis(ncpForEachMass)
@@ -472,7 +738,21 @@ def createNcpWorkspaces(ncpForEachMass, ncpTotal, ws, ic):
     return wsTotNCPSum, wsMNCPSum
 
 
-def createWS(dataX, dataY, dataE, wsName):
+def createWS(
+    dataX: np.ndarray, dataY: np.ndarray, dataE: np.ndarray, wsName: str
+) -> Any:
+    """Create a Mantid MatrixWorkspace from NumPy arrays.
+
+    Args:
+        dataX: X-axis values, shape ``(n_spectra, n_bins)``.
+        dataY: Y-axis values, same shape.
+        dataE: Error values, same shape.
+        wsName: Output workspace name in the AnalysisDataService.
+
+    Returns:
+        The created Mantid workspace.
+    """
+
     ws = CreateWorkspace(
         DataX=dataX.flatten(),
         DataY=dataY.flatten(),
@@ -483,7 +763,19 @@ def createWS(dataX, dataY, dataE, wsName):
     return ws
 
 
-def plotSumNCPFits(wsDataSum, wsTotNCPSum, wsMNCPSum, IC):
+def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: Any) -> None:
+    """Save a PDF plot comparing the summed data to the fitted NCP profiles.
+
+    Skipped when running a bootstrap sample (``IC.runningSampleWS`` is
+    ``True``).
+
+    Args:
+        wsDataSum: Summed-spectra data workspace.
+        wsTotNCPSum: Summed-spectra total NCP workspace.
+        wsMNCPSum: List of summed-spectra NCP workspaces, one per mass.
+        IC: Completed initial-conditions object with ``masses``,
+            ``runningSampleWS``, and ``figSavePath``.
+    """
 
     if IC.runningSampleWS:   # Skip saving figure if running bootstrap
         return         
@@ -509,14 +801,39 @@ def plotSumNCPFits(wsDataSum, wsTotNCPSum, wsMNCPSum, IC):
     return
 
 
-def switchFirstTwoAxis(A):
-    """Exchanges the first two indices of an array A,
-    rearranges matrices per spectrum for iteration of main fitting procedure
+def switchFirstTwoAxis(A: np.ndarray) -> np.ndarray:
+    """Transpose the first two axes of a 3-D array.
+
+    Rearranges matrices per spectrum for iteration in the main fitting
+    procedure.
+
+    Args:
+        A: Array with shape ``(a, b, c)``.
+
+    Returns:
+        Array with shape ``(b, a, c)``.
     """
     return np.stack(np.split(A, len(A), axis=0), axis=2)[0]
 
-def extractMeans(wsName, IC):
-    """Extract widths and intensities from tableWorkspace"""
+def extractMeans(
+    wsName: str, IC: Any
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract mean widths and intensity ratios from the fit-parameter table.
+
+    Reads the ``_Best_Fit_NCP_Parameters`` TableWorkspace, applies
+    sigma-clipping via ``calculateMeansAndStds``, and returns the
+    filtered means and standard deviations.
+
+    Expects workspace ``wsName + "_Best_Fit_NCP_Parameters"`` in ``mtd``.
+
+    Args:
+        wsName: Base name of the fitted workspace.
+        IC: Completed initial-conditions object with ``noOfMasses``.
+
+    Returns:
+        A 4-tuple ``(meanWidths, stdWidths, meanIntensityRatios,
+        stdIntensityRatios)`` each of shape ``(n_masses,)``.
+    """
 
     fitParsTable = mtd[wsName+"_Best_Fit_NCP_Parameters"]
     widths = np.zeros((IC.noOfMasses, fitParsTable.rowCount()))
@@ -531,7 +848,30 @@ def extractMeans(wsName, IC):
     return meanWidths, stdWidths, meanIntensityRatios, stdIntensityRatios
 
 
-def createMeansAndStdTableWS(wsName, IC, meanWidths, stdWidths, meanIntensityRatios, stdIntensityRatios):
+def createMeansAndStdTableWS(
+    wsName: str,
+    IC: Any,
+    meanWidths: np.ndarray,
+    stdWidths: np.ndarray,
+    meanIntensityRatios: np.ndarray,
+    stdIntensityRatios: np.ndarray,
+) -> None:
+    """Create a Mantid TableWorkspace with per-mass mean widths and intensities.
+
+    Writes a table named ``wsName + "_Mean_Widths_And_Intensities"``
+    to the AnalysisDataService.
+
+    Args:
+        wsName: Base name of the fitted workspace (used for naming).
+        IC: Completed initial-conditions object with ``masses``.
+        meanWidths: Mean NCP widths, shape ``(n_masses,)``.
+        stdWidths: Standard deviation of widths, shape ``(n_masses,)``.
+        meanIntensityRatios: Mean intensity ratios, shape
+            ``(n_masses,)``.
+        stdIntensityRatios: Standard deviation of intensities, shape
+            ``(n_masses,)``.
+    """
+
     meansTableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsName+"_Mean_Widths_And_Intensities")
     meansTableWS.addColumn(type='float', name="Mass")
     meansTableWS.addColumn(type='float', name="Mean Widths")
@@ -548,8 +888,23 @@ def createMeansAndStdTableWS(wsName, IC, meanWidths, stdWidths, meanIntensityRat
     return 
 
 
-def calculateMeansAndStds(widthsIn, intensitiesIn, IC):
-    """Widths and Intensities shape: (noOfMasses, noOfSpec)"""
+def calculateMeansAndStds(
+    widthsIn: np.ndarray, intensitiesIn: np.ndarray, IC: Any
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute filtered means and standard deviations of widths and intensities.
+
+    Applies ``filterWidthsAndIntensities`` (sigma-clipping) before
+    computing ``nanmean`` and ``nanstd``.
+
+    Args:
+        widthsIn: Raw widths, shape ``(n_masses, n_spectra)``.
+        intensitiesIn: Raw intensities, shape ``(n_masses, n_spectra)``.
+        IC: Completed initial-conditions object.
+
+    Returns:
+        A 4-tuple ``(meanWidths, stdWidths, meanIntensityRatios,
+        stdIntensityRatios)`` each of shape ``(n_masses,)``.
+    """
 
     betterWidths, betterIntensities = filterWidthsAndIntensities(widthsIn, intensitiesIn, IC)
     
@@ -562,8 +917,27 @@ def calculateMeansAndStds(widthsIn, intensitiesIn, IC):
     return meanWidths, stdWidths, meanIntensityRatios, stdIntensityRatios
 
 
-def filterWidthsAndIntensities(widthsIn, intensitiesIn, IC):
-    """Puts nans in places to be ignored"""
+def filterWidthsAndIntensities(
+    widthsIn: np.ndarray, intensitiesIn: np.ndarray, IC: Any
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply sigma-clipping to reject outlier widths and normalise intensities.
+
+    For each mass, any spectrum whose width deviates from the mean by
+    more than one standard deviation is replaced with ``NaN``.  The
+    surviving intensities are then normalised so that they sum to one
+    across masses for each spectrum.
+
+    Args:
+        widthsIn: Raw widths, shape ``(n_masses, n_spectra)``.
+        intensitiesIn: Raw intensities, same shape.
+        IC: Completed initial-conditions object.  Uses
+            ``runningPreliminary`` and ``noOfMSIterations`` for
+            edge-case handling.
+
+    Returns:
+        A 2-tuple ``(betterWidths, betterIntensities)`` with outliers
+        replaced by ``NaN``.
+    """
 
     widths = widthsIn.copy()      # Copy to avoid accidental changes in arrays
     intensities = intensitiesIn.copy()
@@ -602,8 +976,38 @@ def filterWidthsAndIntensities(widthsIn, intensitiesIn, IC):
     return betterWidths, betterIntensities
 
 
-def fitNcpToSingleSpec(dataY, dataE, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays, ic):
-    """Fits the NCP and returns the best fit parameters for one spectrum"""
+def fitNcpToSingleSpec(
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+    ic: Any,
+) -> np.ndarray:
+    """Fit the NCP model to a single spectrum using scipy SLSQP.
+
+    Minimises ``errorFunction`` with ``scipy.optimize.minimize``
+    (method ``'SLSQP'``).  Returns a zero array for fully masked
+    spectra (all dataY == 0).
+
+    Args:
+        dataY: Observed counts for one spectrum, shape ``(n_bins,)``.
+        dataE: Errors for one spectrum, shape ``(n_bins,)``.
+        ySpacesForEachMass: y-spaces for this spectrum, shape
+            ``(n_masses, n_bins)``.
+        resolutionPars: Resolution parameters, shape ``(6,)``.
+        instrPars: Instrument parameters, shape ``(6,)``.
+        kinematicArrays: Kinematics ``[v0, E0, deltaE, deltaQ]``,
+            shape ``(4, n_bins)``.
+        ic: Completed initial-conditions object with ``initPars``,
+            ``bounds``, and ``constraints``.
+
+    Returns:
+        Array of shape ``(3 * n_masses + 3,)`` containing
+        ``[specNo, *fitPars, normChi2, nIter]``, or all zeros if
+        the spectrum was masked.
+    """
 
     if np.all(dataY == 0) : 
         return np.zeros(len(ic.initPars)+3)  
@@ -624,8 +1028,38 @@ def fitNcpToSingleSpec(dataY, dataE, ySpacesForEachMass, resolutionPars, instrPa
     return np.append(specFitPars, [result["fun"] / noDegreesOfFreedom, result["nit"]])
 
 
-def errorFunction(pars, dataY, dataE, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays, ic):
-    """Error function to be minimized, operates in TOF space"""
+def errorFunction(
+    pars: np.ndarray,
+    dataY: np.ndarray,
+    dataE: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+    ic: Any,
+) -> float:
+    """Compute the chi-squared cost for the NCP model on a single spectrum.
+
+    Called by ``scipy.optimize.minimize`` at every iteration.  Masked
+    bins (dataY == 0) are excluded.  When errors are all zero the
+    un-weighted sum of squared residuals is returned.
+
+    **Numba candidate** — the inner call to ``calculateNcpSpec`` and
+    the chi-squared arithmetic are pure NumPy.
+
+    Args:
+        pars: Current fit parameters, shape ``(3 * n_masses,)``.
+        dataY: Observed counts, shape ``(n_bins,)``.
+        dataE: Errors, shape ``(n_bins,)``.
+        ySpacesForEachMass: y-spaces, shape ``(n_masses, n_bins)``.
+        resolutionPars: Resolution parameters, shape ``(6,)``.
+        instrPars: Instrument parameters, shape ``(6,)``.
+        kinematicArrays: Kinematics, shape ``(4, n_bins)``.
+        ic: Completed initial-conditions object.
+
+    Returns:
+        Scalar chi-squared value (weighted if errors are present).
+    """
 
     ncpForEachMass, ncpTotal = calculateNcpSpec(ic, pars, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays)
 
@@ -641,10 +1075,42 @@ def errorFunction(pars, dataY, dataE, ySpacesForEachMass, resolutionPars, instrP
     return np.sum((ncpTotal - dataYf)**2 / dataEf**2)
 
 
-def calculateNcpSpec(ic, pars, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays):    
-    """Creates a synthetic C(t) to be fitted to TOF values of a single spectrum, from J(y) and resolution functions
-       Shapes: datax (1, n), ySpacesForEachMass (4, n), res (4, 2), deltaQ (1, n), E0 (1,n),
-       where n is no of bins"""
+def calculateNcpSpec(
+    ic: Any,
+    pars: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Synthesise the Neutron Compton Profile C(t) for one spectrum.
+
+    Constructs J(y) for each mass as a pseudo-Voigt (Gaussian
+    resolution ⊕ Lorentzian resolution), adds the Final-State Effects
+    (FSE) term via a numerical third derivative, and converts to
+    TOF-space counts:
+    ``NCP_m = I_m * (J(y) + FSE) * E0 * E0^{-0.92} * M / deltaQ``
+
+    **Numba candidate** — all operations are pure NumPy arithmetic on
+    pre-extracted arrays.
+
+    Args:
+        ic: Completed initial-conditions object (``normVoigt`` flag
+            and ``masses`` array are used).
+        pars: Fit parameters ``[I0, W0, C0, I1, W1, C1, …]``, shape
+            ``(3 * n_masses,)``.
+        ySpacesForEachMass: y-spaces, shape ``(n_masses, n_bins)``.
+        resolutionPars: Resolution parameters for this spectrum,
+            shape ``(6,)``.
+        instrPars: Instrument parameters for this spectrum,
+            shape ``(6,)``.
+        kinematicArrays: ``[v0, E0, deltaE, deltaQ]`` for this
+            spectrum, shape ``(4, n_bins)``.
+
+    Returns:
+        A 2-tuple ``(ncpForEachMass, ncpTotal)`` where the first has
+        shape ``(n_masses, n_bins)`` and the second ``(n_bins,)``.
+    """
     
     masses, intensities, widths, centers = prepareArraysFromPars(ic, pars) 
     v0, E0, deltaE, deltaQ = kinematicArrays
@@ -663,9 +1129,22 @@ def calculateNcpSpec(ic, pars, ySpacesForEachMass, resolutionPars, instrPars, ki
     return ncpForEachMass, ncpTotal
 
 
-def prepareArraysFromPars(ic, initPars):
-    """Extracts the intensities, widths and centers from the fitting parameters
-        Reshapes all of the arrays to collumns, for the calculation of the ncp,"""
+def prepareArraysFromPars(
+    ic: Any, initPars: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Unpack flat fit parameters into per-mass column vectors.
+
+    Splits the interleaved ``[I, W, C, I, W, C, …]`` array into
+    separate arrays and reshapes to column vectors for broadcasting.
+
+    Args:
+        ic: Initial-conditions object (``masses`` is used).
+        initPars: Flat fit parameters, shape ``(3 * n_masses,)``.
+
+    Returns:
+        A 4-tuple ``(masses, intensities, widths, centers)`` each of
+        shape ``(n_masses, 1)``.
+    """
 
     masses = ic.masses[:, np.newaxis]    
     intensities = initPars[::3].reshape(masses.shape)
@@ -674,9 +1153,32 @@ def prepareArraysFromPars(ic, initPars):
     return masses, intensities, widths, centers 
 
 
-def caculateResolutionForEachMass(masses, ySpacesForEachMass, centers, resolutionPars, instrPars, kinematicArrays):    
-    """Calculates the gaussian and lorentzian resolution
-    output: two column vectors, each row corresponds to each mass"""
+def caculateResolutionForEachMass(
+    masses: np.ndarray,
+    ySpacesForEachMass: np.ndarray,
+    centers: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+    kinematicArrays: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute Gaussian and Lorentzian resolution widths for each mass.
+
+    Evaluates kinematics at the y-space centres of each NCP peak and
+    propagates the instrument uncertainties into Gaussian and
+    Lorentzian resolution widths in inverse-Ångström space.
+
+    Args:
+        masses: Column vector of masses, shape ``(n_masses, 1)``.
+        ySpacesForEachMass: y-spaces, shape ``(n_masses, n_bins)``.
+        centers: NCP centres, shape ``(n_masses, 1)``.
+        resolutionPars: Resolution parameters, shape ``(6,)``.
+        instrPars: Instrument parameters, shape ``(6,)``.
+        kinematicArrays: Kinematics, shape ``(4, n_bins)``.
+
+    Returns:
+        A 2-tuple ``(gaussianResWidth, lorentzianResWidth)`` each of
+        shape ``(n_masses, 1)``.
+    """
     
     v0, E0, delta_E, delta_Q = kinematicsAtYCenters(ySpacesForEachMass, centers, kinematicArrays)
     
@@ -685,8 +1187,28 @@ def caculateResolutionForEachMass(masses, ySpacesForEachMass, centers, resolutio
     return gaussianResWidth, lorentzianResWidth
 
 
-def kinematicsAtYCenters(ySpacesForEachMass, centers, kinematicArrays):
-    """v0, E0, deltaE, deltaQ at the peak of the ncpTotal for each mass"""
+def kinematicsAtYCenters(
+    ySpacesForEachMass: np.ndarray,
+    centers: np.ndarray,
+    kinematicArrays: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate kinematics at the y-space bin closest to each NCP centre.
+
+    Selects the bin nearest to each mass's centre in y-space and
+    returns the corresponding v0, E0, deltaE, deltaQ values.
+
+    **Numba candidate** — pure NumPy index operations.
+
+    Args:
+        ySpacesForEachMass: y-spaces, shape ``(n_masses, n_bins)``.
+        centers: NCP peak centres, shape ``(n_masses, 1)``.
+        kinematicArrays: ``[v0, E0, deltaE, deltaQ]``, shape
+            ``(4, n_bins)``.
+
+    Returns:
+        A 4-tuple ``(v0, E0, deltaE, deltaQ)`` each of shape
+        ``(n_masses, 1)``.
+    """
 
     shapeOfArrays = centers.shape
     proximityToYCenters = np.abs(ySpacesForEachMass - centers)
@@ -708,7 +1230,35 @@ def kinematicsAtYCenters(ySpacesForEachMass, centers, kinematicArrays):
     return v0, E0, deltaE, deltaQ
 
 
-def calcGaussianResolution(masses, v0, E0, delta_E, delta_Q, resolutionPars, instrPars):
+def calcGaussianResolution(
+    masses: np.ndarray,
+    v0: np.ndarray,
+    E0: np.ndarray,
+    delta_E: np.ndarray,
+    delta_Q: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+) -> np.ndarray:
+    """Compute the Gaussian component of the TOF resolution in y-space.
+
+    Propagates energy and momentum uncertainties (dE1, dTOF, dL0, dL1,
+    dTheta) into a total Gaussian resolution width in Å⁻¹.  This is
+    the dominant computational bottleneck in the fitting loop.
+
+    **Numba candidate** — pure NumPy arithmetic on pre-extracted arrays.
+
+    Args:
+        masses: Atomic masses, shape ``(n_masses, 1)``.
+        v0: Initial neutron velocity, shape ``(n_masses, 1)``.
+        E0: Initial neutron energy (meV), shape ``(n_masses, 1)``.
+        delta_E: Energy transfer (meV), shape ``(n_masses, 1)``.
+        delta_Q: Momentum transfer (Å⁻¹), shape ``(n_masses, 1)``.
+        resolutionPars: ``[dE1, dTOF, dTheta, dL0, dL1, dE1_lorz]``.
+        instrPars: ``[det, plick, angle, T0, L0, L1]``.
+
+    Returns:
+        Gaussian resolution width in Å⁻¹, shape ``(n_masses, 1)``.
+    """
     # Currently the function that takes the most time in the fitting
     assert masses.shape == (masses.size, 1), f"masses.shape: {masses.shape}. The shape of the masses array needs to be a collumn!"
 
@@ -742,7 +1292,35 @@ def calcGaussianResolution(masses, v0, E0, delta_E, delta_Q, resolutionPars, ins
     return gaussianResWidth
 
 
-def calcLorentzianResolution(masses, v0, E0, delta_E, delta_Q, resolutionPars, instrPars):
+def calcLorentzianResolution(
+    masses: np.ndarray,
+    v0: np.ndarray,
+    E0: np.ndarray,
+    delta_E: np.ndarray,
+    delta_Q: np.ndarray,
+    resolutionPars: np.ndarray,
+    instrPars: np.ndarray,
+) -> np.ndarray:
+    """Compute the Lorentzian component of the TOF resolution in y-space.
+
+    Propagates the Lorentzian energy width ``dE1_lorz`` through the
+    partial derivatives of energy and momentum transfer.
+
+    **Numba candidate** — pure NumPy arithmetic.
+
+    Args:
+        masses: Atomic masses, shape ``(n_masses, 1)``.
+        v0: Initial neutron velocity, shape ``(n_masses, 1)``.
+        E0: Initial neutron energy (meV), shape ``(n_masses, 1)``.
+        delta_E: Energy transfer (meV), shape ``(n_masses, 1)``.
+        delta_Q: Momentum transfer (Å⁻¹), shape ``(n_masses, 1)``.
+        resolutionPars: ``[dE1, dTOF, dTheta, dL0, dL1, dE1_lorz]``.
+        instrPars: ``[det, plick, angle, T0, L0, L1]``.
+
+    Returns:
+        Lorentzian resolution HWHM in Å⁻¹, shape ``(n_masses, 1)``.
+    """
+
     assert masses.shape == (masses.size, 1), "The shape of the masses array needs to be a collumn!"
         
     det, plick, angle, T0, L0, L1 = instrPars
@@ -763,9 +1341,19 @@ def calcLorentzianResolution(masses, v0, E0, delta_E, delta_Q, resolutionPars, i
     return lorentzianResWidth
 
 
-def loadConstants():
-    """Output: the mass of the neutron, final energy of neutrons (selected by gold foil),
-    factor to change energies into velocities, final velocity of neutron and hbar"""
+def loadConstants() -> Tuple[float, float, float, float, float]:
+    """Return fundamental physical constants used in VESUVIO kinematics.
+
+    Constants are specific to the VESUVIO instrument at ISIS:
+    * ``mN`` — neutron mass in atomic mass units.
+    * ``Ef`` — final neutron energy selected by the gold analyser foil (meV).
+    * ``en_to_vel`` — factor converting sqrt(energy) to velocity (m/μs).
+    * ``vf`` — final neutron velocity (m/μs).
+    * ``hbar`` — reduced Planck constant in Å⁻¹·a.m.u.·m/μs units.
+
+    Returns:
+        A 5-tuple ``(mN, Ef, en_to_vel, vf, hbar)``.
+    """
     mN=1.008    #a.m.u.
     Ef=4906.         # meV
     en_to_vel = 4.3737 * 1.e-4
@@ -774,8 +1362,28 @@ def loadConstants():
     return mN, Ef, en_to_vel, vf, hbar
 
 
-def pseudoVoigt(x, sigma, gamma, IC):
-    """Convolution between Gaussian with std sigma and Lorentzian with HWHM gamma"""
+def pseudoVoigt(
+    x: np.ndarray, sigma: np.ndarray, gamma: np.ndarray, IC: Any
+) -> np.ndarray:
+    """Approximate pseudo-Voigt profile (Thompson–Cox–Hastings).
+
+    Approximates the convolution of a Gaussian (std *sigma*) and a
+    Lorentzian (HWHM *gamma*) as a linear combination weighted by the
+    mixing parameter *eta*.  Optionally normalised by trapezoidal
+    integration when ``IC.normVoigt`` is ``True``.
+
+    **Numba candidate** — pure NumPy arithmetic; ``np.trapz`` would
+    need replacing with a manual trapezoidal rule under ``@njit``.
+
+    Args:
+        x: Abscissa values, shape ``(n_masses, n_bins)``.
+        sigma: Gaussian standard deviation, shape ``(n_masses, 1)``.
+        gamma: Lorentzian HWHM, shape ``(n_masses, 1)``.
+        IC: Initial-conditions object with ``normVoigt`` flag.
+
+    Returns:
+        Pseudo-Voigt profile, shape ``(n_masses, n_bins)``.
+    """
     fg, fl = 2.*sigma*np.sqrt(2.*np.log(2.)), 2.*gamma
     f = 0.5346 * fl + np.sqrt(0.2166*fl**2 + fg**2)
     eta = 1.36603 * fl/f - 0.47719 * (fl/f)**2 + 0.11116 * (fl/f)**3
@@ -786,20 +1394,52 @@ def pseudoVoigt(x, sigma, gamma, IC):
     return pseudo_voigt / norm
 
 
-def gaussian(x, sigma):
-    """Gaussian function centered at zero"""
+def gaussian(x: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+    """Normalised Gaussian centred at zero.
+
+    Args:
+        x: Abscissa values.
+        sigma: Standard deviation (same shape or broadcastable).
+
+    Returns:
+        Gaussian values, same shape as *x*.
+    """
     gaussian = np.exp(-x**2/2/sigma**2)
     gaussian /= np.sqrt(2.*np.pi)*sigma
     return gaussian
 
 
-def lorentizian(x, gamma):
-    """Lorentzian centered at zero"""
+def lorentizian(x: np.ndarray, gamma: np.ndarray) -> np.ndarray:
+    """Normalised Lorentzian centred at zero.
+
+    Args:
+        x: Abscissa values.
+        gamma: Half-width at half-maximum (same shape or broadcastable).
+
+    Returns:
+        Lorentzian values, same shape as *x*.
+    """
     lorentzian = gamma/np.pi / (x**2 + gamma**2)
     return lorentzian
 
 
-def numericalThirdDerivative(x, fun):
+def numericalThirdDerivative(x: np.ndarray, fun: np.ndarray) -> np.ndarray:
+    """Compute the third derivative of *fun* using a 13-point stencil.
+
+    Uses a symmetric finite-difference stencil of radius 6 bins.
+    The result is zero-padded on the left and right to preserve the
+    input shape.  Used to compute the Final-State Effects (FSE) term.
+
+    **Numba candidate** — pure slicing and arithmetic.
+
+    Args:
+        x: Abscissa values, shape ``(n_masses, n_bins)``.
+        fun: Function values, same shape.
+
+    Returns:
+        Approximate third derivative, same shape as *fun*.
+    """
+
     k6 = (- fun[:, 12:] + fun[:, :-12]) * 1
     k5 = (+ fun[:, 11:-1] - fun[:, 1:-11]) * 24
     k4 = (- fun[:, 10:-2] + fun[:, 2:-10]) * 192
@@ -817,8 +1457,34 @@ def numericalThirdDerivative(x, fun):
     return derivative
 
 
-def createWorkspacesForMSCorrection(ic, meanWidths, meanIntensityRatios, wsNCPM):
-    """Creates _MulScattering and _TotScattering workspaces used for the MS correction"""
+def createWorkspacesForMSCorrection(
+    ic: Any,
+    meanWidths: np.ndarray,
+    meanIntensityRatios: np.ndarray,
+    wsNCPM: Any,
+) -> Any:
+    """Run the Mantid multiple-scattering correction.
+
+    Constructs the slab sample geometry, builds the sample-property
+    list (optionally adding H for backward scattering), and calls
+    ``VesuvioThickness`` and ``VesuvioCalculateMS``.  The resulting
+    ``_MulScattering`` workspace is returned for subtraction.
+
+    Expects ``wsNCPM`` to be present in the AnalysisDataService.
+
+    Args:
+        ic: Completed initial-conditions object with geometry,
+            ``modeRunning``, ``HToMassIdxRatio``, ``masses``, and
+            MS settings.
+        meanWidths: Mean NCP widths, shape ``(n_masses,)``.
+        meanIntensityRatios: Mean intensity ratios, shape
+            ``(n_masses,)``.
+        wsNCPM: Mantid workspace with NCP-masked data.
+
+    Returns:
+        The ``_MulScattering`` workspace to be subtracted from the
+        data.
+    """
 
     createSlabGeometry(ic, wsNCPM)    # Sample properties for MS correction 
 
@@ -829,7 +1495,19 @@ def createWorkspacesForMSCorrection(ic, meanWidths, meanIntensityRatios, wsNCPM)
     return createMulScatWorkspaces(ic, wsNCPM, sampleProperties)
 
 
-def createSlabGeometry(ic, wsNCPM):
+def createSlabGeometry(ic: Any, wsNCPM: Any) -> None:
+    """Attach a cuboid sample shape to a workspace for MS correction.
+
+    Builds an XML string describing a slab of dimensions
+    ``vertical_width × horizontal_width × thickness`` and calls
+    ``CreateSampleShape``.
+
+    Args:
+        ic: Initial-conditions object with ``vertical_width``,
+            ``horizontal_width``, and ``thickness`` (metres).
+        wsNCPM: Mantid workspace to which the shape is attached.
+    """
+
     half_height, half_width, half_thick = 0.5*ic.vertical_width, 0.5*ic.horizontal_width, 0.5*ic.thickness
     xml_str = \
         " <cuboid id=\"sample-shape\"> " \
@@ -842,7 +1520,25 @@ def createSlabGeometry(ic, wsNCPM):
     CreateSampleShape(wsNCPM, xml_str)
 
 
-def calcMSCorrectionSampleProperties(ic, meanWidths, meanIntensityRatios):
+def calcMSCorrectionSampleProperties(
+    ic: Any, meanWidths: np.ndarray, meanIntensityRatios: np.ndarray
+) -> List[float]:
+    """Build the flat sample-property list for ``VesuvioCalculateMS``.
+
+    The list is interleaved as ``[mass0, intensity0, width0, mass1, …]``.
+    When running backward scattering with H present, hydrogen is
+    appended using ``HToMassIdxRatio``.
+
+    Args:
+        ic: Completed initial-conditions object.
+        meanWidths: Mean NCP widths, shape ``(n_masses,)``.
+        meanIntensityRatios: Mean intensity ratios, shape
+            ``(n_masses,)``.
+
+    Returns:
+        A flat list of floats suitable for ``VesuvioCalculateMS``.
+    """
+
     masses = ic.masses.flatten()
 
     # If Backsscattering mode and H is present in the sample, add H to MS properties
@@ -864,8 +1560,26 @@ def calcMSCorrectionSampleProperties(ic, meanWidths, meanIntensityRatios):
     return sampleProperties
 
 
-def createMulScatWorkspaces(ic, ws, sampleProperties):
-    """Uses the Mantid algorithm for the MS correction to create two Workspaces _TotScattering and _MulScattering"""
+def createMulScatWorkspaces(
+    ic: Any, ws: Any, sampleProperties: List[float]
+) -> Any:
+    """Execute ``VesuvioCalculateMS`` and normalise the correction workspaces.
+
+    Creates ``_TotScattering`` and ``_MulScattering`` workspaces,
+    normalises them to the data, and renames them with the parent
+    workspace name prefix.
+
+    Args:
+        ic: Completed initial-conditions object with
+            ``transmission_guess``, ``multiple_scattering_order``, and
+            ``number_of_events``.
+        ws: The data workspace (used for naming and normalisation).
+        sampleProperties: Flat interleaved list from
+            ``calcMSCorrectionSampleProperties``.
+
+    Returns:
+        The ``_MulScattering`` workspace.
+    """
 
     print("\nEvaluating the Multiple Scattering Correction...\n")
     # selects only the masses, every 3 numbers
@@ -902,8 +1616,26 @@ def createMulScatWorkspaces(ic, ws, sampleProperties):
     return mtd[ws.name()+"_MulScattering"]
 
 
-def createWorkspacesForGammaCorrection(ic, meanWidths, meanIntensityRatios, wsNCPM):
-    """Creates _gamma_background correction workspace to be subtracted from the main workspace"""
+def createWorkspacesForGammaCorrection(
+    ic: Any, meanWidths: np.ndarray, meanIntensityRatios: np.ndarray, wsNCPM: Any
+) -> Any:
+    """Run the Mantid gamma-background correction and return the result.
+
+    Calls ``VesuvioCalculateGammaBackground`` with Gaussian Compton
+    profiles built from the fitted mean widths and intensities.  The
+    resulting background is scaled by 0.9 before being returned for
+    subtraction.
+
+    Args:
+        ic: Completed initial-conditions object with ``masses``.
+        meanWidths: Mean NCP widths, shape ``(n_masses,)``.
+        meanIntensityRatios: Mean intensity ratios, shape
+            ``(n_masses,)``.
+        wsNCPM: Mantid workspace with NCP-masked data.
+
+    Returns:
+        The ``_Gamma_Background`` workspace to be subtracted.
+    """
 
     inputWS = wsNCPM.name()
 
@@ -924,7 +1656,25 @@ def createWorkspacesForGammaCorrection(ic, meanWidths, meanIntensityRatios, wsNC
     return mtd[inputWS+"_Gamma_Background"]
 
 
-def calcGammaCorrectionProfiles(masses, meanWidths, meanIntensityRatios):
+def calcGammaCorrectionProfiles(
+    masses: np.ndarray, meanWidths: np.ndarray, meanIntensityRatios: np.ndarray
+) -> str:
+    """Build the Mantid ``ComptonFunction`` string for gamma correction.
+
+    Concatenates ``GaussianComptonProfile`` entries for each mass,
+    separated by semicolons.
+
+    Args:
+        masses: Atomic masses, shape ``(n_masses,)``.
+        meanWidths: Mean NCP widths, shape ``(n_masses,)``.
+        meanIntensityRatios: Mean intensity ratios, shape
+            ``(n_masses,)``.
+
+    Returns:
+        A semicolon-delimited profile string for
+        ``VesuvioCalculateGammaBackground``.
+    """
+
     masses = masses.flatten()
     profiles = ""
     for mass, width, intensity in zip(masses, meanWidths, meanIntensityRatios):
@@ -937,8 +1687,37 @@ def calcGammaCorrectionProfiles(masses, meanWidths, meanIntensityRatios):
 
 
 class resultsObject:
-    """Used to collect results from workspaces and store them in .npz files for testing."""
-    def __init__(self, ic):
+    """Collector for per-iteration NCP fitting results.
+
+    Gathers all fit workspaces, best-fit parameters, NCP arrays, and
+    mean widths/intensities from the AnalysisDataService into NumPy
+    arrays that can be saved as ``.npz`` files for regression testing.
+
+    Expects workspaces named ``ic.name + "0"``, ``ic.name + "1"``, …
+    (and their associated ``_TOF_Fitted_Profiles``,
+    ``_Best_Fit_NCP_Parameters``, ``_Mean_Widths_And_Intensities``
+    tables) to be present in ``mtd``.
+
+    Attributes:
+        all_fit_workspaces: DataY from each iteration's fitted
+            workspace, shape ``(n_iter, n_spectra, n_bins)``.
+        all_spec_best_par_chi_nit: Best-fit parameter tables, shape
+            ``(n_iter, n_spectra, 3*n_masses + 3)``.
+        all_tot_ncp: Total NCP per iteration, shape
+            ``(n_iter, n_spectra, n_bins)``.
+        all_ncp_for_each_mass: Per-mass NCP per iteration, shape
+            ``(n_iter, n_spectra, n_masses, n_bins)``.
+        all_mean_widths: Mean widths per iteration, shape
+            ``(n_iter, n_masses)``.
+        all_mean_intensities: Mean intensities per iteration, shape
+            ``(n_iter, n_masses)``.
+        all_std_widths: Std widths per iteration, shape
+            ``(n_iter, n_masses)``.
+        all_std_intensities: Std intensities per iteration, shape
+            ``(n_iter, n_masses)``.
+    """
+
+    def __init__(self, ic: Any) -> None:
 
         allIterNcp = []
         allFitWs = []
@@ -1009,8 +1788,8 @@ class resultsObject:
         self.resultsSavePath = ic.resultsSavePath
 
 
-    def save(self):
-        """Saves all of the arrays stored in this object"""
+    def save(self) -> None:
+        """Save all result arrays to an ``.npz`` file at ``self.resultsSavePath``."""
 
         # TODO: Take out nans next time when running original results
         # Because original results were recently saved with nans, mask spectra with nans
