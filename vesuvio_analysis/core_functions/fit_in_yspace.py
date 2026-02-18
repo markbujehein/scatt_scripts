@@ -2404,7 +2404,7 @@ def calcCostFun(
     costSig = [key if key in sharedPars else key+str(i) for key in signature]
 
     # Select only valid data, i.e. when error is not 0 or nan or inf
-    nonZeros= (yerr!=0) & (yerr!=np.nan) & (yerr!=np.inf) & (y!=np.nan)
+    nonZeros = (yerr != 0) & ~np.isnan(yerr) & ~np.isinf(yerr) & ~np.isnan(y)
     xNZ = x[nonZeros]
     yNZ = y[nonZeros]
     yerrNZ = yerr[nonZeros]

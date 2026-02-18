@@ -121,7 +121,7 @@ class NCPCostFunction:
 
     @property
     def ndata(self) -> int:
-        """Number of non-masked (non-zero) data points."""
+        """Number of non-zero data points."""
         return int(np.sum(self._dataY != 0))
 
 
@@ -165,7 +165,7 @@ class GlobalNCPCostFunction(cost.Cost):
             model: Convolved model callable ``model(x, *pars)``.
             parameter_names: Ordered parameter names with per-group
                 suffixes for local params and shared names for global
-                params (e.g. ``['x0', 'y00', 'A0', 'x00', 'sigma']``).
+                params (e.g. ``['x', 'y00', 'A0', 'x00', 'sigma']``).
                 The first entry is the independent variable and is
                 skipped for ``_parameters``.
             verbose: Verbosity level for ``cost.Cost``.
