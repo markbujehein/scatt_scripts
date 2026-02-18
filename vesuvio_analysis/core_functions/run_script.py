@@ -1,5 +1,6 @@
 from typing import Any, Optional, Tuple
 
+import numpy as np
 from mantid.api import mtd
 
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
@@ -156,6 +157,9 @@ def runScript(
         for wsName, IC in zip(wsNames, ICs):
             resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
 
+        # --- Phase 6: Statistical Analysis (post-fit) ---
+        _runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)
+
         return res, resYFit  # Return results used only in tests
 
 
@@ -216,3 +220,100 @@ def checkInputs(crtIC: Any) -> None:
 
     if (crtIC.procedure != "JOINT") & (crtIC.fitInYSpace != None):
         assert crtIC.procedure == crtIC.fitInYSpace
+
+
+def _runStatisticalAnalysis(
+    userCtr: Any, res: Any, bckwdIC: Any, fwdIC: Any,
+) -> None:
+    """Runs Phase 6 statistical analysis steps when their flags are set.
+
+    Called after the main NCP fitting and y-space fitting have completed.
+    Each step is gated by its own boolean flag on ``userCtr`` and runs
+    only when the flag is ``True``.
+
+    The pipeline extracts per-spectrum fitted NCP profiles from ``res``
+    (the last iteration) and uses them for outlier detection and
+    bootstrap resampling.  Instrument parameters (L, theta) are loaded
+    from the IC objects for physics-trend clustering.
+
+    Args:
+        userCtr: ``UserScriptControls`` class with
+            ``runOutlierDetection``, ``runPhysicsClustering``, and
+            ``runBayesianBootstrap`` flags.
+        res: Result tuple from the iterative NCP fit (may be ``None``).
+            For BACKWARD/FORWARD: ``(wsFinal, resultsObject)``.
+            For JOINT: ``(wsFinal, bckwdResults, fwdResults)``.
+        bckwdIC: Completed backward initial-conditions object.
+        fwdIC: Completed forward initial-conditions object.
+    """
+    from vesuvio_analysis.core_functions.statistical_plugins import (
+        BayesianBootstrap,
+        HardwareOutlierDetector,
+        PhysicsTrendClusterer,
+    )
+    from vesuvio_analysis.core_functions.analysis_functions import (
+        loadInstrParsFileIntoArray,
+    )
+
+    any_enabled = (
+        getattr(userCtr, "runOutlierDetection", False)
+        or getattr(userCtr, "runPhysicsClustering", False)
+        or getattr(userCtr, "runBayesianBootstrap", False)
+    )
+    if not any_enabled or res is None:
+        return
+
+    # Extract the resultsObject(s) and their corresponding IC from the
+    # procedure return value.
+    # BACKWARD/FORWARD: (wsFinal, resultsObject)
+    # JOINT: (wsFinal, bckwdResults, fwdResults)
+    if len(res) == 3:
+        results_and_ics = [(res[1], bckwdIC), (res[2], fwdIC)]
+    else:
+        proc = userCtr.procedure
+        ic = bckwdIC if proc == "BACKWARD" else fwdIC
+        results_and_ics = [(res[1], ic)]
+
+    for results, ic in results_and_ics:
+        # Last-iteration spectra: shape (n_spectra, n_bins)
+        spectra = results.all_fit_workspaces[-1]
+        ncp_total = results.all_tot_ncp[-1]
+
+        if getattr(userCtr, "runOutlierDetection", False):
+            detector = HardwareOutlierDetector(
+                n_components=5, contamination=0.1,
+            )
+            labels = detector.fit_predict(spectra)
+            n_outliers = int(np.sum(labels == -1))
+            outlier_idx = np.where(labels == -1)[0]
+            print(
+                f"[Phase 6] Outlier detection: {n_outliers} outlier(s) "
+                f"found at indices {outlier_idx.tolist()}"
+            )
+
+        if getattr(userCtr, "runPhysicsClustering", False):
+            instrPars = loadInstrParsFileIntoArray(
+                ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
+            )
+            # instrPars columns: [spec, det, angle, T0, L0, L1]
+            L1 = instrPars[:, 5]
+            theta = instrPars[:, 2]
+            features = np.column_stack([L1, theta])
+            clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
+            labels = clusterer.fit_predict(features)
+            groups = clusterer.get_cluster_groups(labels)
+            n_noise = int(np.sum(labels == -1))
+            print(
+                f"[Phase 6] Physics clustering: {len(groups)} cluster(s) "
+                f"found, {n_noise} noise point(s) excluded"
+            )
+
+        if getattr(userCtr, "runBayesianBootstrap", False):
+            residuals = spectra - ncp_total
+            bootstrap = BayesianBootstrap(n_samples=1000, seed=42)
+            weighted = bootstrap.compute_weighted_residuals(residuals)
+            print(
+                f"[Phase 6] Bayesian bootstrap: generated "
+                f"{weighted.shape[0]} weighted residual profiles, "
+                f"shape {weighted.shape}"
+            )
