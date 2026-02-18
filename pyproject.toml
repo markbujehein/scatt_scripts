@@ -34,7 +34,6 @@ dependencies = [
     "jacobi",
     "numba",
     "scikit-learn",
-    "seaborn",
 
 ]
 

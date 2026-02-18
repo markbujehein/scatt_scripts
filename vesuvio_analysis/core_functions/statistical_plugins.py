@@ -18,7 +18,8 @@ Notes:
     - PCA requires standardised (zero-mean, unit-variance) input; this is
       handled internally by ``HardwareOutlierDetector``.
     - Dirichlet(1, 1, ..., 1) produces the uniform prior over the simplex
-      (Rubin, 1981).  Each weight vector sums exactly to 1.0.
+      (Rubin, 1981).  Each weight vector sums to 1.0 (up to
+      floating-point rounding).
 """
 
 from __future__ import annotations
@@ -169,7 +170,7 @@ class BayesianBootstrap:
     Generates ``n_samples`` weight vectors drawn from a symmetric
     Dirichlet(1, 1, ..., 1) distribution (the uniform prior over the
     simplex).  Each weight vector has length ``n_spectra`` and sums
-    exactly to 1.0.
+    to 1.0 (up to floating-point rounding).
 
     These weights can be applied to per-spectrum NCP residuals for
     high-speed resampling without re-fitting.
@@ -204,7 +205,8 @@ class BayesianBootstrap:
 
         Returns:
             Weight matrix, shape (n_samples, n_spectra). Each row is a
-            Dirichlet-distributed weight vector summing to 1.0.
+            Dirichlet-distributed weight vector summing to 1.0 (up to
+            floating-point rounding).
         """
         alpha = np.ones(n_spectra)
         weights = self._rng.dirichlet(alpha, size=self.n_samples)
