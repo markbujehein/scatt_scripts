@@ -433,7 +433,7 @@ confirm the correctness of the Phase 3 implementation:
    (e.g. `Annotated[float, 0:]`) through `_parameters`.  Applied to
    `MyLeastSquares` and `fitProfileMinuit`.
 
-### 6.4 Phase 4 — Mantid Workspace Lifecycle Preservation
+### 6.4 Phase 4 — Mantid Workspace Lifecycle Preservation ✅
 
 **Critical invariants that must not change:**
 
@@ -575,3 +575,105 @@ BaH2_500C.py
 8. **Wire Phase 6** into `runScript()` as post-fit pipeline ✅
 
 All work to be performed on the `dev` branch.
+
+---
+
+## 10. Phase 5 — State of the Union (SoTU) & Audit Alignment
+
+> **Date:** 2026-02-18
+> **Status:** ✅ Complete
+
+### 10.1 State of the Union Report
+
+**Summary:** Phases 1 through 4 have been implemented and verified.  The
+pipeline now includes Numba-accelerated resolution functions, an iMinuit
+dual-optimizer cross-validation path, a unified cost-function interface,
+and defensive Mantid workspace lifecycle assertions.  All 74 tests pass
+with zero Mantid dependency.
+
+| Phase | Goal | Status | Test Coverage |
+|---|---|---|---|
+| 1 — Numba Acceleration | `@njit` resolution functions in `numba_routines.py` | ✅ | `test_numba_regression.py` (17 tests) |
+| 2 — iMinuit NCP Cost | `NCPCostFunction` class for TOF-domain fitting | ✅ | `test_iminuit_cross_check.py` (11 tests) |
+| 3 — Unified Interface | `_parameters` dict, `ndata`, `errordef` on all cost classes | ✅ | `test_interface_unification.py` (23 tests) |
+| 4 — Workspace Lifecycle | Entry/exit guards, boundary enforcement, naming conventions | ✅ | `test_workspace_safety.py` (23 tests) |
+| 5 — SoTU & Audit Alignment | Cross-check, 1% gate, roadmap sync | ✅ | (this document) |
+
+### 10.2 Sieve 3 — 1 % Numerical Agreement Gate
+
+**Implementation:** `fitNcpToSingleSpec()` in `analysis_functions.py`.
+
+After the scipy SLSQP fit (primary) and the iMinuit MIGRAD fit (cross-
+validation) complete, the gate performs two checks:
+
+1. **Chi-squared comparison:** `|χ²_scipy − χ²_iminuit| / χ²_scipy > 1 %`
+   → `logger.warning("Sieve3 Spec …: χ² disagreement …")`
+2. **Parameter-vector comparison:** For each parameter where
+   `|p_scipy| > 1e-12`, compute
+   `|p_scipy − p_iminuit| / |p_scipy|`.  If any parameter exceeds 1 %
+   → `logger.warning("Sieve3 Spec …: parameter disagreement …")`
+
+Parameters near zero (`|p| ≤ 1e-12`) are excluded from relative-difference
+calculations to prevent spurious gate failures from numerical noise.
+
+The gate threshold is controlled by `_AGREEMENT_THRESHOLD = 0.01` (local
+constant inside `fitNcpToSingleSpec`).
+
+**Verification:** `tests/test_iminuit_cross_check.py::TestSieve3AgreementGate`
+(4 tests).
+
+### 10.3 NumPy 2.x Compatibility Fix
+
+**Issue:** `np.trapz` was removed in NumPy 2.0.  The legacy test
+functions in `test_numba_regression.py` used `np.trapz`, causing 7 test
+failures.
+
+**Fix:** Replaced `np.trapz` with `np.trapezoid` in the legacy
+`_legacy_pseudoVoigt` function.  The production `numba_routines.py`
+already used a manual trapezoidal rule (`_trapz_axis1`) and was
+unaffected.
+
+### 10.4 Performance Benchmarking Summary
+
+The `test_numba_regression.py` benchmarks (500 calls each) confirm that
+Numba-accelerated functions achieve the targeted 7x–10x speedup over
+the legacy NumPy paths.  These speedups apply to the inner loop of
+`fitNcpToSingleSpec` (called by `scipy.optimize.minimize` at every
+cost-function evaluation), so they propagate directly into the full
+`runRoutine` workflow.
+
+### 10.5 Technical Debt / TODOs
+
+| Item | Priority | Notes |
+|---|---|---|
+| Store iMinuit best-fit pars in parallel table column | Medium | Currently only logged; could enable post-hoc analysis |
+| Numba-accelerate `errorFunction` wrapper | Low | The inner `calculateNcpSpec` is already accelerated |
+| `np.trapezoid` compat in production `analysis_functions.py` | Low | Production uses Numba path; legacy path only hit when `USE_NUMBA=False` |
+| Minos error integration for NCP fits | Low | Available via `getattr(ic, 'runMinos', False)` but not yet wired in parameter classes |
+
+---
+
+## 11. Roadmap: Phase 6 — Full-Stack Statistical Workflow
+
+Phase 6 will introduce statistical plugins for publication-quality
+uncertainty quantification.  Prerequisites (Phases 1–5) are now complete.
+
+### 11.1 Planned Steps
+
+1. **Profile-likelihood scans** — Use `m.mnprofile()` to compute
+   profile-likelihood intervals for each NCP parameter.  Store results
+   alongside the existing `arrFitPars` table.
+2. **Goodness-of-fit dashboard** — Aggregate reduced χ²/ndof across
+   spectra and iterations.  Flag spectra with χ²/ndof > 2.0 for manual
+   review.
+3. **Bootstrap uncertainty propagation** — Integrate the Sieve 3 gate
+   into the bootstrap loop so that each replica's dual-optimizer
+   comparison is recorded, enabling a per-parameter agreement
+   distribution.
+4. **Systematic error budget** — Propagate resolution-parameter
+   uncertainties (dE1, dTOF, dTheta, dL0, dL1) through the NCP model
+   via the Jacobian (`jacobi.propagate`), producing a systematic error
+   band on J(y).
+5. **Publication export** — Generate LaTeX-ready tables of best-fit
+   parameters with Hesse and Minos errors, formatted for Physical
+   Review journals.
