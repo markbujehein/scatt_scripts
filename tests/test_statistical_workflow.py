@@ -94,7 +94,7 @@ class TestHardwareOutlierSieve(unittest.TestCase):
         sieve = HardwareOutlierSieve(n_components=3, contamination=0.05)
         labels = sieve.fit_predict(data)
         n_outliers = np.sum(labels == -1)
-        # At most ~5% should be flagged in clean data
+        # At most ~10% should be flagged in clean data
         self.assertLessEqual(n_outliers, max(2, int(0.1 * len(data))))
 
 

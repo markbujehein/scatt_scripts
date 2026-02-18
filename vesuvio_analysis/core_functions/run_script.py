@@ -17,11 +17,6 @@ from vesuvio_analysis.core_functions.procedures import (
     runJointBackAndForwardProcedure,
     runPreProcToEstHRatio,
 )
-from vesuvio_analysis.core_functions.statistical_plugins import (
-    BayesianBootstrapSieve,
-    HardwareOutlierSieve,
-    PhysicsTrendSieve,
-)
 
 
 def runScript(
