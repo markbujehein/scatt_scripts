@@ -1,27 +1,24 @@
 """Phase 6 — Full-Stack Statistical Workflow for the VESUVIO pipeline.
 
-Implements a multi-stage statistical "sieve" to identify hardware
-outliers, group physical trends via density-based clustering, and
-provide probabilistic certainty through a Weighted Bayesian Bootstrap.
+Provides statistical post-processing for the VESUVIO analysis pipeline:
+hardware outlier identification, density-based detector clustering, and
+probabilistic uncertainty quantification via Bayesian Bootstrap.
 
-Classes
--------
-HardwareOutlierSieve
-    Sieve 1: PCA-based anomaly detection for broken detectors.
-PhysicsTrendSieve
-    Sieve 2: DBSCAN clustering of detector features (L, theta).
-BayesianBootstrapSieve
-    Sieve 4: Rubin-style Weighted Bayesian Bootstrap with Dirichlet
-    weights for high-speed resampling of NCP residuals.
+Classes:
+    HardwareOutlierDetector: PCA-based anomaly detection for broken
+        detectors.
+    PhysicsTrendClusterer: DBSCAN clustering of detector features
+        (L, theta).
+    BayesianBootstrap: Rubin-style Weighted Bayesian Bootstrap with
+        Dirichlet weights for high-speed resampling of NCP residuals.
 
-Notes
------
-- scikit-learn DBSCAN labels noise points as -1; these are explicitly
-  excluded from physics-trend groups.
-- PCA requires standardised (zero-mean, unit-variance) input; this is
-  handled internally by ``HardwareOutlierSieve``.
-- Dirichlet(1, 1, ..., 1) produces the uniform prior over the simplex
-  (Rubin, 1981).  Each weight vector sums exactly to 1.0.
+Notes:
+    - scikit-learn DBSCAN labels noise points as -1; these are explicitly
+      excluded from physics-trend groups.
+    - PCA requires standardised (zero-mean, unit-variance) input; this is
+      handled internally by ``HardwareOutlierDetector``.
+    - Dirichlet(1, 1, ..., 1) produces the uniform prior over the simplex
+      (Rubin, 1981).  Each weight vector sums exactly to 1.0.
 """
 
 from __future__ import annotations
@@ -37,29 +34,27 @@ from sklearn.preprocessing import StandardScaler
 
 
 # ---------------------------------------------------------------------------
-# Sieve 1 — Hardware Outlier Detection
+# Hardware Outlier Detection
 # ---------------------------------------------------------------------------
 
-class HardwareOutlierSieve:
-    """Identify broken detectors via PCA + robust covariance outlier score.
+class HardwareOutlierDetector:
+    """Identifies broken detectors via PCA + robust covariance scoring.
 
     Each row of the input matrix is a detector spectrum.  The spectra
     are standardised and projected onto ``n_components`` principal
     components.  Outliers are detected in the reduced space using a
     robust covariance estimator (``EllipticEnvelope``).
 
-    Parameters
-    ----------
-    n_components : int
-        Number of PCA components to retain.
-    contamination : float
-        Expected fraction of outlier spectra (0 < contamination < 0.5).
+    Attributes:
+        n_components: Number of PCA components to retain.
+        contamination: Expected fraction of outlier spectra
+            (0 < contamination < 0.5).
 
-    Examples
-    --------
-    >>> sieve = HardwareOutlierSieve(n_components=5, contamination=0.1)
-    >>> labels = sieve.fit_predict(spectra_matrix)
-    >>> outlier_indices = np.where(labels == -1)[0]
+    Example::
+
+        detector = HardwareOutlierDetector(n_components=5, contamination=0.1)
+        labels = detector.fit_predict(spectra_matrix)
+        outlier_indices = np.where(labels == -1)[0]
     """
 
     def __init__(self, n_components: int = 5,
@@ -73,19 +68,15 @@ class HardwareOutlierSieve:
         )
 
     def fit_predict(self, spectra: NDArray[np.floating]) -> NDArray[np.intp]:
-        """Fit the sieve and return outlier labels.
+        """Fits the detector and returns outlier labels.
 
-        Parameters
-        ----------
-        spectra : ndarray, shape (n_spectra, n_bins)
-            Raw detector spectra.
+        Args:
+            spectra: Raw detector spectra, shape (n_spectra, n_bins).
 
-        Returns
-        -------
-        labels : ndarray, shape (n_spectra,)
-            ``-1`` for outlier, ``1`` for inlier.  To match the
-            convention used by Sieve 2 (DBSCAN), inlier labels are
-            mapped to ``0``.
+        Returns:
+            Labels array, shape (n_spectra,). ``-1`` for outlier, ``0``
+            for inlier (mapped from EllipticEnvelope's +1 to align with
+            DBSCAN convention).
         """
         scaled = self._scaler.fit_transform(spectra)
         reduced = self._pca.fit_transform(scaled)
@@ -97,11 +88,11 @@ class HardwareOutlierSieve:
 
 
 # ---------------------------------------------------------------------------
-# Sieve 2 — Physics Trend Clustering
+# Physics Trend Clustering
 # ---------------------------------------------------------------------------
 
-class PhysicsTrendSieve:
-    """Group detectors by physical trends using DBSCAN.
+class PhysicsTrendClusterer:
+    """Groups detectors by physical trends using DBSCAN.
 
     Input features are typically (flight-path-length L, scattering
     angle theta) pairs extracted from instrument parameter files.
@@ -110,19 +101,18 @@ class PhysicsTrendSieve:
     Noise points (DBSCAN label ``-1``) are explicitly excluded from
     the returned cluster groups dictionary.
 
-    Parameters
-    ----------
-    eps : float
-        Maximum distance between two samples for one to be considered
-        in the neighbourhood of the other (in standardised space).
-    min_samples : int
-        Minimum number of core points required to form a cluster.
+    Attributes:
+        eps: Maximum distance between two samples for one to be
+            considered in the neighbourhood of the other (in
+            standardised space).
+        min_samples: Minimum number of core points required to form
+            a cluster.
 
-    Examples
-    --------
-    >>> sieve = PhysicsTrendSieve(eps=0.5, min_samples=5)
-    >>> labels = sieve.fit_predict(features)
-    >>> groups = sieve.get_cluster_groups(labels)
+    Example::
+
+        clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=5)
+        labels = clusterer.fit_predict(features)
+        groups = clusterer.get_cluster_groups(labels)
     """
 
     def __init__(self, eps: float = 0.5, min_samples: int = 5) -> None:
@@ -131,17 +121,15 @@ class PhysicsTrendSieve:
         self._scaler = StandardScaler()
 
     def fit_predict(self, features: NDArray[np.floating]) -> NDArray[np.intp]:
-        """Cluster detector features and return labels.
+        """Clusters detector features and returns labels.
 
-        Parameters
-        ----------
-        features : ndarray, shape (n_spectra, n_features)
-            Detector feature matrix (e.g. columns [L, theta]).
+        Args:
+            features: Detector feature matrix (e.g. columns [L, theta]),
+                shape (n_spectra, n_features).
 
-        Returns
-        -------
-        labels : ndarray, shape (n_spectra,)
-            Cluster label per spectrum.  ``-1`` denotes noise.
+        Returns:
+            Cluster label per spectrum, shape (n_spectra,). ``-1``
+            denotes noise.
         """
         scaled = self._scaler.fit_transform(features)
         db = DBSCAN(eps=self.eps, min_samples=self.min_samples)
@@ -152,18 +140,15 @@ class PhysicsTrendSieve:
     def get_cluster_groups(
         labels: NDArray[np.intp],
     ) -> Dict[int, List[int]]:
-        """Return a dict mapping cluster IDs to member indices.
+        """Returns a dict mapping cluster IDs to member indices.
 
         Noise labels (``-1``) are excluded from the output.
 
-        Parameters
-        ----------
-        labels : ndarray, shape (n_spectra,)
-            Cluster labels produced by :meth:`fit_predict`.
+        Args:
+            labels: Cluster labels produced by ``fit_predict``,
+                shape (n_spectra,).
 
-        Returns
-        -------
-        groups : dict[int, list[int]]
+        Returns:
             ``{cluster_id: [spectrum_indices]}``.
         """
         groups: Dict[int, List[int]] = {}
@@ -175,10 +160,10 @@ class PhysicsTrendSieve:
 
 
 # ---------------------------------------------------------------------------
-# Sieve 4 — Bayesian Bootstrap (Dirichlet Weights)
+# Bayesian Bootstrap (Dirichlet Weights)
 # ---------------------------------------------------------------------------
 
-class BayesianBootstrapSieve:
+class BayesianBootstrap:
     """Rubin-style Weighted Bayesian Bootstrap using Dirichlet weights.
 
     Generates ``n_samples`` weight vectors drawn from a symmetric
@@ -189,24 +174,19 @@ class BayesianBootstrapSieve:
     These weights can be applied to per-spectrum NCP residuals for
     high-speed resampling without re-fitting.
 
-    Parameters
-    ----------
-    n_samples : int
-        Number of bootstrap replicas.
-    seed : int or None
-        Random seed for reproducibility.
+    Attributes:
+        n_samples: Number of bootstrap replicas.
 
-    References
-    ----------
-    Rubin, D. B. (1981). "The Bayesian Bootstrap". *Ann. Statist.*
-    9(1), 130–134.
+    References:
+        Rubin, D. B. (1981). "The Bayesian Bootstrap". *Ann. Statist.*
+        9(1), 130–134.
 
-    Examples
-    --------
-    >>> sieve = BayesianBootstrapSieve(n_samples=1000, seed=42)
-    >>> weights = sieve.generate_weights(n_spectra=50)
-    >>> assert weights.shape == (1000, 50)
-    >>> np.testing.assert_allclose(weights.sum(axis=1), 1.0)
+    Example::
+
+        bootstrap = BayesianBootstrap(n_samples=1000, seed=42)
+        weights = bootstrap.generate_weights(n_spectra=50)
+        assert weights.shape == (1000, 50)
+        np.testing.assert_allclose(weights.sum(axis=1), 1.0)
     """
 
     def __init__(self, n_samples: int = 1000,
@@ -217,18 +197,14 @@ class BayesianBootstrapSieve:
     def generate_weights(
         self, n_spectra: int,
     ) -> NDArray[np.floating]:
-        """Draw Dirichlet weight matrix.
+        """Draws a Dirichlet weight matrix.
 
-        Parameters
-        ----------
-        n_spectra : int
-            Number of detector spectra (simplex dimension).
+        Args:
+            n_spectra: Number of detector spectra (simplex dimension).
 
-        Returns
-        -------
-        weights : ndarray, shape (n_samples, n_spectra)
-            Each row is a Dirichlet-distributed weight vector summing
-            to 1.0.
+        Returns:
+            Weight matrix, shape (n_samples, n_spectra). Each row is a
+            Dirichlet-distributed weight vector summing to 1.0.
         """
         alpha = np.ones(n_spectra)
         weights = self._rng.dirichlet(alpha, size=self.n_samples)
@@ -237,18 +213,15 @@ class BayesianBootstrapSieve:
     def compute_weighted_residuals(
         self, residuals: NDArray[np.floating],
     ) -> NDArray[np.floating]:
-        """Compute weighted-sum residual profiles for each bootstrap sample.
+        """Computes weighted-sum residual profiles for each bootstrap sample.
 
-        Parameters
-        ----------
-        residuals : ndarray, shape (n_spectra, n_bins)
-            Per-spectrum residuals from the NCP fit.
+        Args:
+            residuals: Per-spectrum residuals from the NCP fit,
+                shape (n_spectra, n_bins).
 
-        Returns
-        -------
-        weighted_residuals : ndarray, shape (n_samples, n_bins)
-            Each row is the weighted sum of residual spectra for one
-            bootstrap replica: ``w @ residuals`` where ``w`` is a
+        Returns:
+            Weighted residuals, shape (n_samples, n_bins). Each row is
+            the weighted sum ``w @ residuals`` where ``w`` is a
             Dirichlet weight vector.
         """
         n_spectra = residuals.shape[0]

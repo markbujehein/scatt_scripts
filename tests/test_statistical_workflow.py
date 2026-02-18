@@ -1,4 +1,4 @@
-"""Tests for the Phase 6 statistical-sieve workflow.
+"""Tests for the Phase 6 statistical workflow.
 
 These tests do **not** depend on Mantid and can be run in any standard
 Python environment with NumPy, SciPy, and scikit-learn installed::
@@ -6,11 +6,11 @@ Python environment with NumPy, SciPy, and scikit-learn installed::
     python -m pytest tests/test_statistical_workflow.py -v
 
 Each test uses deterministic dummy data to verify:
-1. Sieve 1 (Hardware Outliers) correctly labels injected outlier spectra.
-2. Sieve 2 (Physics Trends) clusters physical groups via DBSCAN and
+1. Hardware outlier detection correctly labels injected outlier spectra.
+2. Physics trend clustering groups physical clusters via DBSCAN and
    excludes noise labels (-1).
-3. Sieve 4 (Bayesian Bootstrap) generates valid Dirichlet-distributed
-   weights that sum to 1.0.
+3. Bayesian Bootstrap generates valid Dirichlet-distributed weights that
+   sum to 1.0.
 """
 
 import unittest
@@ -19,11 +19,11 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Sieve 1 — Hardware Outlier Detection (PCA-based)
+# Hardware Outlier Detection (PCA-based)
 # ---------------------------------------------------------------------------
 
-class TestHardwareOutlierSieve(unittest.TestCase):
-    """Verify that Sieve 1 identifies injected hardware outliers."""
+class TestHardwareOutlierDetector(unittest.TestCase):
+    """Verifies that the outlier detector identifies injected hardware faults."""
 
     def _make_detector_data(self, n_spectra=50, n_bins=200, n_outliers=3,
                             seed=42):
@@ -50,14 +50,14 @@ class TestHardwareOutlierSieve(unittest.TestCase):
     def test_outliers_detected_by_pca(self):
         """PCA-based Mahalanobis distance should flag injected outliers."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            HardwareOutlierSieve,
+            HardwareOutlierDetector,
         )
 
         data, true_outlier_idx = self._make_detector_data(
             n_spectra=50, n_outliers=3, seed=42,
         )
-        sieve = HardwareOutlierSieve(n_components=5, contamination=0.1)
-        labels = sieve.fit_predict(data)
+        detector = HardwareOutlierDetector(n_components=5, contamination=0.1)
+        labels = detector.fit_predict(data)
 
         # labels: -1 = outlier, 0 = normal
         detected = np.where(labels == -1)[0]
@@ -71,18 +71,18 @@ class TestHardwareOutlierSieve(unittest.TestCase):
     def test_labels_shape(self):
         """Label array must match the number of input spectra."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            HardwareOutlierSieve,
+            HardwareOutlierDetector,
         )
 
         data, _ = self._make_detector_data(n_spectra=30, n_outliers=2)
-        sieve = HardwareOutlierSieve(n_components=3, contamination=0.15)
-        labels = sieve.fit_predict(data)
+        detector = HardwareOutlierDetector(n_components=3, contamination=0.15)
+        labels = detector.fit_predict(data)
         self.assertEqual(labels.shape[0], 30)
 
     def test_no_outliers_in_clean_data(self):
-        """When data is clean, sieve should flag very few or no outliers."""
+        """When data is clean, detector should flag very few or no outliers."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            HardwareOutlierSieve,
+            HardwareOutlierDetector,
         )
 
         rng = np.random.default_rng(99)
@@ -91,19 +91,19 @@ class TestHardwareOutlierSieve(unittest.TestCase):
         data = np.array([normal + rng.normal(0, 0.01, 100)
                          for _ in range(40)])
 
-        sieve = HardwareOutlierSieve(n_components=3, contamination=0.05)
-        labels = sieve.fit_predict(data)
+        detector = HardwareOutlierDetector(n_components=3, contamination=0.05)
+        labels = detector.fit_predict(data)
         n_outliers = np.sum(labels == -1)
         # At most ~10% should be flagged in clean data
         self.assertLessEqual(n_outliers, max(2, int(0.1 * len(data))))
 
 
 # ---------------------------------------------------------------------------
-# Sieve 2 — Physics Trend Clustering (DBSCAN)
+# Physics Trend Clustering (DBSCAN)
 # ---------------------------------------------------------------------------
 
-class TestPhysicsTrendSieve(unittest.TestCase):
-    """Verify that Sieve 2 groups detectors by physics trends."""
+class TestPhysicsTrendClusterer(unittest.TestCase):
+    """Verifies that the clusterer groups detectors by physics trends."""
 
     def _make_clustered_features(self, seed=42):
         """Build synthetic (L, theta) feature data with known clusters.
@@ -122,12 +122,12 @@ class TestPhysicsTrendSieve(unittest.TestCase):
     def test_two_clusters_found(self):
         """DBSCAN should find exactly 2 physical clusters."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            PhysicsTrendSieve,
+            PhysicsTrendClusterer,
         )
 
         features = self._make_clustered_features()
-        sieve = PhysicsTrendSieve(eps=1.0, min_samples=3)
-        labels = sieve.fit_predict(features)
+        clusterer = PhysicsTrendClusterer(eps=1.0, min_samples=3)
+        labels = clusterer.fit_predict(features)
 
         unique_labels = set(labels)
         unique_labels.discard(-1)  # exclude noise
@@ -139,13 +139,13 @@ class TestPhysicsTrendSieve(unittest.TestCase):
     def test_noise_excluded_from_groups(self):
         """Noise labels (-1) must not appear in the cluster groups dict."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            PhysicsTrendSieve,
+            PhysicsTrendClusterer,
         )
 
         features = self._make_clustered_features()
-        sieve = PhysicsTrendSieve(eps=5.0, min_samples=3)
-        labels = sieve.fit_predict(features)
-        groups = sieve.get_cluster_groups(labels)
+        clusterer = PhysicsTrendClusterer(eps=5.0, min_samples=3)
+        labels = clusterer.fit_predict(features)
+        groups = clusterer.get_cluster_groups(labels)
 
         self.assertNotIn(-1, groups,
                          "Noise label -1 must be excluded from groups dict")
@@ -153,24 +153,24 @@ class TestPhysicsTrendSieve(unittest.TestCase):
     def test_labels_shape(self):
         """Label array must match the number of feature rows."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            PhysicsTrendSieve,
+            PhysicsTrendClusterer,
         )
 
         features = self._make_clustered_features()
-        sieve = PhysicsTrendSieve(eps=5.0, min_samples=3)
-        labels = sieve.fit_predict(features)
+        clusterer = PhysicsTrendClusterer(eps=5.0, min_samples=3)
+        labels = clusterer.fit_predict(features)
         self.assertEqual(len(labels), features.shape[0])
 
     def test_all_cluster_members_accounted(self):
         """Every non-noise index should appear in exactly one group."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            PhysicsTrendSieve,
+            PhysicsTrendClusterer,
         )
 
         features = self._make_clustered_features()
-        sieve = PhysicsTrendSieve(eps=5.0, min_samples=3)
-        labels = sieve.fit_predict(features)
-        groups = sieve.get_cluster_groups(labels)
+        clusterer = PhysicsTrendClusterer(eps=5.0, min_samples=3)
+        labels = clusterer.fit_predict(features)
+        groups = clusterer.get_cluster_groups(labels)
 
         all_indices = set()
         for indices in groups.values():
@@ -181,22 +181,22 @@ class TestPhysicsTrendSieve(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Sieve 4 — Bayesian Bootstrap (Dirichlet Weights)
+# Bayesian Bootstrap (Dirichlet Weights)
 # ---------------------------------------------------------------------------
 
-class TestBayesianBootstrapSieve(unittest.TestCase):
-    """Verify the Weighted Bayesian Bootstrap with Dirichlet weights."""
+class TestBayesianBootstrap(unittest.TestCase):
+    """Verifies the Weighted Bayesian Bootstrap with Dirichlet weights."""
 
     def test_weights_sum_to_one(self):
         """Each row of Dirichlet weights must sum to 1.0."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            BayesianBootstrapSieve,
+            BayesianBootstrap,
         )
 
         n_spectra = 50
         n_samples = 200
-        sieve = BayesianBootstrapSieve(n_samples=n_samples, seed=42)
-        weights = sieve.generate_weights(n_spectra)
+        bootstrap = BayesianBootstrap(n_samples=n_samples, seed=42)
+        weights = bootstrap.generate_weights(n_spectra)
 
         self.assertEqual(weights.shape, (n_samples, n_spectra))
         np.testing.assert_allclose(
@@ -207,23 +207,23 @@ class TestBayesianBootstrapSieve(unittest.TestCase):
     def test_weights_non_negative(self):
         """All Dirichlet weights must be >= 0."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            BayesianBootstrapSieve,
+            BayesianBootstrap,
         )
 
-        sieve = BayesianBootstrapSieve(n_samples=100, seed=7)
-        weights = sieve.generate_weights(30)
+        bootstrap = BayesianBootstrap(n_samples=100, seed=7)
+        weights = bootstrap.generate_weights(30)
         self.assertTrue(np.all(weights >= 0),
                         "Dirichlet weights must be non-negative")
 
     def test_uniform_dirichlet_mean(self):
         """With uniform alpha, mean weight should be ~1/n_spectra."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            BayesianBootstrapSieve,
+            BayesianBootstrap,
         )
 
         n_spectra = 40
-        sieve = BayesianBootstrapSieve(n_samples=10_000, seed=123)
-        weights = sieve.generate_weights(n_spectra)
+        bootstrap = BayesianBootstrap(n_samples=10_000, seed=123)
+        weights = bootstrap.generate_weights(n_spectra)
 
         mean_weights = weights.mean(axis=0)
         expected = 1.0 / n_spectra
@@ -235,7 +235,7 @@ class TestBayesianBootstrapSieve(unittest.TestCase):
     def test_weighted_residuals(self):
         """Weighted residual computation should produce valid arrays."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            BayesianBootstrapSieve,
+            BayesianBootstrap,
         )
 
         n_spectra = 20
@@ -243,8 +243,8 @@ class TestBayesianBootstrapSieve(unittest.TestCase):
         rng = np.random.default_rng(42)
         residuals = rng.normal(0, 1, (n_spectra, n_bins))
 
-        sieve = BayesianBootstrapSieve(n_samples=50, seed=42)
-        weighted = sieve.compute_weighted_residuals(residuals)
+        bootstrap = BayesianBootstrap(n_samples=50, seed=42)
+        weighted = bootstrap.compute_weighted_residuals(residuals)
 
         self.assertEqual(weighted.shape, (50, n_bins))
         # Weighted sums should not be NaN or Inf
@@ -254,11 +254,11 @@ class TestBayesianBootstrapSieve(unittest.TestCase):
     def test_reproducibility(self):
         """Same seed must produce identical weight matrices."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
-            BayesianBootstrapSieve,
+            BayesianBootstrap,
         )
 
-        s1 = BayesianBootstrapSieve(n_samples=10, seed=55)
-        s2 = BayesianBootstrapSieve(n_samples=10, seed=55)
+        s1 = BayesianBootstrap(n_samples=10, seed=55)
+        s2 = BayesianBootstrap(n_samples=10, seed=55)
         w1 = s1.generate_weights(20)
         w2 = s2.generate_weights(20)
         np.testing.assert_array_equal(w1, w2)

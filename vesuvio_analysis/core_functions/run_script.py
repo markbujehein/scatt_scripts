@@ -156,8 +156,8 @@ def runScript(
         for wsName, IC in zip(wsNames, ICs):
             resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
 
-        # --- Phase 6: Statistical Sieves (post-fit) ---
-        _runStatisticalSieves(userCtr, res, resYFit)
+        # --- Phase 6: Statistical Analysis (post-fit) ---
+        _runStatisticalAnalysis(userCtr, res, resYFit)
 
         return res, resYFit  # Return results used only in tests
 
@@ -221,25 +221,26 @@ def checkInputs(crtIC: Any) -> None:
         assert crtIC.procedure == crtIC.fitInYSpace
 
 
-def _runStatisticalSieves(userCtr: Any, res: Any, resYFit: Any) -> None:
-    """Dispatch Phase 6 statistical sieves when their toggle flags are set.
+def _runStatisticalAnalysis(userCtr: Any, res: Any, resYFit: Any) -> None:
+    """Dispatches Phase 6 statistical analysis when toggle flags are set.
 
     Called after the main NCP fitting and y-space fitting have completed.
-    Each sieve is gated by its own boolean flag on ``userCtr`` and runs
+    Each step is gated by its own boolean flag on ``userCtr`` and runs
     only when the flag is ``True``.
 
     Args:
-        userCtr: ``UserScriptControls`` class with ``runSieve1``,
-            ``runSieve2``, and ``runSieve4`` flags.
+        userCtr: ``UserScriptControls`` class with
+            ``runOutlierDetection``, ``runPhysicsClustering``, and
+            ``runBayesianBootstrap`` flags.
         res: Result object from the iterative NCP fit (may be ``None``).
         resYFit: ``ResultsYFitObject`` from the y-space fit (may be
             ``None``).
     """
-    if getattr(userCtr, "runSieve1", False):
-        print("[Phase 6] Sieve 1 (Hardware Outlier Detection) enabled.")
+    if getattr(userCtr, "runOutlierDetection", False):
+        print("[Phase 6] Hardware Outlier Detection enabled.")
 
-    if getattr(userCtr, "runSieve2", False):
-        print("[Phase 6] Sieve 2 (Physics Trend Clustering) enabled.")
+    if getattr(userCtr, "runPhysicsClustering", False):
+        print("[Phase 6] Physics Trend Clustering enabled.")
 
-    if getattr(userCtr, "runSieve4", False):
-        print("[Phase 6] Sieve 4 (Bayesian Bootstrap) enabled.")
+    if getattr(userCtr, "runBayesianBootstrap", False):
+        print("[Phase 6] Bayesian Bootstrap enabled.")
