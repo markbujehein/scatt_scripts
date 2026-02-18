@@ -70,7 +70,7 @@ def test_func(ws, mass):
     np.testing.assert_allclose(dataX_ori, dataX_opt)
     
     
-ws = Load(Filename= )
+ws = Load(Filename="")
    
 test_func(ws.name(), 1.0079)
     
