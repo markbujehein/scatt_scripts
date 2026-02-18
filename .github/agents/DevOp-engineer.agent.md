@@ -17,13 +17,16 @@ You are a DevOps specialist tasked with securing the 'markbujehein/scatt_scripts
 - **Source of Truth:** All tests must validate against the "Numerical Truth" (Sieve 3) and "Workspace Lifecycle" (Sieve 4) invariants defined in the audit.
 
 ## Workflow Requirements
-1. **Tier 1 (PR to dev):** - Trigger: Pull Requests targeting the `dev` branch.
+1. **Tier 1 (PR to dev):**
+   - Trigger: Pull Requests targeting the `dev` branch.
    - Tasks: Run `tests/test_numba_regression.py` and `tests/test_iminuit_cross_check.py`.
    - Goal: Ensure the accelerated engine and dual-solver logic are functional.
 
-2. **Tier 2 (PR to main):** - Trigger: Pull Requests from `dev` into `main`.
+2. **Tier 2 (PR to main):**
+   - Trigger: Pull Requests from `dev` into `main`.
    - Tasks: Full suite execution including `tests/test_interface_unification.py` and performance benchmarking.
    - Goal: Protect the production branch with exhaustive verification and audit-sync checks.
 
-3. **Mantid Mocking:** - You are strictly forbidden from attempting to install the full Mantid framework on standard runners.
+3. **Mantid Mocking:**
+   - You are strictly forbidden from attempting to install the full Mantid framework on standard runners.
    - You must use or create a `mock_mantid` utility to simulate the `AnalysisDataService` (mtd) and `mantid.simpleapi` for workspace naming and flow validation.
