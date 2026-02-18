@@ -50,7 +50,7 @@ def _legacy_pseudoVoigt(x, sigma, gamma, normVoigt):
     gamma_v = f / 2.0
     pv = eta * _legacy_lorentizian(x, gamma_v) + (1.0 - eta) * _legacy_gaussian(x, sigma_v)
     if normVoigt:
-        norm = np.abs(np.trapz(pv, x, axis=1))[:, np.newaxis]
+        norm = np.abs(np.trapezoid(pv, x, axis=1))[:, np.newaxis]
         pv = pv / norm
     return pv
 

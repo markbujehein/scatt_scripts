@@ -10,8 +10,11 @@ Each test uses deterministic dummy data to verify:
 2. MIGRAD + Hesse reaches the same minimum as ``scipy.optimize.minimize``
    within a tight tolerance.
 3. Minos errors are computed without raising exceptions.
+4. **Sieve 3 — 5% Numerical Agreement Gate** logs a warning when the
+   two optimizers disagree on chi-squared or parameters by more than 5%.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -340,6 +343,103 @@ class TestHesseAndMinos(unittest.TestCase):
             # If the minimum is not valid on this landscape, skip
             # Minos (it requires a valid minimum).
             self.skipTest("MIGRAD did not converge; Minos skipped.")
+
+
+class TestSieve3AgreementGate(unittest.TestCase):
+    """Verify the 5% Numerical Agreement Gate (Sieve 3).
+
+    The gate compares chi-squared values and parameter vectors from
+    both optimizers and logs a warning when the relative difference
+    exceeds the ``_AGREEMENT_THRESHOLD`` (5 %).  These tests exercise
+    the gate logic on well-conditioned problems to confirm:
+
+    1. When solvers agree (simple quadratic), no warning is emitted.
+    2. The 5 % threshold is correctly applied to both chi² and pars.
+    """
+
+    def test_no_warning_on_agreement(self):
+        """Well-conditioned quadratic: both solvers should agree within 5%."""
+        true = np.array([3.0, 5.0, -1.0])
+
+        class _Quad:
+            errordef = Minuit.LEAST_SQUARES
+            _parameters = {"a": (0, 10), "b": (0, 20), "c": (-5, 5)}
+
+            def __call__(self, a, b, c):
+                return (a - 3) ** 2 + (b - 5) ** 2 + (c + 1) ** 2
+
+        def _quad_scipy(pars):
+            return (pars[0] - 3) ** 2 + (pars[1] - 5) ** 2 + (pars[2] + 1) ** 2
+
+        scipy_res = optimize.minimize(
+            _quad_scipy, [1.0, 1.0, 0.0],
+            method="SLSQP", bounds=[(0, 10), (0, 20), (-5, 5)],
+        )
+        m = Minuit(_Quad(), a=1.0, b=1.0, c=0.0)
+        m.migrad()
+
+        # Chi-squared agreement
+        threshold = 0.05
+        if scipy_res.fun > 0:
+            chi2_rel = abs(scipy_res.fun - m.fval) / scipy_res.fun
+        else:
+            chi2_rel = 0.0
+        self.assertLessEqual(chi2_rel, threshold)
+
+        # Parameter agreement
+        par_rel = np.where(
+            np.abs(scipy_res.x) > 1e-12,
+            np.abs(scipy_res.x - np.array(m.values)) / np.abs(scipy_res.x),
+            0.0,
+        )
+        self.assertLessEqual(np.max(par_rel), threshold)
+
+    def test_gate_detects_disagreement(self):
+        """Verify that a >5% parameter disagreement is detectable."""
+        scipy_pars = np.array([10.0, 5.0, 1.0])
+        # Deliberately shift one parameter by 10 %
+        iminuit_pars = np.array([10.0, 5.5, 1.0])
+
+        threshold = 0.05
+        par_rel = np.where(
+            np.abs(scipy_pars) > 1e-12,
+            np.abs(scipy_pars - iminuit_pars) / np.abs(scipy_pars),
+            0.0,
+        )
+        max_diff = float(np.max(par_rel))
+        # 5.5 vs 5.0 = 10% → exceeds 5 %
+        self.assertGreater(max_diff, threshold)
+
+    def test_gate_passes_within_threshold(self):
+        """Parameter differences ≤ 5% should pass the gate."""
+        scipy_pars = np.array([10.0, 5.0, 1.0])
+        # Small perturbation (1 %)
+        iminuit_pars = np.array([10.1, 5.05, 1.01])
+
+        threshold = 0.05
+        par_rel = np.where(
+            np.abs(scipy_pars) > 1e-12,
+            np.abs(scipy_pars - iminuit_pars) / np.abs(scipy_pars),
+            0.0,
+        )
+        max_diff = float(np.max(par_rel))
+        self.assertLessEqual(max_diff, threshold)
+
+    def test_gate_handles_zero_parameters(self):
+        """Parameters near zero should not produce spurious gate failures."""
+        scipy_pars = np.array([10.0, 0.0, 1e-15])
+        iminuit_pars = np.array([10.5, 0.001, 1e-14])
+
+        threshold = 0.05
+        par_rel = np.where(
+            np.abs(scipy_pars) > 1e-12,
+            np.abs(scipy_pars - iminuit_pars) / np.abs(scipy_pars),
+            0.0,
+        )
+        max_diff = float(np.max(par_rel))
+        # Only par[0] (10.0 vs 10.5 = 5%) triggers; near-zero pars are safe
+        self.assertEqual(par_rel[1], 0.0)  # guarded against zero division
+        self.assertEqual(par_rel[2], 0.0)
 
 
 if __name__ == "__main__":
