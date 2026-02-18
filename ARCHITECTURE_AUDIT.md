@@ -330,15 +330,16 @@ class NCPCostFunction:
 - Store iMinuit results in a parallel column of the results table (e.g., `"Minuit Chi2"`)
 - **Do NOT remove** `scipy.optimize.minimize` — it remains the primary optimizer for regression safety
 
-### 6.3 Phase 3 — Extend `MyLeastSquares` Pattern
+### 6.3 Phase 3 — Extend `MyLeastSquares` Pattern ✅
 
 **Goal:** Unify the cost-function interface across the codebase.
 
-- The existing `MyLeastSquares` class in `fit_in_yspace.py:669` is already correct
-- Extend the same pattern to:
-  - `NCPCostFunction` (TOF domain, Phase 2)
-  - Global-fit cost functions (already using `cost.LeastSquares`)
-- Ensure all custom cost classes expose: `errordef`, `__call__`, `func_code`, `ndata`
+- `MyLeastSquares` updated: replaced deprecated `func_code` with modern `_parameters` dict
+- `NCPCostFunction` extended: added `ndata` property returning count of non-zero data points
+- `GlobalNCPCostFunction` created: inherits from `cost.Cost`, supports `CostSum` for global fits
+- `calcCostFun` refactored: returns `GlobalNCPCostFunction` instead of generic `cost.LeastSquares`
+- All custom cost classes expose: `errordef`, `__call__`, `_parameters`, `ndata`
+- Verification: `tests/test_interface_unification.py` (zero Mantid dependency)
 
 ### 6.4 Phase 4 — Mantid Workspace Lifecycle Preservation
 
