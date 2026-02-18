@@ -1,15 +1,28 @@
 
+from typing import Any, List, Optional, Tuple
+
 from .analysis_functions import iterativeFitForDataReduction, switchFirstTwoAxis
 from mantid.api import AnalysisDataService, mtd
 from mantid.simpleapi import CreateEmptyTableWorkspace
 import numpy as np
 
 
-def runIndependentIterativeProcedure(IC, clearWS=True):
-    """
-    Runs the iterative fitting of NCP, cleaning any previously stored workspaces.
-    input: Backward or Forward scattering initial conditions object
-    output: Final workspace that was fitted, object with results arrays
+def runIndependentIterativeProcedure(
+    IC: Any, clearWS: bool = True
+) -> Tuple[Any, "resultsObject"]:
+    """Run the iterative NCP fitting for a single scattering direction.
+
+    Clears all Mantid workspaces (unless *clearWS* is ``False``) and
+    delegates to ``iterativeFitForDataReduction``.
+
+    Args:
+        IC: Completed ``BackwardInitialConditions`` or
+            ``ForwardInitialConditions`` object.
+        clearWS: Clear the AnalysisDataService before starting.
+
+    Returns:
+        A 2-tuple ``(wsFinal, fittingResults)`` from
+        ``iterativeFitForDataReduction``.
     """
 
     # Clear worksapces before running one of the procedures below
@@ -19,7 +32,26 @@ def runIndependentIterativeProcedure(IC, clearWS=True):
     return iterativeFitForDataReduction(IC)
 
 
-def runJointBackAndForwardProcedure(bckwdIC, fwdIC, clearWS=True):
+def runJointBackAndForwardProcedure(
+    bckwdIC: Any, fwdIC: Any, clearWS: bool = True
+) -> Tuple[Any, Any, Any]:
+    """Run the joint backward + forward iterative fitting procedure.
+
+    Clears workspaces, then runs backward and forward scattering in
+    sequence, passing mean widths and intensities from backward
+    results into the forward initial conditions.
+
+    Args:
+        bckwdIC: Completed backward initial-conditions object.
+        fwdIC: Completed forward initial-conditions object.
+        clearWS: Clear the AnalysisDataService before starting.
+
+    Returns:
+        A 3-tuple ``(wsFinal, bckwdScatResults, fwdScatResults)``.
+
+    Raises:
+        AssertionError: If the IC objects are in the wrong order.
+    """
     assert bckwdIC.modeRunning == "BACKWARD", "Missing backward IC, args usage: (bckwdIC, fwdIC)"
     assert fwdIC.modeRunning == "FORWARD", "Missing forward IC, args usage: (bckwdIC, fwdIC)"
 
@@ -30,11 +62,27 @@ def runJointBackAndForwardProcedure(bckwdIC, fwdIC, clearWS=True):
     return runJoint(bckwdIC, fwdIC)
 
 
-def runPreProcToEstHRatio(bckwdIC, fwdIC):
-    """
-    Used when H is present and H to first mass ratio is not known.
-    Preliminary forward scattering is run to get rough estimate of H to first mass ratio.
-    Runs iterative procedure with alternating back and forward scattering.
+def runPreProcToEstHRatio(
+    bckwdIC: Any, fwdIC: Any
+) -> Tuple[List[float], List[int]]:
+    """Run a preliminary procedure to estimate the H-to-mass intensity ratio.
+
+    Used when hydrogen is present but ``HToMassIdxRatio`` is unknown.
+    Alternates backward and forward fits with zero MS iterations to
+    converge on a ratio.  The estimated ratio is written to
+    ``bckwdIC.HToMassIdxRatio``.
+
+    Args:
+        bckwdIC: Completed backward IC (mutated with the estimated
+            H ratio).
+        fwdIC: Completed forward IC.
+
+    Returns:
+        A 2-tuple ``(HRatios, massIdxs)`` — lists of H intensity
+        ratios and corresponding mass indices at each iteration.
+
+    Raises:
+        AssertionError: If called during a bootstrap run.
     """
 
     assert bckwdIC.runningSampleWS == False, "Preliminary procedure not suitable for Bootstrap."
@@ -85,7 +133,16 @@ def runPreProcToEstHRatio(bckwdIC, fwdIC):
     return HRatios, massIdxs
 
 
-def createTableWSHRatios(HRatios, massIdxs):
+def createTableWSHRatios(HRatios: List[float], massIdxs: List[int]) -> None:
+    """Store H-ratio convergence history in a Mantid TableWorkspace.
+
+    Creates a table named ``"H_Ratios_From_Preliminary_Procedure"``
+    in the AnalysisDataService.
+
+    Args:
+        HRatios: H intensity ratios at each iteration.
+        massIdxs: Mass indices at each iteration.
+    """
     tableWS = CreateEmptyTableWorkspace(OutputWorkspace="H_Ratios_From_Preliminary_Procedure")
     tableWS.setTitle("H Ratios and Idxs at each iteration")
     tableWS.addColumn(type="int", name="iter")
@@ -96,7 +153,15 @@ def createTableWSHRatios(HRatios, massIdxs):
     return
 
 
-def askUserNoOfIterations():
+def askUserNoOfIterations() -> int:
+    """Prompt the user for the number of preliminary iterations.
+
+    Returns:
+        Number of iterations entered by the user.
+
+    Raises:
+        KeyboardInterrupt: If the user declines to run.
+    """
     print("\nH was detected but HToMassIdxRatio was not provided.")
     print("\nSugested preliminary procedure:\n\nrun_forward\nfor n:\n    estimate_HToMassIdxRatio\n    run_backward\n    run_forward")
     userInput = input("\n\nDo you wish to run preliminary procedure to estimate HToMassIdxRatio? (y/n)") 
@@ -106,10 +171,21 @@ def askUserNoOfIterations():
     return nIter
  
 
-def calculateHToMassIdxRatio(fwdScatResults):
-    """
-    Calculate H ratio to mass with highest peak.
-    Returns idx of mass and corresponding H ratio.
+def calculateHToMassIdxRatio(fwdScatResults: Any) -> Tuple[int, float]:
+    """Estimate the H intensity ratio from forward-scattering results.
+
+    Finds the non-H mass with the highest mean intensity and computes
+    ``H_intensity / max_non_H_intensity``.
+
+    Args:
+        fwdScatResults: ``resultsObject`` from the forward fit.
+
+    Returns:
+        A 2-tuple ``(massIdx, HRatio)`` — the index of the reference
+        mass (in the backward mass list) and the ratio.
+
+    Raises:
+        AssertionError: If the reference mass intensity is zero.
     """
     fwdMeanIntensityRatios = fwdScatResults.all_mean_intensities[-1] 
 
@@ -124,19 +200,42 @@ def calculateHToMassIdxRatio(fwdScatResults):
     return massIdx, HRatio
 
 
-def runJoint(bckwdIC, fwdIC):
+def runJoint(
+    bckwdIC: Any, fwdIC: Any
+) -> Tuple[Any, Any, Any]:
+    """Execute backward then forward iterative fits in sequence.
+
+    Passes mean widths and intensities from the backward fit into
+    the forward initial conditions via ``setInitFwdParsFromBackResults``.
+
+    Args:
+        bckwdIC: Completed backward IC.
+        fwdIC: Completed forward IC.
+
+    Returns:
+        A 3-tuple ``(wsFinal, bckwdScatResults, fwdScatResults)``.
+    """
     wsFinal, bckwdScatResults = iterativeFitForDataReduction(bckwdIC)
     setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC)
     wsFinal, fwdScatResults = iterativeFitForDataReduction(fwdIC)
     return wsFinal, bckwdScatResults, fwdScatResults   
 
 
-def setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC):
-    """
-    Used to pass mean widths and intensities from back scattering onto intial conditions of forward scattering.
-    Checks if H is present and adjust the passing accordingly:
-    If H present, use HToMassIdxRatio to recalculate intensities and fix only non-H widths.
-    If H not present, widths and intensities are directly mapped and all widhts except first are fixed. 
+def setInitFwdParsFromBackResults(
+    bckwdScatResults: Any, bckwdIC: Any, fwdIC: Any
+) -> None:
+    """Update forward IC with mean widths and intensities from backward results.
+
+    When hydrogen is present, uses ``HToMassIdxRatio`` to compute the
+    H intensity and fixes all non-H widths.  When hydrogen is absent,
+    directly maps widths and intensities, fixing all widths except the
+    first.
+
+    Args:
+        bckwdScatResults: ``resultsObject`` from the backward fit.
+        bckwdIC: Completed backward IC (carries ``HToMassIdxRatio``
+            and ``massIdx``).
+        fwdIC: Completed forward IC (mutated in-place).
     """
 
     # Get widts and intensity ratios from backscattering results
@@ -177,7 +276,22 @@ def setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC):
     return
 
 
-def isHPresent(masses) -> bool:
+def isHPresent(masses: np.ndarray) -> bool:
+    """Check whether hydrogen is present in the mass array.
+
+    Hydrogen is identified as a mass within 10% of 1 a.m.u.  It must
+    be the first element of *masses* and appear exactly once.
+
+    Args:
+        masses: Atomic masses in a.m.u., shape ``(n_masses,)``.
+
+    Returns:
+        ``True`` if hydrogen is present, ``False`` otherwise.
+
+    Raises:
+        AssertionError: If hydrogen is not first, appears more than
+            once, or is the only mass present.
+    """
 
     Hmask = np.abs(masses-1)/1 < 0.1        # H mass whithin 10% of 1 au
 

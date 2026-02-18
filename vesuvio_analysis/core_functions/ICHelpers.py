@@ -1,4 +1,6 @@
 
+from typing import Any, Dict, List, Optional, Tuple
+
 from random import sample
 from mantid.simpleapi import LoadVesuvio, SaveNexus
 from pathlib import Path
@@ -8,8 +10,32 @@ currentPath = Path(__file__).absolute().parent
 experimentsPath = currentPath / ".."/ ".." / "experiments"
 
 
-def completeICFromInputs(IC, scriptName, wsIC):
-    """Assigns new methods to the initial conditions class from the inputs of that class"""
+def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
+    """Populate derived attributes on an initial-conditions class.
+
+    Determines the scattering direction (``BACKWARD`` / ``FORWARD``),
+    constructs naming conventions, resolves input/output file paths,
+    and ensures that cached Nexus workspaces exist (calling
+    ``LoadVesuvio`` + ``SaveNexus`` if not).  Sets default values for
+    optional attributes (``runHistData``, ``normVoigt``, etc.).
+
+    This function mutates *IC* in-place by adding or overwriting class
+    attributes.
+
+    Args:
+        IC: ``BackwardInitialConditions`` or
+            ``ForwardInitialConditions`` class to be completed.
+        scriptName: Base name of the submission script (without
+            ``.py``).
+        wsIC: ``LoadVesuvioBackParameters`` or
+            ``LoadVesuvioFrontParameters`` class with run numbers,
+            spectra, mode, and ip-file.
+
+    Raises:
+        ValueError: If the spectrum range does not fall entirely within
+            one detector bank.
+        AssertionError: If ``lastSpec <= firstSpec``.
+    """
 
     assert IC.lastSpec > IC.firstSpec, "Last spectrum needs to be bigger than first spectrum"
     assert ((IC.lastSpec<135) & (IC.firstSpec<135)) | ((IC.lastSpec>=135) & (IC.firstSpec>=135)), "First and last spec need to be both in Back or Front scattering."
@@ -86,7 +112,20 @@ def completeICFromInputs(IC, scriptName, wsIC):
     return 
 
 
-def inputDirsForSample(wsIC, sampleName):
+def inputDirsForSample(wsIC: Any, sampleName: str) -> Tuple[Path, Path]:
+    """Resolve raw and empty workspace file paths for a sample.
+
+    Searches existing directories for a matching JSON log file.  If no
+    match is found, returns paths in a new versioned directory.
+
+    Args:
+        wsIC: Load-workspace parameter class with ``runs``,
+            ``empty_runs``, ``spectra``, ``mode``, and ``ipfile``.
+        sampleName: Base name of the experiment.
+
+    Returns:
+        A 2-tuple ``(rawPath, emptyPath)`` of ``Path`` objects.
+    """
     inputWSPath = experimentsPath / sampleName / "input_ws"
     inputWSPath.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +154,18 @@ def inputDirsForSample(wsIC, sampleName):
     return rawPath, emptyPath
 
 
-def identifyRunningMode(wsIC) -> str:
+def identifyRunningMode(wsIC: Any) -> str:
+    """Determine the scattering direction from the spectrum range.
+
+    Args:
+        wsIC: Load-workspace parameter class with ``spectra``.
+
+    Returns:
+        ``"backward"`` or ``"forward"``.
+
+    Raises:
+        ValueError: If the spectrum range is invalid.
+    """
     if int(wsIC.spectra.split("-")[1]) < 135:
         runningMode = "backward"
     elif int(wsIC.spectra.split("-")[0]) >= 135:
@@ -125,13 +175,31 @@ def identifyRunningMode(wsIC) -> str:
     return runningMode
 
 
-def nameRawEmptyWS(sampleName, runningMode):
+def nameRawEmptyWS(sampleName: str, runningMode: str) -> Tuple[str, str]:
+    """Generate Nexus file names for raw and empty workspaces.
+
+    Args:
+        sampleName: Base name of the experiment.
+        runningMode: ``"backward"`` or ``"forward"``.
+
+    Returns:
+        A 2-tuple ``(rawWSName, emptyWSName)``.
+    """
     rawWSName = sampleName + "_raw_" + runningMode + ".nxs"
     emptyWSName = sampleName + "_empty_" + runningMode + ".nxs"
     return rawWSName, emptyWSName
 
 
-def defaultNewWSDirectory(inputWSPath, runningMode):
+def defaultNewWSDirectory(inputWSPath: Path, runningMode: str) -> Path:
+    """Generate the next versioned directory for cached workspaces.
+
+    Args:
+        inputWSPath: Parent directory for workspace storage.
+        runningMode: ``"backward"`` or ``"forward"``.
+
+    Returns:
+        Path to the new versioned directory.
+    """
     wsDirs = inputWSPath.glob(f'{runningMode}*/')
     versionNums = [float(dir.name.split('_')[-1]) for dir in wsDirs]
     versionNums = [0.0] if not versionNums else versionNums    # Take care of empty list
@@ -140,7 +208,17 @@ def defaultNewWSDirectory(inputWSPath, runningMode):
     return newWSDir
 
 
-def setOutputDirsForSample(IC, sampleName):
+def setOutputDirsForSample(IC: Any, sampleName: str) -> None:
+    """Set ``.npz`` output paths on the initial-conditions object.
+
+    Constructs file names incorporating the spectrum range, number of
+    MS iterations, and correction flags.  Sets ``IC.resultsSavePath``
+    and ``IC.ySpaceFitSavePath``.
+
+    Args:
+        IC: Initial-conditions object to mutate.
+        sampleName: Base name of the experiment.
+    """
     outputPath = experimentsPath / sampleName / "output_npz_for_testing"
     outputPath.mkdir(parents=True, exist_ok=True)
 
@@ -159,7 +237,18 @@ def setOutputDirsForSample(IC, sampleName):
     return
 
 
-def saveWSFromLoadVesuvio(wsIC, rawPath, emptyPath):
+def saveWSFromLoadVesuvio(wsIC: Any, rawPath: Path, emptyPath: Path) -> None:
+    """Load raw and empty VESUVIO data and cache as Nexus files.
+
+    Calls Mantid ``LoadVesuvio`` for both raw and empty runs, then
+    ``SaveNexus`` to the provided paths.  Also saves a JSON log file
+    recording the load parameters.
+
+    Args:
+        wsIC: Load-workspace parameter class.
+        rawPath: Output path for the raw Nexus file.
+        emptyPath: Output path for the empty Nexus file.
+    """
     
     print(f"\nLoading and storing workspace sample runs: {wsIC.runs}\n")
 
@@ -190,14 +279,32 @@ def saveWSFromLoadVesuvio(wsIC, rawPath, emptyPath):
     return
 
 
-def saveJsonFile(parentDir, fileName, wsIC):
+def saveJsonFile(parentDir: Path, fileName: str, wsIC: Any) -> None:
+    """Save load-workspace parameters as a JSON file.
+
+    Args:
+        parentDir: Directory to write the file.
+        fileName: JSON file name.
+        wsIC: Load-workspace parameter class.
+    """
     savePath = parentDir / fileName
     currLoadWSDict = convertLoadWSICToDict(wsIC)
     json.dump(currLoadWSDict, open(savePath, 'w'))
     return
 
 
-def completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC):
+def completeBootIC(bootIC: Any, bckwdIC: Any, fwdIC: Any, yFitIC: Any) -> None:
+    """Populate derived attributes on the bootstrap initial-conditions class.
+
+    Sets up output directories and file paths for bootstrap/jackknife
+    data.  Does nothing if ``bootIC.runBootstrap`` is ``False``.
+
+    Args:
+        bootIC: ``BootstrapInitialConditions`` class.
+        bckwdIC: Completed backward IC (used for naming).
+        fwdIC: Completed forward IC.
+        yFitIC: Y-space fit configuration.
+    """
     if not bootIC.runBootstrap:
         return
 
@@ -210,8 +317,19 @@ def completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC):
     return
 
 
-def setBootstrapDirs(bckwdIC, fwdIC, bootIC, yFitIC):
-    """Form bootstrap output data paths"""
+def setBootstrapDirs(bckwdIC: Any, fwdIC: Any, bootIC: Any, yFitIC: Any) -> None:
+    """Create bootstrap output directories and set save paths.
+
+    Organises output by bootstrap type (jackknife vs. bootstrap) and
+    whether MS iterations are skipped.  Writes a log header file if
+    one does not already exist.
+
+    Args:
+        bckwdIC: Completed backward IC.
+        fwdIC: Completed forward IC.
+        bootIC: Bootstrap configuration.
+        yFitIC: Y-space fit configuration.
+    """
 
     # Select script name and experiments path
     sampleName = bckwdIC.scriptName   # Name of sample currently running
@@ -252,8 +370,17 @@ def setBootstrapDirs(bckwdIC, fwdIC, bootIC, yFitIC):
     return 
 
 
-def genBootFilesName (IC, bootIC):
-    """Generates save file name for either BACKWARD or FORWARD class"""
+def genBootFilesName(IC: Any, bootIC: Any) -> Tuple[str, str]:
+    """Generate ``.npz`` file names for bootstrap NCP and y-space results.
+
+    Args:
+        IC: Completed backward or forward IC.
+        bootIC: Bootstrap configuration with ``nSamples`` and
+            ``bootstrapType``.
+
+    Returns:
+        A 2-tuple ``(bootName, bootNameYFit)`` of file name strings.
+    """
 
     nSamples = bootIC.nSamples
     if bootIC.bootstrapType=="JACKKNIFE": 
@@ -272,14 +399,32 @@ def genBootFilesName (IC, bootIC):
     return bootName, bootNameYFit
 
 
-def header_string():
+def header_string() -> str:
+    """Return the header text for the bootstrap log file.
+
+    Returns:
+        Multi-line header describing the log file format.
+    """
+
     return """
     This file contains some information about each data file in the folder.
     ncp data file: boot type | procedure | tof binning | masked tof range.
     yspace fit data file: boot type | procedure | symmetrisation | rebin pars | fit model | mask type
     """
 
-def logString(bootDataName, IC, yFitIC, bootIC, isYFit):
+def logString(bootDataName: str, IC: Any, yFitIC: Any, bootIC: Any, isYFit: bool) -> str:
+    """Build a single-line log entry for a bootstrap data file.
+
+    Args:
+        bootDataName: File name of the bootstrap data.
+        IC: Completed initial-conditions object.
+        yFitIC: Y-space fit configuration.
+        bootIC: Bootstrap configuration.
+        isYFit: ``True`` for y-space fit logs, ``False`` for NCP logs.
+
+    Returns:
+        Formatted log string.
+    """
     if isYFit:
         log = (bootDataName+" : "+bootIC.bootstrapType+
         " | "+str(bootIC.fitInYSpace)+
@@ -295,17 +440,45 @@ def logString(bootDataName, IC, yFitIC, bootIC, isYFit):
     return log
 
 
-def noOfHistsFromTOFBinning(IC):
+def noOfHistsFromTOFBinning(IC: Any) -> int:
+    """Calculate the number of histogram bins from the TOF binning string.
+
+    Args:
+        IC: Initial-conditions object with ``tofBinning``.
+
+    Returns:
+        Number of histogram bins (excluding the last column).
+    """
     start, spacing, end = [int(float(s)) for s in IC.tofBinning.split(",")]  # Convert first to float and then to int because of decimal points
     return int((end-start)/spacing) - 1 # To account for last column being ignored
 
 
-def buildFinalWSName(scriptName: str, procedure: str, IC):
+def buildFinalWSName(scriptName: str, procedure: str, IC: Any) -> str:
+    """Construct the name of the corrected workspace from the last iteration.
+
+    The name follows the convention
+    ``"{scriptName}_{procedure}_{noOfMSIterations}"``.
+
+    Args:
+        scriptName: Base name of the submission script.
+        procedure: ``"BACKWARD"`` or ``"FORWARD"``.
+        IC: Completed initial-conditions object with
+            ``noOfMSIterations``.
+
+    Returns:
+        The workspace name string.
+    """
     # Format of corrected ws from last iteration
     name = scriptName + "_" + procedure + "_" + str(IC.noOfMSIterations)
     return name 
 
-def completeYFitIC(yFitIC, sampleName):
+def completeYFitIC(yFitIC: Any, sampleName: str) -> None:
+    """Set the figure save path on the y-space fit configuration.
+
+    Args:
+        yFitIC: ``YSpaceFitInitialConditions`` class to mutate.
+        sampleName: Base name of the experiment.
+    """
     # Set directories for figures
 
     figSavePath = experimentsPath / sampleName /  "figures" 
@@ -313,7 +486,15 @@ def completeYFitIC(yFitIC, sampleName):
     yFitIC.figSavePath = figSavePath
     return
 
-def convertLoadWSICToDict(wsIC):
+def convertLoadWSICToDict(wsIC: Any) -> Dict[str, str]:
+    """Convert load-workspace parameters to a JSON-serialisable dict.
+
+    Args:
+        wsIC: Load-workspace parameter class.
+
+    Returns:
+        A dict with string keys and string values.
+    """
     load_ws_params = {}
     for attr in ["runs", "empty_runs", "spectra", "mode", "ipfile" ]:
         load_ws_params[attr] = str(getattr(wsIC, attr))      # str -> str, PosixPath -> str
