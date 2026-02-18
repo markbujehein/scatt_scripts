@@ -14,7 +14,6 @@ Each test uses deterministic dummy data to verify:
    two optimizers disagree on chi-squared or parameters by more than 1%.
 """
 
-import logging
 import unittest
 
 import numpy as np
