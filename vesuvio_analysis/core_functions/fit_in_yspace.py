@@ -739,8 +739,7 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
     # Propagate model annotations for limits; y0 is unbounded (None)
     convolvedModel._parameters = {"y0": None}
     for name in signature[2:]:  # skip 'x' and 'y0'
-        original_name = name  # name matches original model's param name
-        convolvedModel._parameters[name] = annotations.get(original_name)
+        convolvedModel._parameters[name] = annotations.get(name)
     defaultPars["y0"] = 0    # Add initialization of parameter to dictionary
 
     # Fit only valid values, ignore cut-offs 
