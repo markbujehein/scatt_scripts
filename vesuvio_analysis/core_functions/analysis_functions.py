@@ -78,8 +78,9 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
         if iteration == ic.noOfMSIterations: break 
 
         # Replace zero columns (bins) with ncp total fit
-        # If ws has no zero column, then remains unchanged
-        if iteration == 0: wsNCPM = replaceZerosWithNCP(mtd[ic.name], ncpTotal)
+        # If ws has no zero column, then remains unchanged.
+        # Refreshed at every iteration so MS/GC use the latest NCP estimate.
+        wsNCPM = replaceZerosWithNCP(mtd[ic.name], ncpTotal)
 
         CloneWorkspace(InputWorkspace=ic.name, OutputWorkspace="tmpNameWs")
 
@@ -280,21 +281,44 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     """Fit the Neutron Compton Profile to every spectrum in a workspace.
 
     Prepares kinematic and resolution arrays, then fits each spectrum
-    independently via ``fitNcpToSingleSpec`` (scipy SLSQP).  The best
-    fit parameters are stored in a TableWorkspace and the synthetic NCP
-    profiles are written back as separate workspaces.
+    independently via ``fitNcpToSingleSpec`` (scipy SLSQP + parallel
+    iMinuit cross-validation).  The best-fit parameters are stored in a
+    TableWorkspace and the synthetic NCP profiles are written back as
+    separate workspaces.
+
+    **Workspace lifecycle:**
+
+    * ``ws`` (``InputWorkspace``) — read-only; data is extracted via
+      :func:`extractWS` and the object is not modified in-place.
+    * ``ws.name() + "_Best_Fit_NCP_Parameters"`` — **created** as a new
+      TableWorkspace in the AnalysisDataService.
+    * ``ws.name() + "_TOF_Fitted_Profiles"`` — **created** as a new
+      MatrixWorkspace containing the synthetic total NCP.
+    * ``ws.name() + "_TOF_Fitted_Profile_<i>"`` — **created**, one per
+      mass *i*.
+    * ``ws.name() + "_Sum"`` — **created** via ``SumSpectra``.
 
     Args:
         IC: Completed initial-conditions object with fit parameters,
             masses, bounds, constraints, and path information.
         ws: Mantid workspace containing the TOF data to fit, shape
-            ``(n_spectra, n_bins)``.
+            ``(n_spectra, n_bins)``.  Must already be registered in the
+            ``mtd`` AnalysisDataService.
 
     Returns:
         ``ncpTotal``, the summed NCP over all masses for each spectrum,
         shape ``(n_spectra, n_bins)``.
+
+    Raises:
+        AssertionError: If ``ws`` is not present in ``mtd`` on entry, or
+            if the output NCP workspace is missing from ``mtd`` on exit.
     """
-    
+    # --- Entry guard: workspace must be in the AnalysisDataService ---
+    assert ws.name() in mtd, (
+        f"fitNcpToWorkspace: InputWorkspace '{ws.name()}' not found in mtd. "
+        "Ensure the workspace was created before calling this function."
+    )
+
     dataX, dataY, dataE = extractWS(ws)
     if IC.runHistData:     # Converts point data from workspaces to histogram data
         dataY, dataX, dataE = histToPointData(dataY, dataX, dataE)      
@@ -309,6 +333,13 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     arrBestFitPars = arrFitPars[:, 1:-2]
     ncpForEachMass, ncpTotal = calculateNcpArr(IC, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
     ncpSumWSs = createNcpWorkspaces(ncpForEachMass, ncpTotal, ws, IC)
+
+    # --- Exit guard: output NCP workspace must now exist in mtd ---
+    _ncp_ws_name = ws.name() + "_TOF_Fitted_Profiles"
+    assert _ncp_ws_name in mtd, (
+        f"fitNcpToWorkspace: OutputWorkspace '{_ncp_ws_name}' was not "
+        "created in mtd.  NCP calculation may have failed silently."
+    )
 
     wsDataSum = SumSpectra(InputWorkspace=ws, OutputWorkspace=ws.name()+"_Sum")
     plotSumNCPFits(wsDataSum, *ncpSumWSs, IC)
