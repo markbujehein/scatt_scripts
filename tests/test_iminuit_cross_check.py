@@ -359,7 +359,6 @@ class TestSieve3AgreementGate(unittest.TestCase):
 
     def test_no_warning_on_agreement(self):
         """Well-conditioned quadratic: both solvers should agree within 5%."""
-        true = np.array([3.0, 5.0, -1.0])
 
         class _Quad:
             errordef = Minuit.LEAST_SQUARES
