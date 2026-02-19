@@ -156,8 +156,8 @@ class BackwardInitialConditions(GeneralInitialConditions):
     constraints = []
 
     noOfMSIterations = 2  # Number of MS corrections, 0 is no correction
-    firstSpec = 3    #3
-    lastSpec = 134   #134
+    firstSpec = 3  # 3
+    lastSpec = 134  # 134
 
     maskedSpecAllNo = np.array([18, 34, 45, 52, 62])
 
@@ -257,7 +257,7 @@ class ForwardInitialConditions(GeneralInitialConditions):
 
     noOfMSIterations = 2
     firstSpec = 135  # 144
-    lastSpec = 182   #182
+    lastSpec = 182  # 182
 
     # Boolean Flags to control script
     MSCorrectionFlag = True
@@ -327,9 +327,13 @@ class UserScriptControls:
     runRoutine = True
 
     # Choose main procedure to run
-    procedure = "JOINT"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    procedure = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
-    fitInYSpace = "FORWARD"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    fitInYSpace = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+
+    runOutlierDetection = True
+    runPhysicsClustering = True
+    runBayesianBootstrap = True
 
 
 class BootstrapInitialConditions:
@@ -360,10 +364,14 @@ class BootstrapInitialConditions:
     procedure = "BACKWARD"
     fitInYSpace = None  # "FORWARD"
 
-    bootstrapType = "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"
+    bootstrapType = (
+        "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"
+    )
     nSamples = 650  # Used if running Bootstrap, otherwise code ignores it
     skipMSIterations = False  # Each replica runs with no MS or Gamma corrections
-    userConfirmation = True  # Asks user to confirm procedure, will probably be deleted in the future
+    userConfirmation = (
+        True  # Asks user to confirm procedure, will probably be deleted in the future
+    )
     runningTest = False
 
 
