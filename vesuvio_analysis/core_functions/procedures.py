@@ -2,7 +2,6 @@
 from typing import Any, List, Optional, Tuple
 
 from .analysis_functions import iterativeFitForDataReduction
-from .fit_in_yspace import switchFirstTwoAxis
 from mantid.api import AnalysisDataService, mtd
 from mantid.simpleapi import CreateEmptyTableWorkspace
 import numpy as np
