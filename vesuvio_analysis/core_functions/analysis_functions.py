@@ -27,7 +27,10 @@ except ImportError:
 set_print_options()
 
 
-def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
+def iterativeFitForDataReduction(
+    ic: Any,
+    stream_manager: Optional["StreamManager"] = None,
+) -> Tuple[Any, "resultsObject"]:
     """Run the iterative NCP fitting and optional MS/GC correction loop.
 
     This is the core data-reduction routine.  It loads and crops the
@@ -49,12 +52,16 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
         ic: A completed ``BackwardInitialConditions`` or
             ``ForwardInitialConditions`` object (after
             ``completeICFromInputs``).
+        stream_manager: Optional :class:`StreamManager` for capturing
+            intermediate data streams.  When ``None`` (default),
+            no additional persistence is performed.
 
     Returns:
         A 2-tuple ``(wsFinal, fittingResults)`` where *wsFinal* is the
         Mantid workspace from the last iteration and *fittingResults* is
         a ``resultsObject`` containing all per-iteration arrays.
     """
+    from .stream_manager import DataLevel
 
     createTableInitialParameters(ic)
 
@@ -65,6 +72,15 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
 
     cropedWs = cropAndMaskWorkspace(ic, initialWs)
     wsToBeFitted = CloneWorkspace(InputWorkspace=cropedWs, OutputWorkspace=cropedWs.name()+"0")
+
+    # L0 — capture raw counts before any corrections
+    if stream_manager is not None:
+        dataX_raw, dataY_raw, dataE_raw = extractWS(wsToBeFitted)
+        stream_manager.capture("dataX", dataX_raw, DataLevel.RAW, domain="tof")
+        stream_manager.capture("dataY", dataY_raw, DataLevel.RAW, domain="tof")
+        stream_manager.capture("dataE", dataE_raw, DataLevel.RAW, domain="tof")
+        stream_manager.set_metadata("masses", np.array(ic.masses))
+        stream_manager.set_metadata("n_iterations", ic.noOfMSIterations + 1)
 
     # When running a smoke test, cap MS/GC iterations at 1 for speed.
     # Override ic.noOfMSIterations so all downstream naming/lookups are consistent.
@@ -79,7 +95,14 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
         
         mWidths, stdWidths, mIntRatios, stdIntRatios = extractMeans(wsToBeFitted.name(), ic)
         createMeansAndStdTableWS(wsToBeFitted.name(), ic, mWidths, stdWidths, mIntRatios, stdIntRatios)
-   
+
+        # L3 — capture NCP total for each iteration
+        if stream_manager is not None:
+            stream_manager.capture(
+                "ncp_total", ncpTotal, DataLevel.FINAL_PHYSICS,
+                domain="tof", iteration=iteration,
+            )
+
         # When last iteration, skip MS and GC
         if iteration == ic.noOfMSIterations: break 
 
@@ -92,16 +115,46 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
 
         if ic.MSCorrectionFlag:
             wsMS = createWorkspacesForMSCorrection(ic, mWidths, mIntRatios, wsNCPM)
+            # L1 — capture MS correction profile
+            if stream_manager is not None:
+                stream_manager.capture(
+                    "ms", wsMS.extractY(),
+                    DataLevel.CORRECTION_COMPONENTS,
+                    domain="tof", iteration=iteration,
+                )
             Minus(LHSWorkspace="tmpNameWs", RHSWorkspace=wsMS, OutputWorkspace="tmpNameWs")
 
         if ic.GammaCorrectionFlag:  
             wsGC = createWorkspacesForGammaCorrection(ic, mWidths, mIntRatios, wsNCPM)
+            # L1 — capture Gamma correction profile
+            if stream_manager is not None:
+                stream_manager.capture(
+                    "gamma", wsGC.extractY(),
+                    DataLevel.CORRECTION_COMPONENTS,
+                    domain="tof", iteration=iteration,
+                )
             Minus(LHSWorkspace="tmpNameWs", RHSWorkspace=wsGC, OutputWorkspace="tmpNameWs")
 
         remaskValues(ic.name, "tmpNameWs")    # Masks cols in the same place as in ic.name
         RenameWorkspace(InputWorkspace="tmpNameWs", OutputWorkspace=ic.name+str(iteration+1))
-    
+
+        # L2 — capture corrected signal after MS/GC subtraction
+        if stream_manager is not None:
+            wsCorrected = mtd[ic.name+str(iteration+1)]
+            stream_manager.capture(
+                "corrected", wsCorrected.extractY(),
+                DataLevel.INTERMEDIATE_CORRECTED,
+                domain="tof", iteration=iteration,
+            )
+
+    # L3 — capture final corrected signal
     wsFinal = mtd[ic.name+str(ic.noOfMSIterations)]
+    if stream_manager is not None:
+        stream_manager.capture(
+            "corrected_final", wsFinal.extractY(),
+            DataLevel.FINAL_PHYSICS, domain="tof",
+        )
+
     fittingResults = resultsObject(ic)
     fittingResults.save()
     return wsFinal, fittingResults

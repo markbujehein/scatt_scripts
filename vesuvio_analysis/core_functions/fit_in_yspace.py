@@ -17,7 +17,12 @@ import time
 repoPath = Path(__file__).absolute().parent  # Path to the repository
 
 
-def fitInYSpaceProcedure(yFitIC: Any, IC: Any, wsTOF: Any) -> "ResultsYFitObject":
+def fitInYSpaceProcedure(
+    yFitIC: Any,
+    IC: Any,
+    wsTOF: Any,
+    stream_manager: Optional["StreamManager"] = None,
+) -> "ResultsYFitObject":
     """Perform the full y-space fitting procedure on a corrected TOF workspace.
 
     Orchestrates the conversion from TOF to y-space, optional
@@ -45,11 +50,15 @@ def fitInYSpaceProcedure(yFitIC: Any, IC: Any, wsTOF: Any) -> "ResultsYFitObject
             ``ForwardInitialConditions`` object.
         wsTOF: Mantid workspace containing the fully-corrected TOF
             data from the last MS/GC iteration.
+        stream_manager: Optional :class:`StreamManager` for capturing
+            y-space data streams.  When ``None`` (default),
+            no additional persistence is performed.
 
     Returns:
         A ``ResultsYFitObject`` containing y-space fit results and
         saved to ``.npz``.
     """
+    from .stream_manager import DataLevel
 
     ncpForEachMass = extractNCPFromWorkspaces(wsTOF, IC)
     wsResSum, wsRes = calculateMantidResolutionFirstMass(IC, yFitIC, wsTOF)
@@ -68,7 +77,31 @@ def fitInYSpaceProcedure(yFitIC: Any, IC: Any, wsTOF: Any) -> "ResultsYFitObject
 
     yfitResults = ResultsYFitObject(IC, yFitIC, wsTOF.name(), wsJoYAvg.name())
     yfitResults.save()
-    
+
+    # L3 — capture y-space fit results
+    if stream_manager is not None:
+        stream_manager.capture(
+            "joy_avg", yfitResults.YSpaceSymSumDataY,
+            DataLevel.FINAL_PHYSICS, domain="y",
+        )
+        stream_manager.capture(
+            "joy_avg_err", yfitResults.YSpaceSymSumDataE,
+            DataLevel.FINAL_PHYSICS, domain="y",
+        )
+        stream_manager.capture(
+            "resolution", yfitResults.resolution,
+            DataLevel.FINAL_PHYSICS, domain="y",
+        )
+        stream_manager.capture(
+            "fit_popt", yfitResults.popt,
+            DataLevel.FINAL_PHYSICS, domain="y",
+        )
+        stream_manager.capture(
+            "fit_perr", yfitResults.perr,
+            DataLevel.FINAL_PHYSICS, domain="y",
+        )
+        stream_manager.set_metadata("fit_model", str(yFitIC.fitModel))
+
     if yFitIC.globalFit:
         runGlobalFit(wsJoY, wsRes, IC, yFitIC) 
         

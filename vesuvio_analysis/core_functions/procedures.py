@@ -8,7 +8,9 @@ import numpy as np
 
 
 def runIndependentIterativeProcedure(
-    IC: Any, clearWS: bool = True
+    IC: Any,
+    clearWS: bool = True,
+    stream_manager: Optional["StreamManager"] = None,
 ) -> Tuple[Any, "resultsObject"]:
     """Run the iterative NCP fitting for a single scattering direction.
 
@@ -19,6 +21,8 @@ def runIndependentIterativeProcedure(
         IC: Completed ``BackwardInitialConditions`` or
             ``ForwardInitialConditions`` object.
         clearWS: Clear the AnalysisDataService before starting.
+        stream_manager: Optional :class:`StreamManager` passed through
+            to ``iterativeFitForDataReduction``.
 
     Returns:
         A 2-tuple ``(wsFinal, fittingResults)`` from
@@ -29,7 +33,7 @@ def runIndependentIterativeProcedure(
     if clearWS:
         AnalysisDataService.clear()
         
-    return iterativeFitForDataReduction(IC)
+    return iterativeFitForDataReduction(IC, stream_manager=stream_manager)
 
 
 def runJointBackAndForwardProcedure(
