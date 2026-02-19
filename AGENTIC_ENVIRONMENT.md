@@ -172,7 +172,7 @@ Tools exposed:
 | `log_list` | `root?: str` | `{count, log_files}` | Discover available run logs |
 | `log_read_latest` | `root?: str` | `{content, path}` | Read the most recent run's full log |
 | `log_read` | `path: str` | `{content, size_bytes}` | Read a specific log file |
-| `log_grep` | `pattern: str, root?: str` | `{matches}` | Search for `np.trapz`, `Sieve`, or `overall_gate_passed` in all logs |
+| `log_grep` | `pattern: str, root?: str` | `{matches}` | Search for `np.trapz` or `overall_gate_passed` in all logs |
 | `log_check_agreement` | `root?: str` | `{overall_gate_passed, chi2_gate_passed, par_gate_passed, threshold}` | Extract the `optimizer_agreement_check` block — primary review-grounding tool |
 
 **Usage in a review session:**
@@ -260,7 +260,7 @@ the threshold requires a PR that updates both the test file and this document.
 | **Now** | Static code-generation rules | `.github/copilot-instructions.md` |
 | **Now** | Environment introspection | `environment_server.py` |
 | **Now** | ADS state inspection | `mantid_ads_server.py` |
-| **Near-term** | Log-file parser MCP server | Parse `log_manager.py` YAML output → expose `optimizer_agreement_check` results as MCP resource |
+| **Now** | Log-file parser MCP server | Implemented in `vesuvio_analysis/mcp_server/log_inspector_server.py`; parses `log_manager.py` YAML output → exposes `optimizer_agreement_check` results as MCP resource |
 | **Near-term** | Automated chi² trend alerts | CI job that plots `chi2_gate_passed` across iterations; fails if diverging |
 | **Long-term** | Interactive Mantid session server | Full MCP server running inside Mantid's embedded Python kernel, exposing `AlgorithmManager` |
 | **Long-term** | Literature MCP server | Index Mantid Technique Papers + ISIS instrument papers as MCP resources |

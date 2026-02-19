@@ -16,11 +16,13 @@ log_read_latest
     given directory.
 
 log_read
-    Read a specific ``.log`` file by path.
+    Read a specific ``.log`` file by path.  Restricted to ``.log`` files
+    under the allowlisted log root to prevent accidental exposure of
+    unrelated files.
 
 log_grep
     Search all ``.log`` files under a directory for lines matching a
-    given pattern (e.g. ``np.trapz``, ``Sieve``, ``overall_gate_passed``,
+    given pattern (e.g. ``np.trapz``, ``overall_gate_passed``,
     ``optimizer_agreement_check``).
 
 log_check_agreement
@@ -49,9 +51,7 @@ JSON-RPC 2.0 over stdio, following the MCP 2024-11-05 specification.
 
 from __future__ import annotations
 
-import glob
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -63,7 +63,6 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _DEFAULT_LOG_ROOT = Path(__file__).resolve().parents[2] / "experiments"
-_LOG_GLOB = "**/*.log"
 
 
 # ---------------------------------------------------------------------------
@@ -71,12 +70,15 @@ _LOG_GLOB = "**/*.log"
 # ---------------------------------------------------------------------------
 
 def _resolve_root(root: str | None) -> Path:
-    """Resolve the search root, falling back to ``experiments/``."""
+    """Resolve the search root relative to the repository root, falling back to ``experiments/``."""
     if root:
         p = Path(root)
         if p.is_absolute():
             return p
-        return Path.cwd() / p
+        # Interpret relative paths as relative to the repository root,
+        # which is the parent of the default ``experiments/`` directory.
+        repo_root = _DEFAULT_LOG_ROOT.parent
+        return (repo_root / p).resolve()
     return _DEFAULT_LOG_ROOT
 
 
@@ -97,9 +99,31 @@ def _list_logs(root: str | None) -> dict[str, Any]:
     }
 
 
-def _read_log(path: str) -> dict[str, Any]:
-    """Read a single log file and return its content as a string."""
-    p = Path(path)
+def _read_log(path: str, allow_root: Path | None = None) -> dict[str, Any]:
+    """Read a single log file and return its content as a string.
+
+    Restricted to ``.log`` files under *allow_root* (defaults to
+    ``_DEFAULT_LOG_ROOT``) to prevent accidental exposure of files
+    outside the intended log directory.
+    """
+    p = Path(path).resolve()
+    root = (allow_root or _DEFAULT_LOG_ROOT).resolve()
+
+    # Enforce .log extension
+    if p.suffix != ".log":
+        return {"error": f"Rejected: only .log files may be read (got '{p.name}')."}
+
+    # Enforce containment within the allowlisted root
+    try:
+        p.relative_to(root)
+    except ValueError:
+        return {
+            "error": (
+                f"Rejected: path '{p}' is outside the allowlisted log "
+                f"root '{root}'."
+            )
+        }
+
     if not p.exists():
         return {"error": f"File not found: {path}"}
     try:
@@ -115,8 +139,10 @@ def _read_latest_log(root: str | None) -> dict[str, Any]:
     if "error" in listing or not listing["log_files"]:
         return {"error": "No log files found.", "root": listing.get("root", "")}
     latest = listing["log_files"][0]
-    result = _read_log(latest)
-    result["is_latest"] = True
+    resolved_root = _resolve_root(root)
+    result = _read_log(latest, allow_root=resolved_root)
+    if "error" not in result:
+        result["is_latest"] = True
     return result
 
 
@@ -249,8 +275,9 @@ def _check_agreement(root: str | None) -> dict[str, Any]:
     }
     if legacy_detected and start_key == _LEGACY_KEY:
         result["warning"] = (
-            "Legacy key 'sieve3_agreement_gate:' detected.  "
-            "Update log_manager.py to use 'optimizer_agreement_check:'."
+            "Legacy key 'sieve3_agreement_gate:' detected in this log; "
+            "re-run log generation with a newer version that emits "
+            "'optimizer_agreement_check:'."
         )
     return result
 
@@ -297,13 +324,17 @@ _TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "log_read",
-        "description": "Read a specific VESUVIO run log file by absolute path.",
+        "description": (
+            "Read a specific VESUVIO run log file by absolute path.  "
+            "Restricted to .log files under the allowlisted experiments/ "
+            "directory to prevent accidental exposure of unrelated files."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to the .log file.",
+                    "description": "Absolute path to the .log file (must be inside experiments/).",
                 },
             },
             "required": ["path"],
@@ -313,9 +344,9 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "log_grep",
         "description": (
             "Search all VESUVIO run logs for lines matching a regex pattern. "
-            "Useful for finding deprecated API usage (e.g. 'np.trapz'), banned "
-            "terminology (e.g. 'Sieve'), or specific gate results "
-            "(e.g. 'overall_gate_passed')."
+            "Useful for finding deprecated API usage (e.g. 'np.trapz') or "
+            "specific gate results (e.g. 'overall_gate_passed', "
+            "'optimizer_agreement_check')."
         ),
         "inputSchema": {
             "type": "object",
@@ -351,7 +382,7 @@ _TOOLS: list[dict[str, Any]] = [
 _TOOL_HANDLERS: dict[str, Any] = {
     "log_list": lambda args: _list_logs(args.get("root")),
     "log_read_latest": lambda args: _read_latest_log(args.get("root")),
-    "log_read": lambda args: _read_log(args["path"]),
+    "log_read": lambda args: _read_log(args["path"], allow_root=_resolve_root(args.get("root"))),
     "log_grep": lambda args: _grep_logs(args.get("root"), args["pattern"]),
     "log_check_agreement": lambda args: _check_agreement(args.get("root")),
 }

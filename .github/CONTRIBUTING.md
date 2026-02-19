@@ -32,8 +32,7 @@ Before opening a PR, verify every item below:
       `np.where(denominator != 0, numerator / denominator, fallback)`.
 - [ ] Every new public function has a Google-style docstring with LaTeX math
       in `$...$` notation for all physical quantities.
-- [ ] No use of the word **"Sieve"** anywhere — see §4-D.
-- [ ] `log_manager.py` YAML key is `optimizer_agreement_check:`, not `sieve3_agreement_gate:`.
+- [ ] `log_manager.py` must use the YAML key `optimizer_agreement_check:` (do not use any legacy key names).
 
 ---
 
@@ -293,7 +292,7 @@ checklist:
 | 2 | `check_version_compatibility` | Detect known breaking version combos |
 | 3 | `ads_list_workspaces` | Confirm workspace lifecycle is clean after pipeline |
 | 4 | `log_read_latest` | Check `optimizer_agreement_check.overall_gate_passed` |
-| 5 | `log_grep` | Search for `np.trapz`, `sieve3`, or `Sieve` in log output |
+| 5 | `log_grep` | Search for `np.trapz` or legacy agreement-gate key names in log output |
 
 If step 4 returns `overall_gate_passed: False`, all agreement-check items
 (A2) are automatically escalated to `❌ BLOCK` regardless of diff content.
