@@ -41,8 +41,8 @@ $$y = \frac{M}{\hbar q}\left(E_0 - E_1 - E_\mathrm{recoil}\right)$$
     on NCP residuals (`BayesianBootstrap`)
 
 - **Pydantic v2 Validation** — All `InitialConditions` parameter classes are validated
-  at runtime via `ic_validation.py`, catching physical inconsistencies (e.g. mass–ratio
-  mismatches, out-of-range spectra) before data reduction begins.
+  at runtime via `ic_validation.py`, which flags physical inconsistencies (e.g. mass–ratio
+  mismatches, out-of-range spectra) via `RuntimeWarning` diagnostics during data reduction.
 
 ---
 
