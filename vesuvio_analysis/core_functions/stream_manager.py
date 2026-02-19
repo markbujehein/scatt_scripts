@@ -223,7 +223,11 @@ class StreamManager:
 
     @property
     def save_path(self) -> Path:
-        """The resolved output file path."""
+        """The resolved output file path.
+
+        Note: the parent directory may not exist until :meth:`save` is
+        called, which creates it via ``mkdir(parents=True)``.
+        """
         filename = f"{self.script_name}_{self.direction}_streams.npz"
         return self.output_dir / filename
 

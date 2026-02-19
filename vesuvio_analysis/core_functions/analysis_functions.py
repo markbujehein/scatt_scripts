@@ -1,5 +1,10 @@
-from typing import Any, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    from .stream_manager import StreamManager
 
 import matplotlib.pyplot as plt
 import numpy as np

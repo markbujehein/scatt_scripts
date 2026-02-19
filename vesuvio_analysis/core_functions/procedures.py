@@ -1,5 +1,10 @@
 
-from typing import Any, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .stream_manager import StreamManager
 
 from .analysis_functions import iterativeFitForDataReduction, switchFirstTwoAxis
 from mantid.api import AnalysisDataService, mtd

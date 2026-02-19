@@ -1,4 +1,9 @@
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .stream_manager import StreamManager
 
 from dataclasses import replace
 import matplotlib.pyplot as plt
