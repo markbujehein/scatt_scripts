@@ -101,9 +101,8 @@ def _integrate_area(x: np.ndarray, y: np.ndarray) -> float:
     finite = np.isfinite(y)
     if not np.any(finite):
         return 0.0
-    # Use np.trapezoid when available (NumPy >= 2.0), otherwise fall back to np.trapz
-    integrator = getattr(np, "trapezoid", None) or getattr(np, "trapz")
-    return float(np.abs(integrator(y[finite], x[finite])))
+    # Use np.trapezoid (NumPy >= 2.0 required)
+    return float(np.abs(np.trapezoid(y[finite], x[finite])))
 
 
 def _area_fraction_pct(
