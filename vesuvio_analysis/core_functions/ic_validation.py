@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any
 import warnings
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+
+HYDROGEN_MASS_TOLERANCE = 0.1
 
 
 class BackwardInitialConditionsModel(BaseModel):
@@ -13,25 +15,26 @@ class BackwardInitialConditionsModel(BaseModel):
     This model is intentionally narrow and non-breaking: it validates
     core physical constraints while still accepting the existing class-based
     initial-condition objects used throughout the Mantid pipeline.
+    Field names intentionally mirror legacy IC attribute names.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    masses: List[float]
+    masses: list[float]
     noOfMSIterations: int
-    HToMassIdxRatio: Optional[float] = None
+    HToMassIdxRatio: float | None = None
 
     @field_validator("masses", mode="before")
     @classmethod
-    def _coerce_masses(cls, value: Any) -> List[float]:
+    def _coerce_masses(cls, value: Any) -> list[float]:
         if isinstance(value, np.ndarray):
             return value.astype(float).tolist()
         return value
 
     @field_validator("masses")
     @classmethod
-    def _validate_masses_positive(cls, masses: List[float]) -> List[float]:
-        if len(masses) == 0:
+    def _validate_masses_positive(cls, masses: list[float]) -> list[float]:
+        if not masses:
             raise ValueError("masses must not be empty.")
         if any(mass <= 0 for mass in masses):
             raise ValueError("masses must all be positive.")
@@ -46,7 +49,9 @@ class BackwardInitialConditionsModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_h_ratio_dependency(self) -> "BackwardInitialConditionsModel":
-        has_hydrogen = any(abs(mass - 1.0) / 1.0 < 0.1 for mass in self.masses)
+        has_hydrogen = any(
+            abs(mass - 1.0) < HYDROGEN_MASS_TOLERANCE for mass in self.masses
+        )
         if (self.HToMassIdxRatio is not None) and (not has_hydrogen):
             raise ValueError(
                 "HToMassIdxRatio can only be provided when hydrogen is present in masses."
@@ -54,7 +59,17 @@ class BackwardInitialConditionsModel(BaseModel):
         return self
 
 
-def shadowValidateBackwardInitialConditions(IC: Any, stage: str = "completeICFromInputs") -> None:
+def _format_validation_error(err: ValidationError) -> str:
+    details = []
+    for item in err.errors():
+        field = ".".join(str(part) for part in item.get("loc", ())) or "validation"
+        details.append(f"{field}: {item.get('msg', 'invalid value')}")
+    return "; ".join(details)
+
+
+def shadow_validate_backward_initial_conditions(
+    IC: Any, stage: str = "completeICFromInputs"
+) -> None:
     """Run non-breaking validation and emit warnings instead of errors."""
 
     try:
@@ -67,7 +82,7 @@ def shadowValidateBackwardInitialConditions(IC: Any, stage: str = "completeICFro
         )
     except ValidationError as err:
         warnings.warn(
-            f"[Pydantic shadow validation][{stage}] {err}",
+            f"[Pydantic shadow validation][{stage}] {_format_validation_error(err)}",
             RuntimeWarning,
             stacklevel=2,
         )

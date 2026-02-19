@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import json
 from vesuvio_analysis.core_functions.ic_validation import (
-    shadowValidateBackwardInitialConditions,
+    shadow_validate_backward_initial_conditions,
 )
 currentPath = Path(__file__).absolute().parent
 experimentsPath = currentPath / ".."/ ".." / "experiments"
@@ -55,7 +55,7 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
     IC.masses = IC.masses.astype(float)
     IC.noOfMasses = len(IC.masses)
     if IC.modeRunning == "BACKWARD":
-        shadowValidateBackwardInitialConditions(IC)
+        shadow_validate_backward_initial_conditions(IC)
 
     IC.maskedSpecNo = IC.maskedSpecAllNo[(IC.maskedSpecAllNo>=IC.firstSpec) & (IC.maskedSpecAllNo<=IC.lastSpec)]
     IC.maskedDetectorIdx = IC.maskedSpecNo - IC.firstSpec
