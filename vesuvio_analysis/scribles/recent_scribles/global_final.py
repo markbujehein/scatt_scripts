@@ -49,7 +49,7 @@ def fitGlobalFit(ws, wsRes, gaussFlag,  InstrParsPath, firstSpec, lastSpec, nGro
     dataX, dataY, dataE, dataRes, instrPars = extractData(ws, wsRes, InstrParsPath, firstSpec, lastSpec)
     dataX, dataY, dataE, dataRes, instrPars = takeOutMaskedSpectra(dataX, dataY, dataE, dataRes, instrPars)
 
-    print(f"\nNumber of gropus: {nGroups}")
+    print(f"\nNumber of groups: {nGroups}")
     idxList = groupDetectors(instrPars, nGroups, showPlots)
     dataX, dataY, dataE, dataRes = avgWeightDetGroups(dataX, dataY, dataE, dataRes, idxList)
 

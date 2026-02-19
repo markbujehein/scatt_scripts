@@ -187,6 +187,11 @@ class GlobalNCPCostFunction(cost.Cost):
         """Number of non-masked (non-zero) data points."""
         return len(self._x)
 
+    @property
+    def model(self):
+        """The model callable used to compute predicted values."""
+        return self._model
+
     def _has_grad(self):
         """This cost function does not provide an analytic gradient."""
         return False

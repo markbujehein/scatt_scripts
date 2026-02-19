@@ -34,7 +34,6 @@ dependencies = [
     "numba",
     "scikit-learn",
     "pydantic>=2.0",
-]
 
 [project.optional-dependencies]
 # Install test dependencies with:  pip install -e ".[test]"
