@@ -1997,7 +1997,7 @@ def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
 
     checkNGroupsValid(yFitIC, ipData)
 
-    print(f"\nNumber of gropus: {yFitIC.nGlobalFitGroups}")
+    print(f"\nNumber of groups: {yFitIC.nGlobalFitGroups}")
 
     L1 = ipData[:, -1].copy()
     theta = ipData[:, 2].copy()  
