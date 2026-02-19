@@ -1,9 +1,12 @@
 {
   // VESUVIO DINS Analysis — GitHub Codespace configuration
   // -------------------------------------------------------
-  // Base image: Mantid conda stack (see Dockerfile).
-  // Heavy C++ Mantid libraries are pre-baked into the image so that
-  // Codespace startup is instant once a Prebuild has run.
+  // Base image: official Mantid development image from GHCR
+  //   ghcr.io/mantidproject/mantid-development-alma9:latest
+  // The Mantid C++ build environment and system libraries are pre-baked into
+  // that AlmaLinux 9 image; our Dockerfile adds Miniforge + the 'vesuvio'
+  // conda environment on top.  GitHub Codespace Prebuilds cache the result
+  // so Codespace startup is instant for the researcher.
   "name": "VESUVIO DINS Analysis",
   "build": {
     "dockerfile": "Dockerfile",
@@ -92,9 +95,10 @@
   // so they are baked in before the Codespace is handed to the researcher.
   "postCreateCommand": "bash .devcontainer/codespace_setup.sh",
 
-  // Run as non-root for security; the 'vscode' user is created by the
-  // Microsoft devcontainers base and has sudo access when needed.
-  "remoteUser": "vscode",
+  // Run as 'abc' — the non-root user defined in the Mantid alma9 base image
+  // (uid 911).  This matches the user that the Mantid image entrypoint uses
+  // and ensures filesystem-mapped volumes have correct permissions.
+  "remoteUser": "abc",
 
   // ---------------------------------------------------------------------------
   // Resource guidance (cannot be set declaratively — configure via
@@ -118,3 +122,4 @@
     "ghcr.io/devcontainers/features/git:1": {}
   }
 }
+
