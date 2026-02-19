@@ -18,6 +18,7 @@
 7. [Self-Correcting PRs](#7-self-correcting-prs)
 8. [MCP-Grounded Reviews](#8-mcp-grounded-reviews)
 9. [`statistical_plugins.py` Modularity Rules](#9-statistical_pluginspy-modularity-rules)
+10. [CodeQL Security Flags in Scientific Fitting Code](#10-codeql-security-flags-in-scientific-fitting-code)
 
 ---
 
@@ -343,4 +344,98 @@ from sklearn.cluster import DBSCAN
 from sklearn.covariance import EllipticEnvelope
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+```
+
+---
+
+## 10. CodeQL Security Flags in Scientific Fitting Code
+
+The `ci-dev.yml` workflow runs a CodeQL Advanced Setup scan as a **conditional
+requirement**: CodeQL only executes if the `dev-gate` job (Numba regression +
+iMinuit–Scipy Numerical Agreement Check + workspace safety) passes first.
+This prevents runner minutes being spent on security analysis of code that
+already fails its physics contract.
+
+### 10.1 Workflow Architecture
+
+```
+pull_request → dev
+    │
+    ├─ dev-gate  (Numba + iMinuit–Scipy + workspace safety)
+    │       │
+    │       └─ [needs: dev-gate] codeql  (Python-only; outputs/ excluded)
+```
+
+CodeQL is scoped to **Python only**.  Mantid C++ artefacts, raw data
+workspaces, and generated `outputs/` directories are excluded via the inline
+`paths-ignore` config inside `codeql-action/init` — they would otherwise
+inflate scan time without providing actionable security information.
+
+### 10.2 False-Positive Mitigation for Numba-Heavy Code
+
+Numba `@njit` functions are compiled at import time.  CodeQL's static
+analyser sees the uncompiled Python source and may raise alerts for patterns
+that are safe after JIT compilation:
+
+| Alert type | Root cause | Suppression strategy |
+|---|---|---|
+| `py/unreachable-statement` | Branch eliminated by JIT specialisation | Dismiss in Security tab with reason "used in tests / JIT unreachable" |
+| `py/undefined-export` | Numba-generated wrapper not visible to static analysis | Dismiss as false positive; add a comment `# noqa: F401` if the linter also flags it |
+| `py/call-to-non-callable` | `@njit` decorated function wrapping is opaque to CodeQL | Dismiss; the Numba regression test (`test_numba_regression.py`) is the authoritative check |
+
+**Rule:** Never remove or weaken a `@njit` decorator to silence a CodeQL
+alert.  The Numba regression test (`atol=1e-8`) is the authoritative guard
+for correctness.  CodeQL false positives in `@njit` functions should be
+dismissed in GitHub's Security → Code scanning alerts tab with the reason
+**"Used in tests"** or **"False positive"** and a one-line explanation.
+
+### 10.3 Real Vulnerabilities to Fix
+
+The following alert types are **genuine** and must not be dismissed:
+
+| Module | Alert type | Risk |
+|---|---|---|
+| `log_manager.py` | `py/path-injection` | `LogManager` constructs file paths from IC attributes; ensure paths are built with `pathlib.Path` and validated — never formatted from raw user strings |
+| `log_manager.py` | `py/clear-text-storage-of-sensitive-information` | Unlikely in this codebase, but dismiss only if confirmed no credentials are logged |
+| `ic_validation.py` | `py/code-injection` | Pydantic validators that call `eval()` or `exec()` are blocked; use `model_validator` with explicit type coercion only |
+| `UserScriptControls` (entry-point scripts) | `py/path-injection` | `scriptName` and output-path parameters must not be passed directly to `open()` or `os.path.join()` without `pathlib.Path` normalisation |
+
+#### `log_manager.py` — path injection hardening
+
+If CodeQL raises `py/path-injection` on `log_manager.py`, apply:
+
+```python
+# BEFORE — raw string concatenation (CodeQL alert)
+log_path = output_dir + "/" + script_name + "_log.yaml"
+
+# AFTER — pathlib normalisation (CodeQL clean)
+from pathlib import Path
+log_path = Path(output_dir) / (script_name + "_log.yaml")
+```
+
+### 10.4 Surfacing CodeQL Results Alongside Optimizer Agreement Check
+
+After both `dev-gate` and `codeql` complete, the PR summary shows:
+
+1. **Dev Gate** — Numba ✅ / iMinuit–Scipy Agreement ✅ / Workspace Safety ✅
+2. **CodeQL (Python)** — inline annotations on affected lines in the Files tab
+
+To correlate a CodeQL I/O alert with the optimizer agreement check result,
+use the MCP `log_read_latest` tool (§8) to confirm
+`optimizer_agreement_check.overall_gate_passed: true` before dismissing any
+alert that touches the fitting hot path (`analysis_functions.py`,
+`iminuit_costs.py`, `numba_routines.py`).
+
+### 10.5 Checklist: Responding to a New CodeQL Alert
+
+```
+1. [ ] Open the alert in Security → Code scanning alerts.
+2. [ ] Check if the flagged function is decorated with @njit or resides in
+       analysis_functions.py / iminuit_costs.py / numba_routines.py.
+3. [ ] If @njit: confirm the Numba regression test still passes → dismiss as
+       "False positive" with note "JIT-unreachable branch; covered by test_numba_regression.py".
+4. [ ] If LogManager / path construction: apply pathlib hardening (§10.3).
+5. [ ] If ic_validation.py / eval: remove eval(); use Pydantic validators.
+6. [ ] After fixing: re-run `python -m pytest tests/ -v` to confirm no regressions.
+7. [ ] PR score must remain ≥ 7 (§5) after the fix.
 ```

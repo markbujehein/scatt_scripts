@@ -76,5 +76,13 @@ The `ci-dev.yml` workflow runs on every PR to `dev`:
 2. Numba regression tests
 3. iMinuit–Scipy numerical agreement tests
 4. Workspace safety tests (mock ADS)
+5. CodeQL Advanced Setup scan (Python-only; **conditional on steps 2–4 passing**)
 
 Permissions: `contents: read` + `pull-requests: write` (Copilot PR annotations enabled).
+The `codeql` job additionally requires `security-events: write`.
+
+### CodeQL configuration notes
+- Advanced Setup (YAML-based) replaces GitHub Default Setup for `needs:` dependency control.
+- Scoped to Python only; `outputs/`, `tests/smoke_test_output/`, `experiments/` are excluded.
+- Numba `@njit` false positives (`py/unreachable-statement`) should be dismissed in the Security tab — the Numba regression test (`atol=1e-8`) is the authoritative correctness guard.
+- Real alerts to fix: `py/path-injection` in `log_manager.py`; use `pathlib.Path` for all log file paths.
