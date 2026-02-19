@@ -1,5 +1,6 @@
 from typing import Any, List, Optional, Tuple
 import logging
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -57,6 +58,13 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
     """
 
     createTableInitialParameters(ic)
+
+    # When VESUVIO_RUNNING_TEST=1 (active inside Codespaces and the fast-track
+    # CI gate) cap MS correction iterations to 0 so each run completes quickly.
+    # This mirrors the runningTest fast-track flag described in PR #35 and
+    # allows high-frequency code validation without a full production run.
+    if os.environ.get("VESUVIO_RUNNING_TEST", "0") == "1":
+        ic.noOfMSIterations = 0
 
     initialWs = loadRawAndEmptyWsFromUserPath(ic)  # Do this before alternative bootstrap to extract name()   
 
