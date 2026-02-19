@@ -1,9 +1,11 @@
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 from mantid.api import mtd
+from mantid.simpleapi import ConvertToYSpace, SumSpectra
 
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
+from vesuvio_analysis.core_functions.correction_plots import dispatch_correction_plots
 from vesuvio_analysis.core_functions.fit_in_yspace import fitInYSpaceProcedure
 from vesuvio_analysis.core_functions.ICHelpers import (
     buildFinalWSName,
@@ -192,6 +194,9 @@ def runScript(
             logger.log_timestamp("ncp_end")
             logger.log_final_results(res[1] if res is not None and len(res) >= 2 else None)
 
+            # --- Correction Dashboard Plots ---
+            _dispatchCorrectionPlots(userCtr, bckwdIC, fwdIC)
+
             logger.log_timestamp("yspace_start")
             for wsName, IC in zip(wsNames, ICs):
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
@@ -266,6 +271,89 @@ def checkInputs(crtIC: Any) -> None:
 
     if (crtIC.procedure != "JOINT") & (crtIC.fitInYSpace != None):
         assert crtIC.procedure == crtIC.fitInYSpace
+
+
+def _convertToYSpaceSummed(
+    ws_name: str, mass: float, mtd_obj: Any
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert a named TOF workspace to y-space and return summed 1-D arrays.
+
+    Calls Mantid ``ConvertToYSpace`` followed by ``SumSpectra`` to
+    produce a single averaged spectrum, then extracts NumPy arrays.
+    The temporary y-space workspace is named ``ws_name + "_JoY_tmp"``.
+
+    Args:
+        ws_name: Name of the TOF workspace in the ADS.
+        mass: Atomic mass (a.m.u.) for the y-scaling
+            $J(y) = M / (\\hbar q) \\cdot (E - E_{\\text{recoil}})$.
+        mtd_obj: Mantid AnalysisDataService (``mantid.api.mtd``).
+
+    Returns:
+        ``(x, y, err)`` — 1-D NumPy arrays (summed across spectra)
+        in y-space units ($\\AA^{-1}$).
+    """
+    tmp_name = ws_name + "_JoY_tmp"
+    ws_joy = ConvertToYSpace(ws_name, Mass=mass, OutputWorkspace=tmp_name)
+    ws_sum = SumSpectra(ws_joy, OutputWorkspace=tmp_name + "_Sum")
+
+    raw_x = ws_sum.extractX()
+    raw_y = ws_sum.extractY()
+    raw_e = ws_sum.extractE()
+
+    x = raw_x[0]
+    y = raw_y[0]
+    e = raw_e[0]
+    if len(x) == len(y) + 1:
+        x = 0.5 * (x[:-1] + x[1:])
+    return x, y, e
+
+
+def _dispatchCorrectionPlots(
+    userCtr: Any, bckwdIC: Any, fwdIC: Any
+) -> None:
+    """Dispatch correction dashboard plots for all active ICs.
+
+    Called from ``runScript`` immediately after ``runProcedure()``
+    completes and only when ``userCtr.runRoutine`` is ``True``.
+    Iterates over the ICs that were actually fitted (selected by
+    ``userCtr.procedure``) and calls ``dispatch_correction_plots``
+    for each one whose correction flags are active.
+
+    The y-space conversion is provided via ``_convertToYSpaceSummed``
+    so that every correction term is shown in both TOF and y-space.
+
+    Args:
+        userCtr: ``UserScriptControls`` with a ``procedure`` attribute.
+        bckwdIC: Completed backward initial-conditions object.
+        fwdIC: Completed forward initial-conditions object.
+    """
+    proc = getattr(userCtr, "procedure", None)
+    if proc is None:
+        return
+
+    ics: List[Any] = []
+    if proc in ("BACKWARD", "JOINT"):
+        ics.append(bckwdIC)
+    if proc in ("FORWARD", "JOINT"):
+        ics.append(fwdIC)
+
+    for ic in ics:
+        ms_flag = bool(getattr(ic, "MSCorrectionFlag", False))
+        gc_flag = bool(getattr(ic, "GammaCorrectionFlag", False))
+        if not (ms_flag or gc_flag):
+            continue
+        try:
+            dispatch_correction_plots(
+                ic=ic,
+                mtd=mtd,
+                convert_to_yspace_fn=_convertToYSpaceSummed,
+            )
+        except Exception as exc:  # pragma: no cover
+            import warnings
+            warnings.warn(
+                f"_dispatchCorrectionPlots: plotting failed for "
+                f"'{getattr(ic, 'name', '?')}': {exc}"
+            )
 
 
 def _runStatisticalAnalysis(
