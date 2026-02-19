@@ -709,9 +709,9 @@ for the call graph.
 
 ```python
 class BackwardInitialConditionsModel(BaseModel):
-    masses: List[float]
+    masses: list[float]
     noOfMSIterations: int
-    HToMassIdxRatio: Optional[float] = None
+    HToMassIdxRatio: float | None = None
 
     @field_validator("masses")
     def masses_positive(cls, masses):
