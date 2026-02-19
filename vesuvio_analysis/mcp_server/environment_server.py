@@ -93,6 +93,32 @@ def _git_commit() -> dict[str, Any]:
         return {"commit": "unknown", "branch": "unknown"}
 
 
+def _parse_version_tuple(version_str: str) -> tuple[int, ...]:
+    """Parse a version string into a tuple of ints, ignoring non-numeric suffixes.
+
+    Returns an empty tuple if *version_str* is malformed or unparseable.
+
+    Examples::
+
+        _parse_version_tuple("2.1.0")     → (2, 1, 0)
+        _parse_version_tuple("1.0.0rc1")  → (1, 0, 0)  # 'rc1' ignored
+        _parse_version_tuple("not installed") → ()
+    """
+    parts: list[int] = []
+    for segment in version_str.split("."):
+        # Strip any non-numeric suffix (e.g., "0rc1" → "0")
+        numeric = ""
+        for ch in segment:
+            if ch.isdigit():
+                numeric += ch
+            else:
+                break
+        if not numeric:
+            break
+        parts.append(int(numeric))
+    return tuple(parts)
+
+
 def _check_version_compatibility() -> dict[str, Any]:
     """Check for known incompatible version combinations.
 
@@ -102,8 +128,8 @@ def _check_version_compatibility() -> dict[str, Any]:
 
     iminuit_ver = _get_package_version("iminuit")
     if iminuit_ver != "not installed":
-        major = int(iminuit_ver.split(".")[0])
-        if major < 2:
+        ver = _parse_version_tuple(iminuit_ver)
+        if ver and ver[0] < 2:
             issues.append(
                 f"iminuit {iminuit_ver} detected — v2+ required for "
                 "'_parameters' dict interface (NCPCostFunction will fail)."
@@ -111,8 +137,8 @@ def _check_version_compatibility() -> dict[str, Any]:
 
     pydantic_ver = _get_package_version("pydantic")
     if pydantic_ver != "not installed":
-        major = int(pydantic_ver.split(".")[0])
-        if major < 2:
+        ver = _parse_version_tuple(pydantic_ver)
+        if ver and ver[0] < 2:
             issues.append(
                 f"pydantic {pydantic_ver} detected — v2+ required for "
                 "ConfigDict and model_validator (ic_validation.py will fail)."
@@ -121,16 +147,14 @@ def _check_version_compatibility() -> dict[str, Any]:
     numpy_ver = _get_package_version("numpy")
     numba_ver = _get_package_version("numba")
     if numpy_ver != "not installed" and numba_ver != "not installed":
-        np_major, np_minor = (int(x) for x in numpy_ver.split(".")[:2])
-        if np_major >= 2:
-            numba_major = int(numba_ver.split(".")[0])
-            if numba_major == 0:
-                numba_minor = int(numba_ver.split(".")[1])
-                if numba_minor < 60:
-                    issues.append(
-                        f"NumPy {numpy_ver} with Numba {numba_ver} — "
-                        "NumPy 2.x requires Numba ≥ 0.60."
-                    )
+        np_ver = _parse_version_tuple(numpy_ver)
+        nb_ver = _parse_version_tuple(numba_ver)
+        if len(np_ver) >= 1 and np_ver[0] >= 2:
+            if len(nb_ver) >= 2 and nb_ver[0] == 0 and nb_ver[1] < 60:
+                issues.append(
+                    f"NumPy {numpy_ver} with Numba {numba_ver} — "
+                    "NumPy 2.x requires Numba ≥ 0.60."
+                )
 
     return {
         "compatible": len(issues) == 0,
