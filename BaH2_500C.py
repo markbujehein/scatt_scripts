@@ -285,6 +285,10 @@ class UserScriptControls:
         fitInYSpace: Scattering direction(s) whose final workspace is
             fitted in y-space. Options: ``None``, ``"BACKWARD"``,
             ``"FORWARD"``, ``"JOINT"``.
+        runningTest: When ``True``, activates the fast-track execution
+            path: MS/Gamma iterations are capped at 1, bootstrap samples
+            are capped at 3, and iMinuit uses a loose convergence
+            tolerance.  Intended for smoke tests and CI validation.
         runOutlierDetection: Enable PCA hardware-outlier detection.
         runPhysicsClustering: Enable DBSCAN physics-trend clustering.
         runBayesianBootstrap: Enable Bayesian Bootstrap with Dirichlet
@@ -297,6 +301,9 @@ class UserScriptControls:
     procedure: str = "FORWARD"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
     fitInYSpace: str = "FORWARD"   # Options: None, "BACKWARD", "FORWARD", "JOINT"
+
+    # Fast-track flag: when True, truncates expensive operations for smoke testing
+    runningTest: bool = False
 
     # Phase 6 statistical analysis toggles
     runOutlierDetection: bool = False    # PCA hardware-outlier detection
