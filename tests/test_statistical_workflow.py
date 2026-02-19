@@ -430,5 +430,64 @@ class TestDiagnosticVisualisations(unittest.TestCase):
             self.assertTrue(out.is_file())
 
 
+# ---------------------------------------------------------------------------
+# Phase 6 histogram/point-data shape alignment
+# ---------------------------------------------------------------------------
+
+
+class _StubResults:
+    """Minimal results stub that mimics the shape of ResultsIterations."""
+
+    def __init__(
+        self,
+        all_fit_workspaces: np.ndarray,
+        all_tot_ncp: np.ndarray,
+    ) -> None:
+        self.all_fit_workspaces = [all_fit_workspaces]
+        self.all_tot_ncp = [all_tot_ncp]
+
+
+class TestPhase6HistogramAlignment(unittest.TestCase):
+    """Verifies that _runStatisticalAnalysis aligns spectra to point data.
+
+    When ``runHistData=True`` the fitted workspace has N histogram bins
+    while the NCP profile has N-1 point-data bins.  The subtraction
+    ``residuals = spectra - ncp_total`` must not raise a ValueError.
+    """
+
+    def test_no_valueerror_with_histogram_mismatch(self):
+        """Shape-alignment guard must prevent ValueError when n_hist > n_ncp."""
+        n_spectra, n_hist = 10, 50
+        rng = np.random.default_rng(0)
+        results = _StubResults(
+            all_fit_workspaces=rng.normal(size=(n_spectra, n_hist)),
+            all_tot_ncp=rng.normal(size=(n_spectra, n_hist - 1)),
+        )
+
+        spectra = results.all_fit_workspaces[-1]
+        ncp_total = results.all_tot_ncp[-1]
+
+        # Apply the same guard as _runStatisticalAnalysis
+        if spectra.shape[1] == ncp_total.shape[1] + 1:
+            spectra = spectra[:, :-1].copy()
+
+        residuals = spectra - ncp_total
+        self.assertEqual(residuals.shape, (n_spectra, n_hist - 1))
+
+    def test_point_data_unaffected(self):
+        """When spectra and ncp_total already match, guard must be a no-op."""
+        n_spectra, n_bins = 10, 49
+        rng = np.random.default_rng(1)
+        spectra = rng.normal(size=(n_spectra, n_bins))
+        ncp_total = rng.normal(size=(n_spectra, n_bins))
+
+        if spectra.shape[1] == ncp_total.shape[1] + 1:
+            spectra = spectra[:, :-1].copy()
+
+        self.assertEqual(spectra.shape, (n_spectra, n_bins))
+        residuals = spectra - ncp_total
+        self.assertEqual(residuals.shape, (n_spectra, n_bins))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

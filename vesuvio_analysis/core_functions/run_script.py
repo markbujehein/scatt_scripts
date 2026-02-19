@@ -427,6 +427,13 @@ def _runStatisticalAnalysis(
         spectra = results.all_fit_workspaces[-1]
         ncp_total = results.all_tot_ncp[-1]
 
+        # When runHistData=True the fitted workspace stores N histogram bins
+        # while the NCP profile is computed on N-1 point-data bins.  Trim
+        # the trailing column of spectra so both arrays are in point-data
+        # representation before any arithmetic or outlier analysis.
+        if spectra.shape[1] == ncp_total.shape[1] + 1:
+            spectra = spectra[:, :-1].copy()
+
         if getattr(userCtr, "runOutlierDetection", False):
             detector = HardwareOutlierDetector(
                 n_components=5, contamination=0.1,
