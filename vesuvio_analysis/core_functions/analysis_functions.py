@@ -961,20 +961,6 @@ def plotIndividualNCPFits(
         plt.close(fig)
 
 
-
-    """Transpose the first two axes of a 3-D array.
-
-    Rearranges matrices per spectrum for iteration in the main fitting
-    procedure.
-
-    Args:
-        A: Array with shape ``(a, b, c)``.
-
-    Returns:
-        Array with shape ``(b, a, c)``.
-    """
-    return np.stack(np.split(A, len(A), axis=0), axis=2)[0]
-
 def extractMeans(
     wsName: str, IC: Any
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
