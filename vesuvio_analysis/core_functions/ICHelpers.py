@@ -6,6 +6,12 @@ from mantid.simpleapi import LoadVesuvio, SaveNexus
 from pathlib import Path
 import numpy as np
 import json
+from vesuvio_analysis.core_functions.ic_validation import (
+    shadow_validate_backward_initial_conditions,
+    shadow_validate_bootstrap_initial_conditions,
+    shadow_validate_forward_initial_conditions,
+    shadow_validate_yspace_fit_initial_conditions,
+)
 currentPath = Path(__file__).absolute().parent
 experimentsPath = currentPath / ".."/ ".." / "experiments"
 
@@ -51,6 +57,10 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
 
     IC.masses = IC.masses.astype(float)
     IC.noOfMasses = len(IC.masses)
+    if IC.modeRunning == "BACKWARD":
+        shadow_validate_backward_initial_conditions(IC)
+    elif IC.modeRunning == "FORWARD":
+        shadow_validate_forward_initial_conditions(IC)
 
     IC.maskedSpecNo = IC.maskedSpecAllNo[(IC.maskedSpecAllNo>=IC.firstSpec) & (IC.maskedSpecAllNo<=IC.lastSpec)]
     IC.maskedDetectorIdx = IC.maskedSpecNo - IC.firstSpec
@@ -305,6 +315,7 @@ def completeBootIC(bootIC: Any, bckwdIC: Any, fwdIC: Any, yFitIC: Any) -> None:
         fwdIC: Completed forward IC.
         yFitIC: Y-space fit configuration.
     """
+    shadow_validate_bootstrap_initial_conditions(bootIC)
     if not bootIC.runBootstrap:
         return
 
@@ -484,6 +495,7 @@ def completeYFitIC(yFitIC: Any, sampleName: str) -> None:
     figSavePath = experimentsPath / sampleName /  "figures" 
     figSavePath.mkdir(exist_ok=True)
     yFitIC.figSavePath = figSavePath
+    shadow_validate_yspace_fit_initial_conditions(yFitIC)
     return
 
 def convertLoadWSICToDict(wsIC: Any) -> Dict[str, str]:
@@ -499,4 +511,3 @@ def convertLoadWSICToDict(wsIC: Any) -> Dict[str, str]:
     for attr in ["runs", "empty_runs", "spectra", "mode", "ipfile" ]:
         load_ws_params[attr] = str(getattr(wsIC, attr))      # str -> str, PosixPath -> str
     return load_ws_params
-
