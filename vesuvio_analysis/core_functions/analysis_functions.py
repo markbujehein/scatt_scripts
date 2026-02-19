@@ -9,7 +9,7 @@ from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 from .iminuit_costs import NCPCostFunction
-from .plot_style import set_thesis_style, figure_factory
+from .plot_style import set_thesis_style, figure_factory, set_print_options
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ except ImportError:
     USE_NUMBA = False
 
 # Format print output of arrays
-np.set_printoptions(suppress=True, precision=4, linewidth=100, threshold=sys.maxsize)
+set_print_options()
 
 
 def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:

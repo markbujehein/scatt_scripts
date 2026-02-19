@@ -1,23 +1,36 @@
-"""Thesis-standardized Matplotlib style for VESUVIO analysis plots.
+"""Centralized output configuration for VESUVIO analysis.
 
-Targets an A4 document with 2.0 cm margins → 17.0 cm text width.
-The "1:1 Rule": a 12 pt font in the saved figure equals 12 pt in the
-LaTeX document when the figure is included at its natural width.
+Covers two complementary concerns:
+
+1. **Matplotlib style** — thesis-standardized plots targeting an A4 document
+   with 2.0 cm margins → 17.0 cm text width.  The "1:1 Rule": a 12 pt font in
+   the saved figure equals 12 pt in the LaTeX document when the figure is
+   included at its natural width.
+
+2. **Numerical print options** — a single call that configures
+   ``numpy.set_printoptions`` (which also governs how Numba array results are
+   displayed) for reproducible, human-readable diagnostic output.
 
 Typical usage::
 
-    from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
+    from vesuvio_analysis.core_functions.plot_style import (
+        set_thesis_style, set_print_options, figure_factory,
+    )
 
-    set_thesis_style()           # apply rcParams once at module level
-    fig, ax = figure_factory()   # full-width (17 cm) figure with 4:3 ratio
+    set_thesis_style()       # apply Matplotlib rcParams once at module level
+    set_print_options()      # apply numpy/numba float precision once globally
+    fig, ax = figure_factory()            # full-width (17 cm) figure, 4:3 ratio
     fig, ax = figure_factory("half_width")  # half-width (8.25 cm) figure
 """
 
 from __future__ import annotations
 
+import sys
+
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from typing import Any, Tuple
+import numpy as np
+from typing import Any, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +56,43 @@ COLORBLIND_PALETTE: list[str] = [
 def cm_to_inches(cm: float) -> float:
     """Convert centimetres to inches."""
     return cm / _CM_PER_INCH
+
+
+def set_print_options(
+    precision: int = 4,
+    linewidth: int = 100,
+    suppress: bool = True,
+    threshold: Optional[int] = None,
+) -> None:
+    """Configure numpy (and Numba) float display precision globally.
+
+    Numba arrays are backed by NumPy, so ``numpy.set_printoptions`` governs
+    how all numerical arrays are rendered in diagnostic output and log
+    messages throughout the analysis pipeline.
+
+    The defaults match the convention already used in
+    ``analysis_functions.py`` and the majority of the scribles, providing
+    a single canonical source of truth.
+
+    Args:
+        precision: Number of decimal digits shown for floating-point values
+            (default 4).  Increase to 8 for regression-testing output.
+        linewidth: Number of characters per line before wrapping
+            (default 100).
+        suppress: If ``True``, suppress scientific notation for small floats
+            (default ``True``).
+        threshold: Total number of array elements before summarisation kicks
+            in.  Defaults to ``sys.maxsize`` (i.e. always print in full),
+            matching the convention in the core analysis modules.
+    """
+    if threshold is None:
+        threshold = sys.maxsize
+    np.set_printoptions(
+        precision=precision,
+        linewidth=linewidth,
+        suppress=suppress,
+        threshold=threshold,
+    )
 
 
 def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> None:
