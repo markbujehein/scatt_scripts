@@ -17,7 +17,7 @@ Each test uses deterministic dummy data to verify:
 import unittest
 
 import numpy as np
-from iminuit import Minuit
+from iminuit import Minuit, cost
 from scipy import optimize
 from scipy.special import voigt_profile
 
@@ -223,6 +223,73 @@ class TestParametersDict(unittest.TestCase):
             lo, hi = m.limits[f"W{i}"]
             self.assertAlmostEqual(lo, 0.5)
             self.assertAlmostEqual(hi, 50.0)
+
+    def test_leastsquares_y0_regression(self):
+        """Guard against dropping y0 when wrapping a model in LeastSquares."""
+        x = np.linspace(-1.0, 1.0, 11)
+        y = np.ones_like(x)
+        yerr = np.ones_like(x)
+
+        def model(x, y0, A, x0, sigma):
+            sigma_sq = sigma ** 2
+            return y0 + A * np.exp(-((x - x0) ** 2) / (2.0 * sigma_sq))
+
+        # Mimic fitProfileMinuit: model metadata excludes independent variable.
+        model._parameters = {"y0": None, "A": None, "x0": None, "sigma": None}
+        lsq = cost.LeastSquares(x, y, yerr, model)
+        with self.assertRaisesRegex(RuntimeError, r"y0 is not one of the parameters"):
+            Minuit(lsq, y0=0.0, A=1.0, x0=0.0, sigma=1.0)
+
+        # Production fix: propagate full parameter metadata to the cost object
+        # so LeastSquares does not drop y0 while inferring the signature.
+        # LeastSquares does not expose a public API for overriding discovered
+        # parameter names, so this test uses the same private-attribute update
+        # as production code to validate the regression path.
+        lsq._parameters = model._parameters
+        m = Minuit(lsq, y0=0.0, A=1.0, x0=0.0, sigma=1.0)
+        self.assertEqual(m.parameters, ("y0", "A", "x0", "sigma"))
+
+    def test_myleastsquares_y0_regression(self):
+        """Guard against dropping y0 in the unweighted MyLeastSquares path."""
+        x = np.linspace(-1.0, 1.0, 11)
+        y = np.ones_like(x)
+
+        def model(x, y0, A, x0, sigma):
+            sigma_sq = sigma ** 2
+            return y0 + A * np.exp(-((x - x0) ** 2) / (2.0 * sigma_sq))
+
+        class _MyLeastSquaresLike:
+            """Mirror fit_in_yspace.MyLeastSquares without Mantid imports."""
+
+            errordef = Minuit.LEAST_SQUARES
+
+            def __init__(self, x, y, model):
+                from iminuit.util import describe
+
+                self.model = model
+                self.x = np.asarray(x)
+                self.y = np.asarray(y)
+                pars = describe(model, annotations=True)
+                model_args = iter(pars)
+                next(model_args)
+                self._parameters = {k: pars[k] for k in model_args}
+
+            def __call__(self, *par):
+                ym = self.model(self.x, *par)
+                return np.sum((self.y - ym) ** 2)
+
+            @property
+            def ndata(self):
+                return len(self.x)
+
+        model._parameters = {"y0": None, "A": None, "x0": None, "sigma": None}
+        lsq = _MyLeastSquaresLike(x, y, model)
+        with self.assertRaisesRegex(RuntimeError, r"y0 is not one of the parameters"):
+            Minuit(lsq, y0=0.0, A=1.0, x0=0.0, sigma=1.0)
+
+        lsq._parameters = model._parameters
+        m = Minuit(lsq, y0=0.0, A=1.0, x0=0.0, sigma=1.0)
+        self.assertEqual(m.parameters, ("y0", "A", "x0", "sigma"))
 
 
 class TestMigradMatchesScipy(unittest.TestCase):
