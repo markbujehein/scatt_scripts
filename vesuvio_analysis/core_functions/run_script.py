@@ -11,6 +11,7 @@ from vesuvio_analysis.core_functions.ICHelpers import (
     completeICFromInputs,
     completeYFitIC,
 )
+from vesuvio_analysis.core_functions.log_manager import RunLogger
 from vesuvio_analysis.core_functions.procedures import (
     createTableWSHRatios,
     isHPresent,
@@ -93,6 +94,35 @@ def runScript(
         "Main routine and bootstrap both set to run!"
     )
 
+    # --- Logging setup ---
+    direction = getattr(userCtr, "procedure", None) or "NONE"
+    _log_output_dir = getattr(
+        bckwdIC, "resultsSavePath",
+        getattr(fwdIC, "resultsSavePath", None),
+    )
+    if _log_output_dir is not None:
+        _log_output_dir = _log_output_dir.parent
+    else:
+        import tempfile
+        _log_output_dir = tempfile.mkdtemp()
+    logger = RunLogger(scriptName, direction, _log_output_dir)
+    logger.log_environment()
+    logger.log_ic("UserScriptControls", userCtr)
+    logger.log_ic("LoadVesuvioBackParameters", wsBackIC)
+    logger.log_ic("LoadVesuvioFrontParameters", wsFrontIC)
+    logger.log_ic("BackwardInitialConditions", bckwdIC)
+    logger.log_ic("ForwardInitialConditions", fwdIC)
+    logger.log_ic("YSpaceFitInitialConditions", yFitIC)
+    logger.log_ic("BootstrapInitialConditions", bootIC)
+    logger.log_flags(
+        MSCorrectionFlag_bckwd=getattr(bckwdIC, "MSCorrectionFlag", None),
+        GammaCorrectionFlag_bckwd=getattr(bckwdIC, "GammaCorrectionFlag", None),
+        MSCorrectionFlag_fwd=getattr(fwdIC, "MSCorrectionFlag", None),
+        GammaCorrectionFlag_fwd=getattr(fwdIC, "GammaCorrectionFlag", None),
+        runRoutine=getattr(userCtr, "runRoutine", None),
+        runBootstrap=getattr(bootIC, "runBootstrap", None),
+    )
+
     def runProcedure():
         proc = userCtr.procedure  # Shorthad to make it easier to read
 
@@ -137,6 +167,7 @@ def runScript(
             | (bootIC.procedure == "BACKWARD")
             | (bootIC.procedure == "JOINT")
         ), "Invalid Bootstrap procedure."
+        logger.write()
         return runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC), None
 
     # Default workflow for procedure + fit in y space
@@ -148,18 +179,33 @@ def runScript(
         ):  # When wsName is empty list, loop doesn't run
             for wsName, IC in zip(wsNames, ICs):
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+            logger.write()
             return None, resYFit  # To match return below.
 
         checkUserClearWS()  # Check if user is OK with cleaning all workspaces
-        res = runProcedure()
 
+        res = None
         resYFit = None
-        for wsName, IC in zip(wsNames, ICs):
-            resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+        try:
+            logger.log_timestamp("ncp_start")
+            res = runProcedure()
+            logger.log_timestamp("ncp_end")
+            logger.log_final_results(res[1] if res is not None and len(res) >= 2 else None)
+
+            logger.log_timestamp("yspace_start")
+            for wsName, IC in zip(wsNames, ICs):
+                resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+            logger.log_timestamp("yspace_end")
+
+        except Exception as exc:
+            logger.log_error(exc)
+            logger.write()
+            raise
 
         # --- Phase 6: Statistical Analysis (post-fit) ---
         _runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)
 
+        logger.write()
         return res, resYFit  # Return results used only in tests
 
 
