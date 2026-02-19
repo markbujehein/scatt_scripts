@@ -228,5 +228,8 @@ analysis codebase:
 
 ## Licence
 
-This repository inherits the licence of the upstream `scatt_scripts` project.
-See the original repository for details.
+As of this writing, neither this repository nor the upstream `scatt_scripts`
+project provides an explicit license file. No licence is therefore granted for
+use, copying, modification, or distribution beyond what is permitted by
+applicable law. If you wish to use this code in a way that requires a licence,
+please contact the maintainers to agree appropriate terms.
