@@ -21,6 +21,7 @@ name: CI — Development Gate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - dev
     # Do not re-run the full pipeline when only generated output files change.
@@ -28,6 +29,11 @@ on:
       - "outputs/**"
       - "tests/smoke_test_output/**"
       - "experiments/**"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
 
 jobs:
   dev-gate:
@@ -149,21 +155,17 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: python
+          build-mode: none
           config: |
             paths-ignore:
-              - outputs
-              - tests/smoke_test_output
-              - experiments
+              - "outputs/**"
+              - "tests/smoke_test_output/**"
+              - "experiments/**"
 
       # -----------------------------------------------------------------------
-      # 3. Autobuild — resolves Python imports for the static analysis graph
-      # -----------------------------------------------------------------------
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-
-      # -----------------------------------------------------------------------
-      # 4. Run analysis — results surface in the PR Security tab and as
+      # 3. Run analysis — results surface in the PR Security tab and as
       #    inline annotations alongside optimizer agreement check results.
+      #    upload-sarif is handled automatically by analyze@v3.
       # -----------------------------------------------------------------------
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
