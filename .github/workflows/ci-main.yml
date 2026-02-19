@@ -36,7 +36,7 @@ jobs:
       - name: Install analysis dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 mypy numpy scipy iminuit jacobi pyyaml matplotlib pydantic>=2.0
+          pip install flake8 mypy numpy scipy iminuit jacobi pyyaml matplotlib
 
       - name: Run flake8 (PEP 8 + publication-readiness)
         run: |
@@ -66,7 +66,7 @@ jobs:
       - name: Extract lint summary
         id: lint_summary
         run: |
-          FLAKE8_ERRORS=$(grep -c '^' flake8_report.txt 2>/dev/null || echo 0)
+          FLAKE8_ERRORS=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:' flake8_report.txt 2>/dev/null || echo 0)
           MYPY_ERRORS=$(grep -c '"severity": "error"' mypy_report.txt 2>/dev/null || echo 0)
           echo "flake8_errors=${FLAKE8_ERRORS}" >> "$GITHUB_OUTPUT"
           echo "mypy_errors=${MYPY_ERRORS}" >> "$GITHUB_OUTPUT"
@@ -97,9 +97,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .benchmarks/baseline
-          key: benchmark-baseline-${{ runner.os }}-${{ hashFiles('scripts/run_benchmarks.py') }}
+          key: benchmark-baseline-v1-${{ runner.os }}
           restore-keys: |
-            benchmark-baseline-${{ runner.os }}-
+            benchmark-baseline-v1-${{ runner.os }}-
 
       - name: Run benchmarks and save results
         run: |
@@ -113,9 +113,9 @@ jobs:
         run: |
           if [ -d ".benchmarks/baseline" ] && find .benchmarks/baseline -name '*.json' -type f | grep -q .; then
             pytest scripts/run_benchmarks.py \
+              --benchmark-only \
               --benchmark-compare \
               --benchmark-compare-fail=mean:20% \
-              --benchmark-json=benchmark_comparison.json \
               -v 2>&1 | tee benchmark_compare_output.txt || {
                 echo "BENCHMARK_REGRESSION=true" >> "$GITHUB_ENV"
                 cat benchmark_compare_output.txt
@@ -130,6 +130,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
+          if-no-files-found: ignore
           path: |
             benchmark_results.json
             benchmark_output.txt
@@ -139,7 +140,7 @@ jobs:
         id: bench_summary
         run: |
           python - <<'PYEOF'
-          import json, os, sys
+          import json, os
           try:
               with open("benchmark_results.json") as f:
                   data = json.load(f)
@@ -153,9 +154,8 @@ jobs:
           except Exception as e:
               summary = f"Could not parse benchmark results: {e}"
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              # Escape newlines for GitHub Actions output
-              escaped = summary.replace("\n", "%0A").replace("\r", "%0D")
-              f.write(f"bench_table={escaped}\n")
+              # Use json.dumps to safely escape arbitrary content for GITHUB_OUTPUT
+              f.write(f"bench_table={json.dumps(summary)}\n")
           PYEOF
 
   # ----------------------------------------------------------
@@ -177,10 +177,11 @@ jobs:
       - name: Install package (no Mantid)
         run: |
           python -m pip install --upgrade pip
-          pip install numpy scipy iminuit jacobi pyyaml matplotlib pydantic>=2.0
+          pip install numpy scipy iminuit jacobi pyyaml matplotlib
 
       - name: Run LogManager integrity check
         id: log_manager_check
+        shell: bash
         run: |
           python scripts/check_log_manager_integrity.py 2>&1 | tee log_manager_report.txt
           EXIT_CODE=${PIPESTATUS[0]}
@@ -202,6 +203,7 @@ jobs:
         with:
           name: log-manager-report
           path: log_manager_report.txt
+          if-no-files-found: ignore
 
   # ----------------------------------------------------------
   # Job 4: Lifecycle Fidelity Check (mocked Mantid)
@@ -222,25 +224,25 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy scipy iminuit jacobi pyyaml matplotlib pydantic>=2.0
+          pip install pytest numpy scipy iminuit jacobi pyyaml matplotlib
 
       - name: Run non-Mantid test suite
         id: fidelity_check
         run: |
-          # Discover and run any test files that do NOT require Mantid
-          # (i.e. tests that mock or skip Mantid imports)
+          # Discover and run any test files that do NOT require Mantid.
+          # The tests/ package (root level) is designed for mock-based testing.
+          if ! find tests/ -name 'test_*.py' -type f 2>/dev/null | grep -q .; then
+            echo "No lifecycle fidelity tests found yet; skipping."
+            echo "fidelity_status=SKIPPED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           pytest tests/ -v \
-            --ignore=vesuvio_analysis/tests \
             -k "not mantid" \
             --tb=short \
-            2>&1 | tee fidelity_output.txt || {
-              # Graceful degradation: no non-Mantid tests found yet is acceptable
-              echo "Lifecycle fidelity tests not yet present; skipping."
-              echo "fidelity_status=SKIPPED" >> "$GITHUB_OUTPUT"
-              exit 0
-            }
-          PASSED=$(grep -oP '\d+ passed' fidelity_output.txt | grep -oP '\d+' || echo 0)
-          FAILED=$(grep -oP '\d+ failed' fidelity_output.txt | grep -oP '\d+' || echo 0)
+            2>&1 | tee fidelity_output.txt
+          PYTEST_EXIT=$?
+          PASSED=$(grep -oP '\d+ passed' fidelity_output.txt | grep -oP '\d+' | head -1 || echo 0)
+          FAILED=$(grep -oP '\d+ failed' fidelity_output.txt | grep -oP '\d+' | head -1 || echo 0)
           echo "fidelity_passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "fidelity_failed=${FAILED}" >> "$GITHUB_OUTPUT"
           if [ "${FAILED:-0}" -gt 0 ]; then
@@ -296,7 +298,7 @@ jobs:
   # ----------------------------------------------------------
   post-report:
     name: Post Quality & Performance Report
-    if: github.head_ref == 'dev'
+    if: always() && github.head_ref == 'dev'
     needs:
       - static-analysis
       - benchmarks
@@ -314,10 +316,9 @@ jobs:
           path: artifacts/
 
       - name: Build report body
-        id: build_report
         run: |
           python - <<'PYEOF'
-          import json, os, pathlib, sys
+          import json, os, pathlib, textwrap
 
           def safe_read(path, default="N/A"):
               try:
@@ -339,9 +340,12 @@ jobs:
                   return f"| parse error | {e} | — |"
 
           def parse_flake8(path):
+              import re
               lines = safe_read(path).splitlines()
-              count = lines[-1] if lines else "0"
-              return count
+              # Count only actual violation lines matching filename:line:col: pattern
+              pattern = re.compile(r'^[^:]+:[0-9]+:[0-9]+:')
+              count = sum(1 for l in lines if pattern.match(l))
+              return str(count)
 
           bench_json = "artifacts/benchmark-results/benchmark_results.json"
           bench_rows = parse_bench(bench_json)
@@ -405,7 +409,7 @@ jobs:
 
           | Tool | Issues |
           |------|--------|
-          | flake8 (PEP 8) | {flake8_count} line(s) |
+          | flake8 (PEP 8) | {flake8_count} violation(s) |
           | mypy  | see artifact |
 
           ---
@@ -420,14 +424,11 @@ jobs:
           """
 
           # Remove common leading whitespace from the heredoc
-          import textwrap
           report = textwrap.dedent(report)
 
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              escaped = report.replace("%", "%25").replace("\n", "%0A").replace("\r", "%0D")
-              f.write(f"report_body={escaped}\n")
-
-          # Also write to a file for the comment action
+          # Write report to a file for the comment action.
+          # Avoid passing large multi-line content via GITHUB_OUTPUT
+          # which can be broken by malicious or malformed sequences.
           pathlib.Path("pr_report.md").write_text(report)
           print("Report written to pr_report.md")
           PYEOF
