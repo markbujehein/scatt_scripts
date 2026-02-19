@@ -63,14 +63,14 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch
+
 
 import numpy as np
 
 # ---------------------------------------------------------------------------
 # Install the Mantid mock BEFORE importing any vesuvio module
 # ---------------------------------------------------------------------------
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests.mock_mantid import install as _install_mock_mantid  # noqa: E402
 _install_mock_mantid()
 

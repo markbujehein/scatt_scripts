@@ -100,7 +100,7 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
             wsGC = createWorkspacesForGammaCorrection(ic, mWidths, mIntRatios, wsNCPM)
             Minus(LHSWorkspace="tmpNameWs", RHSWorkspace=wsGC, OutputWorkspace="tmpNameWs")
 
-        remaskValues(ic.name, "tmpNameWS")    # Masks cols in the same place as in ic.name
+        remaskValues(ic.name, "tmpNameWs")    # Masks cols in the same place as in ic.name
         RenameWorkspace(InputWorkspace="tmpNameWs", OutputWorkspace=ic.name+str(iteration+1))
     
     wsFinal = mtd[ic.name+str(_n_iter)]
