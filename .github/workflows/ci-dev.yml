@@ -7,11 +7,15 @@
 # 3. Run iMinuit cross-check tests (test_iminuit_cross_check.py)
 #    — includes the 1% iMinuit–Scipy Numerical Agreement Check
 # 4. Run workspace safety tests   (test_workspace_safety.py)
+# 5. CodeQL Advanced Setup — Python-only security scan
+#    — runs ONLY if the dev-gate job above succeeds (needs: [dev-gate])
+#    — scoped to Python; ignores generated output directories
+#    — replaces 'Default Setup' for full 'needs:' dependency control
 #
 # The workflow fails if any test reports values outside the tolerance
 # defined in the test files (currently 1 % / 5 % depending on the check).
 #
-# Total target execution time: < 3 minutes with a warm cache.
+# Total target execution time: < 4 minutes with a warm cache.
 
 name: CI — Development Gate
 
@@ -19,6 +23,11 @@ on:
   pull_request:
     branches:
       - dev
+    # Do not re-run the full pipeline when only generated output files change.
+    paths-ignore:
+      - "outputs/**"
+      - "tests/smoke_test_output/**"
+      - "experiments/**"
 
 jobs:
   dev-gate:
@@ -96,3 +105,67 @@ jobs:
       - name: Workspace safety tests
         run: |
           python -m pytest tests/test_workspace_safety.py -v --tb=short
+
+  # -------------------------------------------------------------------------
+  # CodeQL Advanced Setup — Python-only security scan
+  #
+  # Rationale for 'needs: [dev-gate]':
+  #   Deep security scanning is a conditional requirement — it only runs when
+  #   the Numba regression, iMinuit–Scipy Numerical Agreement Check, and
+  #   workspace safety gates all pass.  This avoids burning runner minutes on
+  #   security analysis of code that already fails its physics contract.
+  #
+  # Language scope: Python only.  Mantid C++ artefacts and data workspaces
+  #   are excluded via 'paths-ignore' in the inline CodeQL config so they do
+  #   not inflate scan time or generate spurious alerts.
+  #
+  # False-positive strategy (Numba / scientific code):
+  #   @njit functions are compiled at import time; CodeQL may flag variables
+  #   as 'possibly undefined' in branches that are unreachable after JIT.
+  #   Suppress these with `# lgtm[py/unreachable-statement]` or by adding a
+  #   CodeQL alert dismissal in the Security tab — see CONTRIBUTING.md §10.
+  # -------------------------------------------------------------------------
+  codeql:
+    name: CodeQL Security Scan (Python)
+    needs: [dev-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Initialize CodeQL — Python only, output directories excluded
+      #    inline 'config:' replaces a separate .github/codeql/codeql-config.yml
+      #    so the scoping rules live alongside the workflow that enforces them.
+      # -----------------------------------------------------------------------
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          config: |
+            paths-ignore:
+              - outputs
+              - tests/smoke_test_output
+              - experiments
+
+      # -----------------------------------------------------------------------
+      # 3. Autobuild — resolves Python imports for the static analysis graph
+      # -----------------------------------------------------------------------
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      # -----------------------------------------------------------------------
+      # 4. Run analysis — results surface in the PR Security tab and as
+      #    inline annotations alongside optimizer agreement check results.
+      # -----------------------------------------------------------------------
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
