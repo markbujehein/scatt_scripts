@@ -9,6 +9,7 @@ from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 from .iminuit_costs import NCPCostFunction
+from .plot_style import set_thesis_style, figure_factory
 
 logger = logging.getLogger(__name__)
 
@@ -826,14 +827,13 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
     if IC.runningSampleWS:   # Skip saving figure if running bootstrap
         return         
 
-    lw = 2
-
-    fig, ax = plt.subplots(subplot_kw={"projection":"mantid"})
+    set_thesis_style()
+    fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
     ax.errorbar(wsDataSum, "k.", label="Spectra")
 
-    ax.plot(wsTotNCPSum, "r-", label="Total NCP", linewidth=lw)
+    ax.plot(wsTotNCPSum, "r-", label="Total NCP")
     for m, wsNcp in zip(IC.masses, wsMNCPSum):
-        ax.plot(wsNcp, label=f"NCP m={m}", linewidth=lw)
+        ax.plot(wsNcp, label=f"NCP m={m}")
     
     ax.set_xlabel("TOF")
     ax.set_ylabel("Counts")
@@ -842,7 +842,7 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
 
     fileName = wsDataSum.name()+"_NCP_Fits.pdf"
     savePath = IC.figSavePath / fileName
-    plt.savefig(savePath, bbox_inches="tight")
+    plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
     return
 
