@@ -1,0 +1,441 @@
+# ============================================================
+# Production Gate — Quality & Performance Report
+#
+# Triggered on every PR targeting `main`.
+# All jobs are gated by `github.head_ref == 'dev'` so the
+# workflow only executes for the authorised dev → main path.
+# ============================================================
+name: Production Gate — Quality & Performance Report
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ----------------------------------------------------------
+  # Job 1: Static Analysis (linting + type-checking)
+  # ----------------------------------------------------------
+  static-analysis:
+    name: Static Analysis
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy numpy scipy iminuit jacobi pyyaml matplotlib
+
+      - name: Run flake8 (PEP 8 + publication-readiness)
+        run: |
+          flake8 vesuvio_analysis/core_functions/ \
+            --max-line-length=120 \
+            --extend-ignore=E501,W503,E203 \
+            --count --statistics \
+            --output-file=flake8_report.txt || true
+          cat flake8_report.txt
+
+      - name: Run mypy (type-checking)
+        run: |
+          mypy vesuvio_analysis/core_functions/ \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --pretty \
+            --output=json 2>&1 | tee mypy_report.txt || true
+
+      - name: Upload static-analysis reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-reports
+          path: |
+            flake8_report.txt
+            mypy_report.txt
+
+      - name: Extract lint summary
+        id: lint_summary
+        run: |
+          FLAKE8_ERRORS=$(grep -cE '^[^:]+:[0-9]+:[0-9]+:' flake8_report.txt 2>/dev/null || echo 0)
+          MYPY_ERRORS=$(grep -c '"severity": "error"' mypy_report.txt 2>/dev/null || echo 0)
+          echo "flake8_errors=${FLAKE8_ERRORS}" >> "$GITHUB_OUTPUT"
+          echo "mypy_errors=${MYPY_ERRORS}" >> "$GITHUB_OUTPUT"
+
+  # ----------------------------------------------------------
+  # Job 2: Performance Benchmarks (no Mantid required)
+  # ----------------------------------------------------------
+  benchmarks:
+    name: Performance Benchmarks
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-benchmark numpy scipy
+
+      - name: Restore main-branch benchmark baseline
+        id: cache_baseline
+        uses: actions/cache@v4
+        with:
+          path: .benchmarks/baseline
+          key: benchmark-baseline-v1-${{ runner.os }}
+          restore-keys: |
+            benchmark-baseline-v1-${{ runner.os }}-
+
+      - name: Run benchmarks and save results
+        run: |
+          pytest scripts/run_benchmarks.py \
+            --benchmark-json=benchmark_results.json \
+            --benchmark-min-rounds=5 \
+            --benchmark-warmup=on \
+            -v 2>&1 | tee benchmark_output.txt
+
+      - name: Compare against baseline (if available)
+        run: |
+          if [ -d ".benchmarks/baseline" ] && find .benchmarks/baseline -name '*.json' -type f | grep -q .; then
+            pytest scripts/run_benchmarks.py \
+              --benchmark-only \
+              --benchmark-compare \
+              --benchmark-compare-fail=mean:20% \
+              -v 2>&1 | tee benchmark_compare_output.txt || {
+                echo "BENCHMARK_REGRESSION=true" >> "$GITHUB_ENV"
+                cat benchmark_compare_output.txt
+              }
+          else
+            echo "No baseline found — first run; saving as baseline."
+            mkdir -p .benchmarks/baseline
+            cp benchmark_results.json .benchmarks/baseline/baseline.json
+          fi
+
+      - name: Save benchmark results as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          if-no-files-found: ignore
+          path: |
+            benchmark_results.json
+            benchmark_output.txt
+            benchmark_compare_output.txt
+
+      - name: Extract benchmark summary
+        id: bench_summary
+        run: |
+          python - <<'PYEOF'
+          import json, os
+          try:
+              with open("benchmark_results.json") as f:
+                  data = json.load(f)
+              lines = []
+              for b in data.get("benchmarks", []):
+                  name = b["name"].split("::")[-1]
+                  mean_us = b["stats"]["mean"] * 1e6
+                  stddev_us = b["stats"]["stddev"] * 1e6
+                  lines.append(f"{name}: mean={mean_us:.1f} µs ± {stddev_us:.1f} µs")
+              summary = "\n".join(lines) if lines else "No benchmark data."
+          except Exception as e:
+              summary = f"Could not parse benchmark results: {e}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              # Use json.dumps to safely escape arbitrary content for GITHUB_OUTPUT
+              f.write(f"bench_table={json.dumps(summary)}\n")
+          PYEOF
+
+  # ----------------------------------------------------------
+  # Job 3: LogManager Integrity Check
+  # ----------------------------------------------------------
+  log-manager-integrity:
+    name: LogManager Integrity
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install package (no Mantid)
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy iminuit jacobi pyyaml matplotlib
+
+      - name: Run LogManager integrity check
+        id: log_manager_check
+        shell: bash
+        run: |
+          python scripts/check_log_manager_integrity.py 2>&1 | tee log_manager_report.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ "$EXIT_CODE" -eq 2 ]; then
+            echo "log_manager_status=PENDING (implementation not merged yet)" >> "$GITHUB_OUTPUT"
+            echo "log_manager_icon=⏳" >> "$GITHUB_OUTPUT"
+            exit 0   # Do not fail CI — LogManager may arrive in this PR
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            echo "log_manager_status=PASSED" >> "$GITHUB_OUTPUT"
+            echo "log_manager_icon=✅" >> "$GITHUB_OUTPUT"
+          else
+            echo "log_manager_status=FAILED" >> "$GITHUB_OUTPUT"
+            echo "log_manager_icon=❌" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Upload LogManager report
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-manager-report
+          path: log_manager_report.txt
+          if-no-files-found: ignore
+
+  # ----------------------------------------------------------
+  # Job 4: Lifecycle Fidelity Check (mocked Mantid)
+  # ----------------------------------------------------------
+  lifecycle-fidelity:
+    name: Lifecycle Fidelity (mocked Mantid)
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy scipy iminuit jacobi pyyaml matplotlib
+
+      - name: Run non-Mantid test suite
+        id: fidelity_check
+        run: |
+          # Discover and run any test files that do NOT require Mantid.
+          # The tests/ package (root level) is designed for mock-based testing.
+          if ! find tests/ -name 'test_*.py' -type f 2>/dev/null | grep -q .; then
+            echo "No lifecycle fidelity tests found yet; skipping."
+            echo "fidelity_status=SKIPPED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pytest tests/ -v \
+            -k "not mantid" \
+            --tb=short \
+            2>&1 | tee fidelity_output.txt
+          PYTEST_EXIT=$?
+          PASSED=$(grep -oP '\d+ passed' fidelity_output.txt | grep -oP '\d+' | head -1 || echo 0)
+          FAILED=$(grep -oP '\d+ failed' fidelity_output.txt | grep -oP '\d+' | head -1 || echo 0)
+          echo "fidelity_passed=${PASSED}" >> "$GITHUB_OUTPUT"
+          echo "fidelity_failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "fidelity_status=FAILED (${FAILED} tests)" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "fidelity_status=PASSED (${PASSED} tests)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload fidelity report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fidelity-report
+          path: fidelity_output.txt
+
+  # ----------------------------------------------------------
+  # Job 5: ARCHITECTURE_AUDIT.md Synchronisation Check
+  # ----------------------------------------------------------
+  architecture-audit-sync:
+    name: ARCHITECTURE_AUDIT.md Sync
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history to diff against main
+
+      - name: Check ARCHITECTURE_AUDIT.md exists and is updated
+        id: audit_sync
+        run: |
+          if [ ! -f "ARCHITECTURE_AUDIT.md" ]; then
+            echo "audit_status=MISSING" >> "$GITHUB_OUTPUT"
+            echo "audit_icon=❌" >> "$GITHUB_OUTPUT"
+            echo "::warning::ARCHITECTURE_AUDIT.md is missing. Create it before merging to main."
+            exit 0   # Warning only; do not block CI until file is expected
+          fi
+
+          # Check that ARCHITECTURE_AUDIT.md was touched in this PR
+          CHANGED=$(git diff --name-only origin/main...HEAD -- ARCHITECTURE_AUDIT.md)
+          if [ -n "$CHANGED" ]; then
+            echo "audit_status=UPDATED" >> "$GITHUB_OUTPUT"
+            echo "audit_icon=✅" >> "$GITHUB_OUTPUT"
+          else
+            echo "audit_status=OUT OF SYNC (not updated in this PR)" >> "$GITHUB_OUTPUT"
+            echo "audit_icon=⚠️" >> "$GITHUB_OUTPUT"
+            echo "::warning::ARCHITECTURE_AUDIT.md has not been updated in this PR."
+          fi
+
+  # ----------------------------------------------------------
+  # Job 6: Post Quality & Performance Report to PR
+  # ----------------------------------------------------------
+  post-report:
+    name: Post Quality & Performance Report
+    if: always() && github.head_ref == 'dev'
+    needs:
+      - static-analysis
+      - benchmarks
+      - log-manager-integrity
+      - lifecycle-fidelity
+      - architecture-audit-sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Build report body
+        run: |
+          python - <<'PYEOF'
+          import json, os, pathlib, textwrap
+
+          def safe_read(path, default="N/A"):
+              try:
+                  return pathlib.Path(path).read_text(errors="replace").strip()
+              except FileNotFoundError:
+                  return default
+
+          def parse_bench(path):
+              try:
+                  data = json.loads(pathlib.Path(path).read_text())
+                  rows = []
+                  for b in data.get("benchmarks", []):
+                      name = b["name"].split("::")[-1].replace("test_", "").replace("_benchmark", "")
+                      mean_us = b["stats"]["mean"] * 1e6
+                      min_us  = b["stats"]["min"]  * 1e6
+                      rows.append(f"| `{name}` | {mean_us:.1f} µs | {min_us:.1f} µs |")
+                  return "\n".join(rows) if rows else "| — | N/A | N/A |"
+              except Exception as e:
+                  return f"| parse error | {e} | — |"
+
+          def parse_flake8(path):
+              import re
+              lines = safe_read(path).splitlines()
+              # Count only actual violation lines matching filename:line:col: pattern
+              pattern = re.compile(r'^[^:]+:[0-9]+:[0-9]+:')
+              count = sum(1 for l in lines if pattern.match(l))
+              return str(count)
+
+          bench_json = "artifacts/benchmark-results/benchmark_results.json"
+          bench_rows = parse_bench(bench_json)
+
+          flake8_txt = "artifacts/static-analysis-reports/flake8_report.txt"
+          flake8_count = parse_flake8(flake8_txt)
+
+          log_report = safe_read(
+              "artifacts/log-manager-report/log_manager_report.txt",
+              "⏳ LogManager not yet implemented — pending Phase 5.",
+          )
+
+          fidelity_out = safe_read(
+              "artifacts/fidelity-report/fidelity_output.txt",
+              "No fidelity tests found.",
+          )
+
+          report = f"""## 🔬 VESUVIO Production Gate — Quality & Performance Report
+
+          > Automated report generated for PR `{os.environ.get('GITHUB_HEAD_REF','dev')}` → `main`
+          > Commit: `{os.environ.get('GITHUB_SHA','unknown')[:8]}`
+
+          ---
+
+          ### 1 · Performance Benchmark (Numerical Core)
+
+          | Kernel | Mean time | Min time |
+          |--------|-----------|----------|
+          {bench_rows}
+
+          > **Numba target:** after acceleration, mean times should be ≤ 1/7.5 of the
+          > un-accelerated baseline.  Regression threshold: **+20 %** vs. main-branch baseline.
+
+          ---
+
+          ### 2 · LogManager Integrity (7 Parameter Classes + Environment)
+
+          <details><summary>Full report</summary>
+
+          ```
+          {log_report}
+          ```
+
+          </details>
+
+          ---
+
+          ### 3 · Lifecycle Fidelity (mocked Mantid)
+
+          <details><summary>Test output</summary>
+
+          ```
+          {fidelity_out[:3000]}
+          ```
+
+          </details>
+
+          ---
+
+          ### 4 · Static Analysis
+
+          | Tool | Issues |
+          |------|--------|
+          | flake8 (PEP 8) | {flake8_count} violation(s) |
+          | mypy  | see artifact |
+
+          ---
+
+          ### 5 · ARCHITECTURE_AUDIT.md Synchronisation
+
+          See `architecture-audit-sync` job output above.
+
+          ---
+
+          *Report generated by `.github/workflows/ci-main.yml`*
+          """
+
+          # Remove common leading whitespace from the heredoc
+          report = textwrap.dedent(report)
+
+          # Write report to a file for the comment action.
+          # Avoid passing large multi-line content via GITHUB_OUTPUT
+          # which can be broken by malicious or malformed sequences.
+          pathlib.Path("pr_report.md").write_text(report)
+          print("Report written to pr_report.md")
+          PYEOF
+
+      - name: Post or update PR comment
+        uses: peter-evans/create-or-update-comment@7a1a52a1abc4fbd18ee6f01ebd41eade8fc145af
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-file: pr_report.md
+          edit-mode: replace
