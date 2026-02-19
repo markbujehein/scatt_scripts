@@ -96,7 +96,7 @@ and installed automatically by any of the above methods.
 
 ## Quick Start
 
-Three fully annotated example scripts are provided:
+Four fully annotated example scripts are provided:
 
 | Script | Sample | Notes |
 |---|---|---|
