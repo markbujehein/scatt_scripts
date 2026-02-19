@@ -76,6 +76,10 @@ class MockWorkspace:
     def blocksize(self) -> int:
         return self._n_bins
 
+    def getSpectrumNumbers(self) -> np.ndarray:
+        """Return 1-based spectrum numbers for each histogram."""
+        return np.arange(self._n_spectra) + 1
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"MockWorkspace('{self._name}', {self._n_spectra}×{self._n_bins})"
 
