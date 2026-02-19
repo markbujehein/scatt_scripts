@@ -1,0 +1,215 @@
+# Deploy — Development Build
+#
+# Stages
+# ──────
+# 1. dev-gate  — replicate Physics + Optimizer + Workspace-Safety checks from
+#                ci-dev.yml so deployment never proceeds on broken physics.
+# 2. build     — PEP 517 build (Hatchling) → wheel + sdist; provenance attestation.
+# 3. release   — date-stamped GitHub pre-release on the 'dev' branch.
+#                One release per calendar day is kept: any prior release for
+#                today is deleted before the new one is created.
+#
+# pyproject.toml audit checklist (hatchling):
+#   ✅ [build-system] requires = ["hatchling", "hatch-vcs"]
+#   ✅ build-backend = "hatchling.build"
+#   ✅ [tool.hatch.build.targets.wheel] packages = ["vesuvio_analysis"]
+#   ⚠️  Consider replacing static version = "0.1.0" with dynamic = ["version"]
+#      in [project] to let hatch-vcs derive the version from git tags.
+#
+# PyPI / Trusted Publishing (future):
+#   The 'pypi' job at the bottom of this file is commented out.
+#   When the thesis is ready for public release:
+#     1. Create a 'pypi' environment at Settings → Environments.
+#     2. Add a matching Trusted Publisher entry on pypi.org.
+#     3. Uncomment the 'pypi' job — OIDC handles token exchange automatically.
+
+name: Deploy — Development Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - "vesuvio_analysis/core_functions/**"
+
+# Default: read-only.  Elevated permissions are scoped per-job below.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Physics & Optimizer Gate
+  #    Mirrors the dev-gate job in ci-dev.yml so that deployment is blocked
+  #    if Numba regression, iMinuit–Scipy Numerical Agreement Check, or
+  #    workspace-safety tests fail.
+  # ---------------------------------------------------------------------------
+  dev-gate:
+    name: Physics & Optimizer Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py3.11-
+
+      - name: Install package and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Numba regression tests
+        run: python -m pytest tests/test_numba_regression.py -v --tb=short
+
+      - name: iMinuit–Scipy Numerical Agreement Check
+        run: python -m pytest tests/test_iminuit_cross_check.py -v --tb=short
+
+      - name: Workspace safety tests
+        run: python -m pytest tests/test_workspace_safety.py -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # 2. Build Package (Hatchling / PEP 517)
+  #    Produces wheel (.whl) and source distribution (.tar.gz).
+  #    Artifact provenance is attested via actions/attest-build-provenance
+  #    so consumers can verify the binary was built in this exact CI run.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build Package (Hatchling)
+    needs: [dev-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required by actions/attest-build-provenance
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history lets hatch-vcs resolve tags for dynamic versioning.
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build frontend
+        run: pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesuvio-dist
+          path: dist/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 3. Create Development Release
+  #    Tag scheme: dev-YYYY.MM.DD  (UTC calendar day, one release per day).
+  #    If a release with today's tag already exists it is deleted first so
+  #    only the latest build of each day is ever retained.
+  #    Release notes are auto-generated from PR titles merged since the last
+  #    release (GitHub's built-in generate_release_notes mechanism).
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create Development Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute release tag and name
+        id: tag
+        run: |
+          TAG="dev-$(date -u +%Y.%m.%d)"
+          NAME="Development Build — $(date -u +%Y-%m-%d)"
+          echo "tag=${TAG}"   >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing same-day release (if present)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Remove the GitHub Release object (no-op if it does not exist).
+          gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          # Remove the git tag so softprops/action-gh-release can recreate it.
+          git push origin ":refs/tags/${TAG}" 2>/dev/null || true
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: vesuvio-dist
+          path: dist/
+
+      - name: Create development release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          target_commitish: dev
+          prerelease: true
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            > **Development Build** — auto-generated on every push to `vesuvio_analysis/core_functions/**` on the `dev` branch.
+            >
+            > ✅ All Physics Gate checks passed (Numba regression · iMinuit–Scipy Numerical Agreement Check · workspace safety).
+            >
+            > ⚠️ This is a pre-release build for internal validation only.
+            > For the public PyPI release see the `pypi` environment (pending Trusted Publishing setup).
+
+  # ---------------------------------------------------------------------------
+  # PyPI — OIDC Trusted Publishing  (FUTURE — currently commented out)
+  #
+  # Uncomment this job when the thesis is ready for public release.
+  # Prerequisites:
+  #   1. Create a 'pypi' GitHub Environment at Settings → Environments.
+  #   2. Add a matching Trusted Publisher entry on pypi.org
+  #      (owner: markbujehein, repo: scatt_scripts, workflow: deploy.yml).
+  #   3. 'id-token: write' is already set in the build job above.
+  # ---------------------------------------------------------------------------
+  # pypi:
+  #   name: Publish to PyPI (Trusted Publishing)
+  #   needs: [build]
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - name: Download build artifacts
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: vesuvio-dist
+  #         path: dist/
+  #
+  #     - name: Publish to PyPI
+  #       uses: pypa/gh-action-pypi-publish@release/v1
+  #       # No explicit API token needed — OIDC handles authentication.
