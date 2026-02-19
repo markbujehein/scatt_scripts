@@ -9,3 +9,6 @@ vesuvio_analysis/core_functions/bootstrap_ws/
 running_times.txt
 figures/
 experiments/
+
+# pixi environment (created by `pixi install` at workspace setup time)
+.pixi/

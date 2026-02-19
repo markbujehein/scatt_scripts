@@ -22,6 +22,7 @@ Coverage:
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import types
@@ -30,6 +31,14 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+
+# Install the Mantid mock once at module level so ICHelpers (which imports
+# from mantid.simpleapi at module level) can be imported in the new
+# TestRunningTestEnvVar tests without a full Mantid installation.
+# This is a no-op for tests that don't import mantid-dependent modules.
+sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from tests.mock_mantid import install as _install_mantid_mock
+_install_mantid_mock()
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +408,73 @@ class TestDataExchangeBoundary(unittest.TestCase):
         self.assertIsInstance(c._resolutionPars, np.ndarray)
         self.assertIsInstance(c._instrPars, np.ndarray)
         self.assertIsInstance(c._kinematicArrays, np.ndarray)
+
+
+# ---------------------------------------------------------------------------
+# VESUVIO_RUNNING_TEST environment-variable override tests
+# ---------------------------------------------------------------------------
+
+class TestRunningTestEnvVar(unittest.TestCase):
+    """Verify that VESUVIO_RUNNING_TEST=1 overrides bootIC.runningTest.
+
+    These tests import only ICHelpers (not Mantid) via the mock shim and
+    patch ``os.environ`` so they work in any standard Python environment.
+    """
+
+    def _make_boot_ic(self, *, runBootstrap: bool = True, runningTest: bool = False):
+        """Return a minimal BootstrapInitialConditions-like object."""
+        class _BootIC:
+            pass
+        ic = _BootIC()
+        ic.runBootstrap = runBootstrap
+        ic.runningTest = runningTest
+        return ic
+
+    def _make_bckwd_fwd_yfit(self):
+        """Return stub objects for the other IC arguments of completeBootIC."""
+        class _Stub:
+            pass
+        return _Stub(), _Stub(), _Stub()
+
+    def _call_complete_boot_ic(self, bootIC, env_val: str):
+        """Call completeBootIC with VESUVIO_RUNNING_TEST patched to *env_val*."""
+        # Patch setBootstrapDirs so we don't need filesystem access.
+        with patch.dict("os.environ", {"VESUVIO_RUNNING_TEST": env_val}):
+            with patch(
+                "vesuvio_analysis.core_functions.ICHelpers.setBootstrapDirs"
+            ):
+                from vesuvio_analysis.core_functions.ICHelpers import completeBootIC
+                bckwdIC, fwdIC, yFitIC = self._make_bckwd_fwd_yfit()
+                completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
+
+    def test_env_var_forces_running_test_true(self) -> None:
+        """VESUVIO_RUNNING_TEST=1 must set bootIC.runningTest to True."""
+        bootIC = self._make_boot_ic(runningTest=False)
+        self._call_complete_boot_ic(bootIC, "1")
+        self.assertTrue(
+            bootIC.runningTest,
+            "Expected bootIC.runningTest=True when VESUVIO_RUNNING_TEST=1",
+        )
+
+    def test_env_var_forces_true_even_when_attribute_absent(self) -> None:
+        """VESUVIO_RUNNING_TEST=1 must set bootIC.runningTest when attribute is absent."""
+        bootIC = self._make_boot_ic()
+        del bootIC.runningTest          # simulate AttributeError path in completeBootIC
+        self._call_complete_boot_ic(bootIC, "1")
+        self.assertTrue(
+            bootIC.runningTest,
+            "Expected bootIC.runningTest=True when VESUVIO_RUNNING_TEST=1 "
+            "and the attribute was previously absent",
+        )
+
+    def test_env_var_zero_does_not_override(self) -> None:
+        """VESUVIO_RUNNING_TEST=0 must not change bootIC.runningTest."""
+        bootIC = self._make_boot_ic(runningTest=False)
+        self._call_complete_boot_ic(bootIC, "0")
+        self.assertFalse(
+            bootIC.runningTest,
+            "Expected bootIC.runningTest to remain False when VESUVIO_RUNNING_TEST=0",
+        )
 
 
 if __name__ == "__main__":

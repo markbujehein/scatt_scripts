@@ -1,0 +1,129 @@
+{
+  // VESUVIO DINS Analysis — GitHub Codespace configuration
+  // -------------------------------------------------------
+  // Base image: official Mantid development image from GHCR
+  //   ghcr.io/mantidproject/mantid-development-alma9:latest
+  // Package management: pixi (https://pixi.sh)
+  //   pixi is already the project's package manager (declared in pyproject.toml
+  //   via [tool.pixi.*]).  It resolves conda (mantid, conda-forge) + PyPI deps
+  //   together without a separate conda/mamba installation.
+  "name": "VESUVIO DINS Analysis",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+
+  // ---------------------------------------------------------------------------
+  // Environment variables
+  // ---------------------------------------------------------------------------
+  // MPLBACKEND=Agg   — headless Matplotlib (no display required in Codespace)
+  // VESUVIO_RUNNING_TEST=1 — activates the runningTest fast-track flag so that
+  //   noOfMSIterations is capped and nSamples ≤ 3; enables high-frequency code
+  //   validation without a full production run (see ICHelpers.completeBootIC and
+  //   analysis_functions.iterativeFitForDataReduction).
+  // NUMBA_NUM_THREADS / OMP_NUM_THREADS — pin Numba and BLAS thread counts to
+  //   the number of vCPUs on the 4-core standard Codespace machine.  Increase
+  //   these on a 16-core machine for Bayesian Bootstrap resampling speed-up.
+  // MKL_NUM_THREADS — limits Intel MKL (BLAS) parallelism to avoid over-
+  //   subscription during the Phase 6 bootstrap resampling loops.
+  "containerEnv": {
+    "MPLBACKEND": "Agg",
+    "VESUVIO_RUNNING_TEST": "1",
+    "NUMBA_NUM_THREADS": "4",
+    "OMP_NUM_THREADS": "4",
+    "MKL_NUM_THREADS": "4",
+    "OPENBLAS_NUM_THREADS": "4"
+  },
+
+  // ---------------------------------------------------------------------------
+  // Port forwarding
+  // ---------------------------------------------------------------------------
+  // Port 8501 — Streamlit real-time monitoring dashboard
+  // Port 8050 — Plotly Dash dashboard (alternative to Streamlit)
+  // Both are labelled and notified on auto-forward so researchers see them
+  // immediately when a dashboard process binds to these ports.
+  "forwardPorts": [8501, 8050],
+  "portsAttributes": {
+    "8501": {
+      "label": "Streamlit Dashboard",
+      "onAutoForward": "notify"
+    },
+    "8050": {
+      "label": "Plotly Dash Dashboard",
+      "onAutoForward": "notify"
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // VS Code extensions
+  // ---------------------------------------------------------------------------
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "ms-python.debugpy",
+        "eamodio.gitlens",
+        "github.copilot"
+      ],
+      "settings": {
+        // pixi creates the env at <workspace>/.pixi/envs/default/ on first run.
+        // VS Code auto-discovers it; the path below is used as a fallback hint.
+        "python.defaultInterpreterPath": "${workspaceFolder}/.pixi/envs/default/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "terminal.integrated.env.linux": {
+          "MPLBACKEND": "Agg",
+          "VESUVIO_RUNNING_TEST": "1",
+          "NUMBA_NUM_THREADS": "4",
+          "OMP_NUM_THREADS": "4",
+          "MKL_NUM_THREADS": "4"
+        },
+        "editor.formatOnSave": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle hooks
+  // ---------------------------------------------------------------------------
+  // postCreateCommand runs once after the container is first created (and
+  // during Codespace Prebuilds).
+  // `pixi install` reads pyproject.toml [tool.pixi.*], resolves conda +
+  // PyPI deps in one pass, and creates .pixi/envs/default/ in the workspace.
+  // Because the pixi binary is already in the Docker image, this step starts
+  // immediately — no bootstrapping required.
+  "postCreateCommand": "pixi install && bash .devcontainer/codespace_setup.sh",
+
+  // Run as 'abc' — the non-root user defined in the Mantid alma9 base image
+  // (uid 911).  This matches the user that the Mantid image entrypoint uses
+  // and ensures filesystem-mapped volumes have correct permissions.
+  "remoteUser": "abc",
+
+  // ---------------------------------------------------------------------------
+  // Resource guidance (cannot be set declaratively — configure via
+  // GitHub → Settings → Codespaces → Machine type):
+  //
+  //   Student / free tier : 4-core  / 8 GB RAM  — suitable for NCP fits
+  //   Production run      : 16-core / 32 GB RAM — required for Phase 6
+  //                         Bayesian Bootstrap (1000+ resamples × full fit)
+  //
+  // Memory safeguard: the Numba+BLAS thread caps above prevent OOM on 8 GB.
+  // For burst production mode, raise NUMBA_NUM_THREADS to the core count.
+  // ---------------------------------------------------------------------------
+
+  // Secrets — do NOT store ORCID tokens or publishing credentials in this file.
+  // Use GitHub → Settings → Codespaces → Secrets to inject them as env vars:
+  //   ORCID_TOKEN        — for automated DOI registration via the LogManager
+  //   ZENODO_ACCESS_TOKEN — for dataset deposition
+  // Those secrets will appear automatically in the container environment and
+  // can be read with  os.environ["ORCID_TOKEN"]  without any code change.
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  }
+}
+

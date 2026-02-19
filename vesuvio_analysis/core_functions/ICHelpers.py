@@ -1,4 +1,5 @@
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from random import sample
@@ -326,6 +327,13 @@ def completeBootIC(bootIC: Any, bckwdIC: Any, fwdIC: Any, yFitIC: Any) -> None:
         reading = bootIC.runningTest
     except AttributeError:
         bootIC.runningTest = False
+
+    # Honour the VESUVIO_RUNNING_TEST Codespace/CI environment variable.
+    # When set to "1" it overrides the per-script flag so that every run
+    # inside a Codespace automatically uses fast-track mode (nSamples ≤ 3,
+    # MS iterations capped) without requiring edits to submission scripts.
+    if os.environ.get("VESUVIO_RUNNING_TEST", "0") == "1":
+        bootIC.runningTest = True
 
     setBootstrapDirs(bckwdIC, fwdIC, bootIC, yFitIC)
     return
