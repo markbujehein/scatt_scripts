@@ -9,6 +9,10 @@ so no physics recalculations are performed.  Pre-serialised coordinate
 arrays (``dataX``, ``q``, ``y``) found inside the stream file are used
 directly as plot axes.
 
+**Air-gapped / local-first deployment:** the companion
+``dashboard/.streamlit/config.toml`` binds the server to ``127.0.0.1``
+and disables telemetry and external-IP lookup (``checkip.amazonaws.com``).
+
 Run with::
 
     streamlit run dashboard/result_viewer.py
@@ -20,12 +24,14 @@ or from the repository root::
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
@@ -83,6 +89,7 @@ _MASS_SYMBOL: Dict[float, str] = {
     12.0: "C",
     14.0: "N",
     16.0: "O",
+    26.982: "Al",   # aluminium canister
     32.0: "S",
     40.0: "Ar",
     56.0: "Fe",
@@ -477,6 +484,7 @@ def _build_y_figure(
     selected_mass_indices: List[int],
     masses_meta: Optional[np.ndarray],
     show_optimizer_compare: bool,
+    show_recoil_markers: bool = False,
 ) -> go.Figure:
     """Build the y-space (J(y)) domain Plotly figure.
 
@@ -487,7 +495,12 @@ def _build_y_figure(
     2. **Per-mass contributions** (Global Fit View) — individual atomic
        peaks as dashed sub-curves for each selected mass index.
     3. **Resolution** — normalised and overlaid as a dotted curve.
-    4. **Optimizer cross-validation** — iMinuit and Scipy fits overlaid
+    4. **Recoil Shift Diagnostic** — vertical dashed lines at y=0 labelled
+       by atomic symbol when *show_recoil_markers* is ``True``.  The
+       expected recoil position for every mass in y-space is y=0 by
+       construction; deviations in the empirical peak reveal a centering
+       error.
+    5. **Optimizer cross-validation** — iMinuit and Scipy fits overlaid
        when *show_optimizer_compare* is ``True``.
 
     The x-axis uses the pre-serialised y coordinate array from the stream;
@@ -591,6 +604,10 @@ def _build_y_figure(
                 line=dict(color=palette[5], width=1.0, dash="dot"),
             ))
 
+    # ---- Recoil Shift Diagnostic (y = 0 reference lines) -------------------
+    if show_recoil_markers:
+        _add_recoil_markers(fig, selected_mass_indices, masses_meta)
+
     # ---- iMinuit–Scipy Numerical Agreement Check ----------------------------
     if show_optimizer_compare:
         for opt_name, opt_suffix, dash_style in (
@@ -617,16 +634,333 @@ def _build_y_figure(
 
 
 # ---------------------------------------------------------------------------
+# New forensic / diagnostic helpers (all pure functions, testable)
+# ---------------------------------------------------------------------------
+
+def _add_recoil_markers(
+    fig: go.Figure,
+    selected_mass_indices: List[int],
+    masses_meta: Optional[np.ndarray],
+) -> None:
+    """Add vertical reference lines at y=0 for each selected mass.
+
+    In the West y-scaling, the theoretical recoil position for every mass
+    is y=0.  Deviations of the empirical NCP peak from this line indicate
+    a centering or calibration issue.  Each mass gets a distinctly coloured
+    dashed vertical line labelled with its atomic symbol.
+    """
+    palette = COLORBLIND_PALETTE
+    if not selected_mass_indices:
+        return
+    for mass_idx in selected_mass_indices:
+        label = _mass_label(mass_idx, masses_meta)
+        color = palette[(mass_idx + 3) % len(palette)]
+        fig.add_vline(
+            x=0.0,
+            line=dict(color=color, width=1.0, dash="dash"),
+            annotation_text=f"y₀ {label}",
+            annotation_position="top right",
+            annotation_font=dict(size=9, color=color),
+        )
+
+
+def _compute_area_audit(
+    data: Dict[str, np.ndarray],
+    iteration: int = 0,
+) -> List[Dict[str, object]]:
+    """Compute integral-contribution statistics for the correction Forensic Table.
+
+    For each correction type (MS, Gamma) and each detector, calculates:
+
+    * **Integral** of the correction array (absolute area under the curve).
+    * **Integral contribution (%)** relative to the raw signal integral for
+      the same detector.
+
+    Uses :func:`numpy.trapezoid` (NumPy ≥ 2.0) for all integration.
+
+    Args:
+        data: Stream dictionary from :func:`StreamManager.load`.
+        iteration: MS/GC iteration index to use (default: 0).
+
+    Returns:
+        A list of dicts, each with keys:
+        ``"correction"``, ``"detector"``, ``"integral"``,
+        ``"raw_integral"``, ``"contribution_pct"``.
+        Returns an empty list when neither L0 raw nor L1 correction data
+        is available.
+    """
+    raw_key = "L0_raw.tof.dataY"
+    ms_key = f"L1_corrections.tof.iter{iteration}.ms"
+    gamma_key = f"L1_corrections.tof.iter{iteration}.gamma"
+
+    if raw_key not in data:
+        return []
+
+    raw_y: np.ndarray = data[raw_key]
+    rows: List[Dict[str, object]] = []
+
+    for corr_name, corr_key in (("MS", ms_key), ("Gamma", gamma_key)):
+        if corr_key not in data:
+            continue
+        corr_arr: np.ndarray = data[corr_key]
+        n_det = min(raw_y.shape[0], corr_arr.shape[0])
+        for det_idx in range(n_det):
+            raw_integral = float(np.trapezoid(np.abs(raw_y[det_idx])))
+            corr_integral = float(np.trapezoid(np.abs(corr_arr[det_idx])))
+            pct = (
+                100.0 * corr_integral / raw_integral
+                if raw_integral > 0
+                else 0.0
+            )
+            rows.append({
+                "correction": corr_name,
+                "detector": det_idx,
+                "integral": round(corr_integral, 4),
+                "raw_integral": round(raw_integral, 4),
+                "contribution_pct": round(pct, 3),
+            })
+
+    return rows
+
+
+def _build_residuals_figure(
+    data: Dict[str, np.ndarray],
+    selected_detectors: List[int],
+    residual_modes: List[str],
+    iteration: int = 0,
+) -> go.Figure:
+    """Build a multi-component residuals figure for forensic TOF inspection.
+
+    Each *residual_mode* selects a different subtraction:
+
+    * ``"Raw − MS"``      — raw signal after MS correction only.
+    * ``"Raw − Gamma"``   — raw signal after Gamma correction only.
+    * ``"Raw − MS − Gamma"`` — fully corrected signal.
+
+    Missing correction arrays are silently skipped; only components that
+    are present in *data* are plotted.
+
+    Args:
+        data: Stream dictionary.
+        selected_detectors: Detector indices to plot.
+        residual_modes: Subset of ``["Raw − MS", "Raw − Gamma",
+            "Raw − MS − Gamma"]`` to include.
+        iteration: MS/GC iteration to use (default 0).
+
+    Returns:
+        A :class:`plotly.graph_objects.Figure` with one trace per
+        (detector, residual_mode) combination.
+    """
+    palette = COLORBLIND_PALETTE
+    fig = go.Figure(layout=_pub_layout(
+        "TOF Forensic Residuals", "Time-of-Flight (μs)", "Counts",
+    ))
+
+    raw_y: Optional[np.ndarray] = data.get("L0_raw.tof.dataY")
+    if raw_y is None:
+        fig.add_annotation(
+            text="No L0 raw data found in this stream file.",
+            showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper",
+            font=dict(size=_FONT_SIZE_PT),
+        )
+        return fig
+
+    ms_arr: Optional[np.ndarray] = data.get(
+        f"L1_corrections.tof.iter{iteration}.ms"
+    )
+    gamma_arr: Optional[np.ndarray] = data.get(
+        f"L1_corrections.tof.iter{iteration}.gamma"
+    )
+
+    mode_specs: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = [
+        ("Raw − MS", ms_arr, None),
+        ("Raw − Gamma", None, gamma_arr),
+        ("Raw − MS − Gamma", ms_arr, gamma_arr),
+    ]
+
+    color_offset = 0
+    for mode_label, ms, gc in mode_specs:
+        if mode_label not in residual_modes:
+            continue
+        for det_idx in selected_detectors:
+            if det_idx >= raw_y.shape[0]:
+                continue
+            residual = raw_y[det_idx].copy()
+            if ms is not None and det_idx < ms.shape[0]:
+                residual = residual - ms[det_idx]
+            elif ms is None and "MS" in mode_label:
+                # MS component requested but not available
+                continue
+            if gc is not None and det_idx < gc.shape[0]:
+                residual = residual - gc[det_idx]
+            elif gc is None and "Gamma" in mode_label:
+                # Gamma component requested but not available in stream
+                continue
+            x = _resolve_x_axis(data, "tof", det_idx, len(residual))
+            fig.add_trace(go.Scatter(
+                x=x, y=residual, mode="lines",
+                name=f"Det {det_idx} — {mode_label}",
+                line=dict(
+                    color=palette[(det_idx + color_offset) % len(palette)],
+                    width=1.5,
+                ),
+            ))
+        color_offset += 2
+
+    return fig
+
+
+def _build_optimizer_diff_figure(
+    data: Dict[str, np.ndarray],
+    masses_meta: Optional[np.ndarray],
+) -> go.Figure:
+    """Build the iMinuit−Scipy Difference Plot (Residual of Residuals).
+
+    Computes ``fit_iMinuit(y) − fit_Scipy(y)`` for the y-space domain and
+    plots it alongside a zero reference line.  This highlights exactly
+    where the two optimizers diverge (peak vs wings).
+
+    If both optimizer fit arrays are missing from *data*, returns an empty
+    figure with an explanatory annotation.
+
+    Args:
+        data: Stream dictionary.
+        masses_meta: Mass array from stream metadata (for axis annotation).
+
+    Returns:
+        A :class:`plotly.graph_objects.Figure` with the difference trace.
+    """
+    palette = COLORBLIND_PALETTE
+    fig = go.Figure(layout=_pub_layout(
+        "iMinuit − Scipy Difference Plot",
+        "y (Å⁻¹)",
+        "Δ fit (iMinuit − Scipy)",
+    ))
+
+    iminuit_arr: Optional[np.ndarray] = None
+    scipy_arr: Optional[np.ndarray] = None
+
+    for key_candidate in ("L3_final.y.iminuit", "L3_final.y.ncp_iminuit",
+                          "L3_final.y.fit_iminuit"):
+        if key_candidate in data and data[key_candidate].ndim == 1:
+            iminuit_arr = data[key_candidate]
+            break
+
+    for key_candidate in ("L3_final.y.scipy", "L3_final.y.ncp_scipy",
+                          "L3_final.y.fit_scipy"):
+        if key_candidate in data and data[key_candidate].ndim == 1:
+            scipy_arr = data[key_candidate]
+            break
+
+    if iminuit_arr is None or scipy_arr is None:
+        fig.add_annotation(
+            text=(
+                "Optimizer comparison data not found.<br>"
+                "Capture L3 iMinuit and Scipy fit arrays with keys<br>"
+                "<tt>L3_final.y.ncp_iminuit</tt> / <tt>L3_final.y.ncp_scipy</tt>."
+            ),
+            showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper",
+            font=dict(size=_FONT_SIZE_PT),
+        )
+        return fig
+
+    n = min(len(iminuit_arr), len(scipy_arr))
+    diff = iminuit_arr[:n] - scipy_arr[:n]
+    x_y = _resolve_x_axis(data, "y", 0, n)[:n]
+
+    # Zero reference
+    fig.add_hline(
+        y=0.0, line=dict(color="black", width=0.8, dash="dot"),
+    )
+
+    # Difference trace
+    fig.add_trace(go.Scatter(
+        x=x_y, y=diff, mode="lines",
+        name="iMinuit − Scipy",
+        line=dict(color=palette[3], width=1.5),
+        fill="tozeroy",
+        fillcolor="rgba(213,94,0,0.12)",
+    ))
+
+    return fig
+
+
+def _auto_pdf_filename(
+    domain: str,
+    masses_meta: Optional[np.ndarray],
+    selected_mass_indices: List[int],
+    selected_detectors: List[int],
+    correction_active: bool,
+) -> str:
+    """Generate an auto-labelled PDF filename for LaTeX insertion.
+
+    Format::
+
+        VESUVIO_{masses}_{det_range}_{corrections}_{domain}.pdf
+
+    Examples::
+
+        VESUVIO_H_det0-4_MS_Gamma_J(y).pdf
+        VESUVIO_H_C_det0_TOF.pdf
+        VESUVIO_all_det0-99_y.pdf
+
+    Args:
+        domain: ``"tof"``, ``"q"``, or ``"y"``.
+        masses_meta: Mass array from stream metadata.
+        selected_mass_indices: Currently active mass indices.
+        selected_detectors: Currently active detector indices.
+        correction_active: Whether MS/Gamma corrections are overlaid.
+
+    Returns:
+        A safe filename string.
+    """
+    # Mass part
+    if masses_meta is not None and selected_mass_indices:
+        symbols = [
+            _MASS_SYMBOL.get(round(float(masses_meta[i]), 3), f"M{i}")
+            for i in selected_mass_indices
+            if i < len(masses_meta)
+        ]
+        mass_part = "_".join(symbols) if symbols else "all"
+    else:
+        mass_part = "all"
+
+    # Detector range part
+    if selected_detectors:
+        dmin, dmax = min(selected_detectors), max(selected_detectors)
+        det_part = f"det{dmin}" if dmin == dmax else f"det{dmin}-{dmax}"
+    else:
+        det_part = "det_all"
+
+    # Correction status
+    corr_part = "MS_Gamma" if correction_active else ""
+
+    # Domain label
+    domain_map = {"tof": "TOF", "q": "Q", "y": "J(y)"}
+    domain_label = domain_map.get(domain, domain.upper())
+
+    parts = ["VESUVIO", mass_part, det_part]
+    if corr_part:
+        parts.append(corr_part)
+    parts.append(domain_label)
+
+    return "_".join(parts) + ".pdf"
+
+
+# ---------------------------------------------------------------------------
 # Export helpers
 # ---------------------------------------------------------------------------
 
 def _fig_to_pdf_bytes(fig: go.Figure) -> Optional[bytes]:
-    """Attempt to render *fig* as PDF bytes via kaleido.
+    """Attempt to render *fig* as a true vector PDF via kaleido.
+
+    Uses ``engine="kaleido"`` explicitly to produce publication-grade
+    vector graphics suitable for direct LaTeX insertion.
 
     Returns ``None`` if kaleido is not installed or the render fails.
     """
     try:
-        return fig.to_image(format="pdf")
+        return fig.to_image(format="pdf", engine="kaleido")
     except Exception:
         return None
 
@@ -636,12 +970,24 @@ def _fig_to_html_bytes(fig: go.Figure) -> bytes:
     return fig.to_html(full_html=True, include_plotlyjs="cdn").encode("utf-8")
 
 
-def _export_row(fig: go.Figure, *, key: str) -> None:
+def _export_row(
+    fig: go.Figure,
+    *,
+    key: str,
+    filename: Optional[str] = None,
+) -> None:
     """Render one-click export buttons below a Plotly figure.
 
-    Attempts vector PDF export via kaleido first; falls back to
-    interactive HTML if kaleido is unavailable.
+    Attempts vector PDF export via kaleido (``engine="kaleido"``) first;
+    falls back to interactive HTML if kaleido is unavailable.
+
+    Args:
+        fig: The Plotly figure to export.
+        key: Unique Streamlit widget key suffix.
+        filename: Auto-labelled filename (without extension).  Defaults to
+            ``vesuvio_{key}_plot``.
     """
+    base_name = filename or f"vesuvio_{key}_plot"
     col_pdf, col_html = st.columns(2)
     with col_pdf:
         pdf_bytes = _fig_to_pdf_bytes(fig)
@@ -649,7 +995,7 @@ def _export_row(fig: go.Figure, *, key: str) -> None:
             st.download_button(
                 label="⬇️ Download as PDF",
                 data=pdf_bytes,
-                file_name=f"vesuvio_{key}_plot.pdf",
+                file_name=f"{base_name}.pdf",
                 mime="application/pdf",
                 key=f"dl_pdf_{key}",
             )
@@ -663,10 +1009,67 @@ def _export_row(fig: go.Figure, *, key: str) -> None:
         st.download_button(
             label="⬇️ Download as HTML",
             data=html_bytes,
-            file_name=f"vesuvio_{key}_plot.html",
+            file_name=f"{base_name}.html",
             mime="text/html",
             key=f"dl_html_{key}",
         )
+
+
+def _batch_export_zip(
+    data: Dict[str, np.ndarray],
+    selected_mass_indices: List[int],
+    masses_meta: Optional[np.ndarray],
+) -> bytes:
+    """Build a ZIP archive containing one HTML per mass y-space fit.
+
+    Creates one self-contained interactive HTML for each selected mass
+    whose per-mass NCP array is present in *data*.  Useful for appending
+    to a thesis as a complete batch of y-space diagnostic plots.
+
+    Args:
+        data: Stream dictionary.
+        selected_mass_indices: Mass indices to include in the report.
+        masses_meta: Mass metadata array for labels.
+
+    Returns:
+        Raw bytes of the ZIP archive.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for mass_idx in selected_mass_indices:
+            # Build a per-mass figure
+            fig = _build_y_figure(
+                data,
+                selected_mass_indices=[mass_idx],
+                masses_meta=masses_meta,
+                show_optimizer_compare=False,
+                show_recoil_markers=True,
+            )
+            label = _mass_label(mass_idx, masses_meta)
+            # Safe filename
+            safe_label = re.sub(r"[^\w.\-]", "_", label)
+            html_bytes = _fig_to_html_bytes(fig)
+            zf.writestr(f"y_space_{safe_label}.html", html_bytes)
+    return buf.getvalue()
+
+
+@st.cache_resource
+def _cached_load_stream(path_str: str) -> Dict[str, np.ndarray]:
+    """Load a StreamManager NPZ file and cache the result.
+
+    Wrapping :func:`StreamManager.load` in ``@st.cache_resource`` ensures
+    that repeated renders for 100+ detector runs do not re-read the
+    compressed file from disk on every Streamlit re-run.
+
+    The cache is keyed by the absolute file path string.
+
+    Args:
+        path_str: Absolute path to the ``.npz`` file.
+
+    Returns:
+        Dictionary mapping hierarchical stream keys to NumPy arrays.
+    """
+    return StreamManager.load(Path(path_str))
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +1088,8 @@ def main() -> None:
     st.caption(
         "VESUVIO DINS Data Viewer — full-stack L0–L3 multi-domain analysis  |  "
         f"17 cm publication width · 12 pt serif · "
-        f"[Wong (2011)](https://www.nature.com/articles/nmeth.1618) colour palette"
+        f"[Wong (2011)](https://www.nature.com/articles/nmeth.1618) colour palette  |  "
+        f"🔒 Local-first · air-gapped (127.0.0.1)"
     )
 
     # =========================================================================
@@ -703,6 +1107,7 @@ def main() -> None:
         file_options: Dict[str, Path] = {p.name: p for p in npz_files}
 
         chosen_path: Optional[Path] = None
+        uploaded_tmp_path: Optional[Path] = None
         if file_options:
             chosen_name: str = st.selectbox(
                 "Select stream file",
@@ -721,26 +1126,29 @@ def main() -> None:
             "Or upload a stream file (.npz)", type=["npz"],
         )
         if uploaded is not None:
-            # Write to a temporary file so StreamManager.load() can use Path
+            # Write to a temporary file so the cached loader can use a Path
             with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
                 tmp.write(uploaded.read())
-                chosen_path = Path(tmp.name)
+                uploaded_tmp_path = Path(tmp.name)
+                chosen_path = uploaded_tmp_path
 
         st.divider()
 
-        # ---- Load stream via StreamManager.load() ----------------------------
+        # ---- Load stream via cached StreamManager.load() --------------------
+        # @st.cache_resource avoids re-reading the compressed NPZ on every
+        # Streamlit re-run — critical for 100+ detector runs.
         data: Dict[str, np.ndarray] = {}
         if chosen_path is not None:
             try:
-                data = StreamManager.load(chosen_path)
+                data = _cached_load_stream(str(chosen_path))
                 st.success(f"✅ Loaded **{len(data)}** streams.")
             except Exception as exc:
                 st.error(f"Failed to load stream: {exc}")
             finally:
-                # Clean up temp file if it was created from an upload
-                if uploaded is not None and chosen_path.exists():
+                # Clean up temp file created from upload
+                if uploaded_tmp_path is not None and uploaded_tmp_path.exists():
                     try:
-                        os.unlink(chosen_path)
+                        os.unlink(uploaded_tmp_path)
                     except OSError:
                         pass
 
@@ -803,6 +1211,16 @@ def main() -> None:
                     "residuals to have been captured in the stream."
                 ),
             )
+            show_recoil_markers: bool = st.toggle(
+                "Recoil Shift Diagnostic",
+                value=False,
+                help=(
+                    "Add vertical y=0 reference lines to the y-Space plot for "
+                    "each selected mass.  The theoretical recoil position for "
+                    "all masses in West y-scaling is y=0; deviations reveal a "
+                    "centering or calibration issue."
+                ),
+            )
 
             # Iteration slider (only shown if more than one iteration is stored)
             n_iter_meta = data.get("metadata.n_iterations")
@@ -817,6 +1235,20 @@ def main() -> None:
                 )
                 if max_iter > 0
                 else 0
+            )
+
+            # ---- Forensic residuals selector ---------------------------------
+            st.subheader("🔬 Forensic Residuals")
+            all_residual_modes = ["Raw − MS", "Raw − Gamma", "Raw − MS − Gamma"]
+            selected_residual_modes: List[str] = st.multiselect(
+                "Residual components",
+                options=all_residual_modes,
+                default=[],
+                disabled="L1" not in available_levels,
+                help=(
+                    "Select correction components to isolate in the Forensic "
+                    "Residuals sub-plot (TOF tab)."
+                ),
             )
 
             if masses_meta is not None:
@@ -846,7 +1278,9 @@ def main() -> None:
             selected_mass_indices = []
             show_corrections = False
             show_optimizer_compare = False
+            show_recoil_markers = False
             selected_iteration = 0
+            selected_residual_modes = []
 
     # =========================================================================
     # Main content — domain tabs
@@ -871,8 +1305,12 @@ def main() -> None:
                 show_optimizer_compare=show_optimizer_compare,
                 iteration=selected_iteration,
             )
+            tof_filename = _auto_pdf_filename(
+                "tof", masses_meta, selected_mass_indices,
+                selected_detectors, show_corrections,
+            ).rstrip(".pdf")
             st.plotly_chart(fig_tof, use_container_width=True)
-            _export_row(fig_tof, key="tof")
+            _export_row(fig_tof, key="tof", filename=tof_filename)
 
             if "L1" in available_levels and show_corrections:
                 with st.expander("ℹ️ Correction Stack Legend"):
@@ -883,12 +1321,62 @@ def main() -> None:
                         "the magnitude of the correction subtracted from the raw signal."
                     )
 
+            # ---- Forensic Residuals sub-plot ---------------------------------
+            if selected_residual_modes and "L1" in available_levels:
+                st.subheader("🔬 Forensic Residuals")
+                fig_res = _build_residuals_figure(
+                    data, selected_detectors, selected_residual_modes,
+                    iteration=selected_iteration,
+                )
+                st.plotly_chart(fig_res, use_container_width=True)
+                _export_row(fig_res, key="tof_residuals")
+
+            # ---- Area Audit table -------------------------------------------
+            if "L1" in available_levels:
+                audit_rows = _compute_area_audit(data, iteration=selected_iteration)
+                if audit_rows:
+                    # Filter to selected detectors only
+                    filtered = [
+                        r for r in audit_rows
+                        if r["detector"] in selected_detectors
+                    ]
+                    if filtered:
+                        with st.expander(
+                            "📊 Area Audit — Integral Contribution of Corrections",
+                            expanded=False,
+                        ):
+                            st.caption(
+                                "Integral Contribution (%) = |∫correction| / |∫raw| × 100.  "
+                                "Use these values in the Errors & Uncertainties chapter."
+                            )
+                            st.dataframe(
+                                filtered,
+                                column_config={
+                                    "correction": "Correction",
+                                    "detector": "Detector",
+                                    "integral": st.column_config.NumberColumn(
+                                        "∫|correction|", format="%.4f",
+                                    ),
+                                    "raw_integral": st.column_config.NumberColumn(
+                                        "∫|raw|", format="%.4f",
+                                    ),
+                                    "contribution_pct": st.column_config.NumberColumn(
+                                        "Contribution (%)", format="%.3f%%",
+                                    ),
+                                },
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+
     # ---- Q tab ---------------------------------------------------------------
     with tab_q:
         st.subheader("Q-Space Domain")
         fig_q = _build_q_figure(data, selected_detectors=selected_detectors)
+        q_filename = _auto_pdf_filename(
+            "q", masses_meta, selected_mass_indices, selected_detectors, False,
+        ).rstrip(".pdf")
         st.plotly_chart(fig_q, use_container_width=True)
-        _export_row(fig_q, key="q")
+        _export_row(fig_q, key="q", filename=q_filename)
 
     # ---- y-space tab ---------------------------------------------------------
     with tab_y:
@@ -905,17 +1393,54 @@ def main() -> None:
             selected_mass_indices=selected_mass_indices,
             masses_meta=masses_meta,
             show_optimizer_compare=show_optimizer_compare,
+            show_recoil_markers=show_recoil_markers,
         )
+        y_filename = _auto_pdf_filename(
+            "y", masses_meta, selected_mass_indices, selected_detectors,
+            show_corrections,
+        ).rstrip(".pdf")
         st.plotly_chart(fig_y, use_container_width=True)
-        _export_row(fig_y, key="y")
+        _export_row(fig_y, key="y", filename=y_filename)
 
+        # ---- iMinuit–Scipy Difference Plot ----------------------------------
         if show_optimizer_compare:
+            with st.expander(
+                "📉 iMinuit–Scipy Difference Plot (Residual of Residuals)",
+                expanded=False,
+            ):
+                st.caption(
+                    "Shows exactly where iMinuit (MIGRAD) and Scipy (SLSQP) diverge.  "
+                    "Deviations > ~1% in peak or wings warrant further inspection."
+                )
+                fig_diff = _build_optimizer_diff_figure(data, masses_meta)
+                st.plotly_chart(fig_diff, use_container_width=True)
+                _export_row(fig_diff, key="optimizer_diff")
+
             with st.expander("ℹ️ iMinuit–Scipy Numerical Agreement"):
                 st.markdown(
                     "The **iMinuit–Scipy Numerical Agreement Check** overlays "
                     "the iMinuit (MIGRAD) and Scipy (SLSQP) optimizer fits "
                     "from the saved streams.  Deviations larger than ~1% between "
                     "the two indicate a fit that may warrant further inspection."
+                )
+
+        # ---- Batch export for thesis appendix --------------------------------
+        if selected_mass_indices:
+            st.subheader("📦 Batch Export — y-Space Fits")
+            st.caption(
+                "Export y-Space fits for all selected masses as a ZIP of "
+                "interactive HTML files — ready for the thesis appendix."
+            )
+            if st.button("Generate Batch ZIP", key="batch_zip_btn"):
+                zip_bytes = _batch_export_zip(
+                    data, selected_mass_indices, masses_meta,
+                )
+                st.download_button(
+                    label="⬇️ Download Batch ZIP",
+                    data=zip_bytes,
+                    file_name="vesuvio_y_space_batch.zip",
+                    mime="application/zip",
+                    key="dl_batch_zip",
                 )
 
 
