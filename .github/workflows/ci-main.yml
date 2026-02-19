@@ -434,7 +434,7 @@ jobs:
           PYEOF
 
       - name: Post or update PR comment
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@7a1a52a1abc4fbd18ee6f01ebd41eade8fc145af
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body-file: pr_report.md
