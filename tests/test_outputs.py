@@ -499,5 +499,47 @@ class TestClusterMetadataLogging(unittest.TestCase):
         self.assertIn("Low signal-to-noise ratio", content)
 
 
+# ---------------------------------------------------------------------------
+# Tests for new Console UX features — pure-Python, no Mantid required
+# ---------------------------------------------------------------------------
+
+class TestTimingFormat(unittest.TestCase):
+    """Verify the new timing format string produces the expected output."""
+
+    def test_format_with_minutes_and_seconds(self):
+        elapsed = 125.7
+        m, s = divmod(elapsed, 60)
+        result = f"Total Running Time: {elapsed:.2f} seconds ({int(m)}m {int(s)}s)"
+        self.assertEqual(result, "Total Running Time: 125.70 seconds (2m 5s)")
+
+    def test_format_under_one_minute(self):
+        elapsed = 45.0
+        m, s = divmod(elapsed, 60)
+        result = f"Total Running Time: {elapsed:.2f} seconds ({int(m)}m {int(s)}s)"
+        self.assertEqual(result, "Total Running Time: 45.00 seconds (0m 45s)")
+
+    def test_format_exact_minute(self):
+        elapsed = 60.0
+        m, s = divmod(elapsed, 60)
+        result = f"Total Running Time: {elapsed:.2f} seconds ({int(m)}m {int(s)}s)"
+        self.assertEqual(result, "Total Running Time: 60.00 seconds (1m 0s)")
+
+
+class TestDecimalPrecisionSource(unittest.TestCase):
+    """Verify physics parameters in source are formatted to 4 decimal places."""
+
+    def test_four_decimal_places_for_initial_params(self):
+        """createTableInitialParameters must use :.4f (not :.3f) for A, sigma, x0."""
+        src_path = (
+            Path(__file__).parent.parent
+            / "vesuvio_analysis" / "core_functions" / "analysis_functions.py"
+        )
+        src = src_path.read_text(encoding="utf-8")
+        # 4 decimal places present
+        self.assertIn("8.4f", src)
+        # 3 decimal places for initial parameter block removed
+        self.assertNotIn("8.3f", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
