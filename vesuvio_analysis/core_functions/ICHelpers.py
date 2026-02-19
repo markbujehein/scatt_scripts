@@ -6,6 +6,9 @@ from mantid.simpleapi import LoadVesuvio, SaveNexus
 from pathlib import Path
 import numpy as np
 import json
+from vesuvio_analysis.core_functions.ic_validation import (
+    shadowValidateBackwardInitialConditions,
+)
 currentPath = Path(__file__).absolute().parent
 experimentsPath = currentPath / ".."/ ".." / "experiments"
 
@@ -51,6 +54,8 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
 
     IC.masses = IC.masses.astype(float)
     IC.noOfMasses = len(IC.masses)
+    if IC.modeRunning == "BACKWARD":
+        shadowValidateBackwardInitialConditions(IC)
 
     IC.maskedSpecNo = IC.maskedSpecAllNo[(IC.maskedSpecAllNo>=IC.firstSpec) & (IC.maskedSpecAllNo<=IC.lastSpec)]
     IC.maskedDetectorIdx = IC.maskedSpecNo - IC.firstSpec
@@ -499,4 +504,3 @@ def convertLoadWSICToDict(wsIC: Any) -> Dict[str, str]:
     for attr in ["runs", "empty_runs", "spectra", "mode", "ipfile" ]:
         load_ws_params[attr] = str(getattr(wsIC, attr))      # str -> str, PosixPath -> str
     return load_ws_params
-

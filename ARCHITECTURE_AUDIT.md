@@ -688,3 +688,48 @@ for the call graph.
 | 4 — Workspace Lifecycle | Entry/exit guards, naming | ✅ | `test_workspace_safety.py` (23 tests) |
 | 5 — SoTU & Audit Alignment | 1% gate, NumPy 2.x fix, roadmap | ✅ | `test_iminuit_cross_check.py` (+4 gate tests) |
 | 6 — Statistical Workflow | Outlier, clustering, bootstrap | ✅ | `test_statistical_workflow.py` (12 tests) |
+
+---
+
+## 12. Pydantic v2 Validation Plan (Non-Breaking)
+
+### 12.1 Why `BaseModel` for VESUVIO IC validation
+
+- `BaseModel` gives explicit field validators and cross-field validators in one place,
+  which is ideal for coupled physical constraints (`masses`, `HToMassIdxRatio`,
+  `noOfMSIterations`).
+- It handles NumPy-to-Python coercion at the boundary, while preserving plain NumPy
+  arrays in the existing Mantid/Numba workflow.
+- `model_dump()` can export validated values back to standard Python containers, so
+  validated data can be consumed by existing functions without changing their signatures.
+- Pydantic dataclasses remain useful for lightweight immutable configs, but IC objects
+  need richer validation and controlled coercion, so `BaseModel` is preferred.
+
+### 12.2 Mock-up: `BackwardInitialConditions` model
+
+```python
+class BackwardInitialConditionsModel(BaseModel):
+    masses: List[float]
+    noOfMSIterations: int
+    HToMassIdxRatio: Optional[float] = None
+
+    @field_validator("masses")
+    def masses_positive(cls, masses):
+        ...
+
+    @field_validator("noOfMSIterations")
+    def ms_non_negative(cls, value):
+        ...
+
+    @model_validator(mode="after")
+    def h_ratio_requires_hydrogen(self):
+        ...
+```
+
+### 12.3 Shadow-run rollout (zero downtime)
+
+1. Inject validation in `ICHelpers.completeICFromInputs` after IC coercion.
+2. During shadow mode, catch `ValidationError` and emit warnings only.
+3. Keep all existing asserts and pipeline branches untouched (`runScript`, Mantid ADS,
+   Numba kernels) so production scripts (e.g. `thymol_10K_Gauss1D.py`) remain operational.
+4. Track warning frequency to calibrate limits before any future strict mode.
