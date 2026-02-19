@@ -101,7 +101,9 @@ def _integrate_area(x: np.ndarray, y: np.ndarray) -> float:
     finite = np.isfinite(y)
     if not np.any(finite):
         return 0.0
-    return float(np.abs(np.trapezoid(y[finite], x[finite])))
+    # Use np.trapezoid when available (NumPy >= 2.0), otherwise fall back to np.trapz
+    integrator = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    return float(np.abs(integrator(y[finite], x[finite])))
 
 
 def _area_fraction_pct(
@@ -393,7 +395,7 @@ def _build_yspace_data_from_mtd(
     corrected_ws: str,
     ms_ws: Optional[str],
     gc_ws: Optional[str],
-    convert_fn: Callable[[str, float, Any], Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    convert_fn: Callable[[str, float], Tuple[np.ndarray, np.ndarray, np.ndarray]],
     mass: float,
 ) -> Optional[CorrectionData]:
     """Build y-space ``CorrectionData`` by converting TOF workspaces.
@@ -404,7 +406,7 @@ def _build_yspace_data_from_mtd(
         corrected_ws: Name of the final corrected workspace.
         ms_ws: MS-correction workspace name, or ``None``.
         gc_ws: Gamma-correction workspace name, or ``None``.
-        convert_fn: Callable ``(ws_name, mass, mtd) -> (x, y, err)``
+        convert_fn: Callable ``(ws_name, mass) -> (x, y, err)``
             that converts a named TOF workspace to y-space and returns
             1-D NumPy arrays (summed across spectra).
         mass: Target mass (a.m.u.) for the y-space conversion.
@@ -415,12 +417,12 @@ def _build_yspace_data_from_mtd(
     """
     try:
         data: CorrectionData = {}
-        data[_KEY_UNCORRECTED] = convert_fn(uncorrected_ws, mass, mtd)
-        data[_KEY_CORRECTED] = convert_fn(corrected_ws, mass, mtd)
+        data[_KEY_UNCORRECTED] = convert_fn(uncorrected_ws, mass)
+        data[_KEY_CORRECTED] = convert_fn(corrected_ws, mass)
         if ms_ws is not None and ms_ws in mtd:
-            data[_KEY_MS] = convert_fn(ms_ws, mass, mtd)
+            data[_KEY_MS] = convert_fn(ms_ws, mass)
         if gc_ws is not None and gc_ws in mtd:
-            data[_KEY_GAMMA] = convert_fn(gc_ws, mass, mtd)
+            data[_KEY_GAMMA] = convert_fn(gc_ws, mass)
         return data
     except Exception as exc:  # pragma: no cover
         warnings.warn(
@@ -438,7 +440,7 @@ def dispatch_correction_plots(
     ic: Any,
     mtd: Any,
     convert_to_yspace_fn: Optional[
-        Callable[[str, float, Any], Tuple[np.ndarray, np.ndarray, np.ndarray]]
+        Callable[[str, float], Tuple[np.ndarray, np.ndarray, np.ndarray]]
     ] = None,
 ) -> List[Path]:
     """Dispatch TOF-space and y-space correction dashboard plots.
@@ -460,9 +462,13 @@ def dispatch_correction_plots(
     Figures are saved to ``ic.figSavePath`` in both PDF and PNG format.
     All generated paths are printed to stdout and returned.
 
-    Section 4 of ``ARCHITECTURE_AUDIT.md`` guarantees that the
-    correction workspaces remain in the Mantid ADS until this function
-    returns.  The caller is responsible for any subsequent cleanup.
+    The MS correction workspace (``{ic.name}_NCPMasked_MulScattering``)
+    and gamma-background workspace (``{ic.name}_NCPMasked_Gamma_Background``)
+    persist in the Mantid ADS after ``iterativeFitForDataReduction``
+    returns — neither ``createMulScatWorkspaces`` nor
+    ``createWorkspacesForGammaCorrection`` delete them.  This function
+    relies on that persistence.  The caller is responsible for any
+    subsequent cleanup.
 
     Args:
         ic: Completed ``BackwardInitialConditions`` or
@@ -473,7 +479,7 @@ def dispatch_correction_plots(
         mtd: Mantid AnalysisDataService (or a compatible mock that
             supports ``__contains__`` and ``__getitem__``).
         convert_to_yspace_fn: Optional callable with signature
-            ``(ws_name: str, mass: float, mtd) -> (x, y, err)``
+            ``(ws_name: str, mass: float) -> (x, y, err)``
             that converts a TOF workspace to y-space and returns 1-D
             NumPy arrays (summed across spectra).  When ``None``,
             y-space plots are skipped.

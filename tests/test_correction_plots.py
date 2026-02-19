@@ -375,7 +375,7 @@ class TestDispatchCorrectionPlots(unittest.TestCase):
             dispatch_correction_plots, _KEY_UNCORRECTED, _KEY_CORRECTED, _KEY_MS,
         )
 
-        def _mock_yspace_fn(ws_name, mass, mtd_obj):
+        def _mock_yspace_fn(ws_name, mass):
             x = np.linspace(-25.0, 25.0, 50)
             return x, np.exp(-0.5 * x**2), np.ones(50) * 0.01
 

@@ -2,7 +2,7 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 from mantid.api import mtd
-from mantid.simpleapi import ConvertToYSpace, SumSpectra
+from mantid.simpleapi import ConvertToYSpace, DeleteWorkspaces, SumSpectra
 
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
 from vesuvio_analysis.core_functions.correction_plots import dispatch_correction_plots
@@ -274,19 +274,19 @@ def checkInputs(crtIC: Any) -> None:
 
 
 def _convertToYSpaceSummed(
-    ws_name: str, mass: float, mtd_obj: Any
+    ws_name: str, mass: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert a named TOF workspace to y-space and return summed 1-D arrays.
 
     Calls Mantid ``ConvertToYSpace`` followed by ``SumSpectra`` to
     produce a single averaged spectrum, then extracts NumPy arrays.
-    The temporary y-space workspace is named ``ws_name + "_JoY_tmp"``.
+    The temporary y-space workspaces are deleted from the ADS after
+    extraction so they do not accumulate.
 
     Args:
         ws_name: Name of the TOF workspace in the ADS.
         mass: Atomic mass (a.m.u.) for the y-scaling
             $J(y) = M / (\\hbar q) \\cdot (E - E_{\\text{recoil}})$.
-        mtd_obj: Mantid AnalysisDataService (``mantid.api.mtd``).
 
     Returns:
         ``(x, y, err)`` — 1-D NumPy arrays (summed across spectra)
@@ -305,6 +305,8 @@ def _convertToYSpaceSummed(
     e = raw_e[0]
     if len(x) == len(y) + 1:
         x = 0.5 * (x[:-1] + x[1:])
+
+    DeleteWorkspaces([tmp_name, tmp_name + "_Sum"])
     return x, y, e
 
 
