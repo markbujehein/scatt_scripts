@@ -118,7 +118,7 @@ class BackwardInitialConditions(GeneralInitialConditions):
 
     # C10H14O:  14*82: 10*5.71: 4.232
     # HToMassIdxRatio = 20.1050788
-    HToMassIdxRatio = None  # Set to None either when H not present or ratio not known
+    HToMassIdxRatio = 20.1  # Set to None either when H not present or ratio not known
     massIdx = 1  # Idx of mass to take the ratio with, idx is relative to backward scattering masses
 
     # Masses, instrument parameters and initial fitting parameters
@@ -170,6 +170,8 @@ class BackwardInitialConditions(GeneralInitialConditions):
 
     transmission_guess = 0.6  # Experimental value from VesuvioTransmission
     multiple_scattering_order, number_of_events = 2, 1.0e5  # Used in MS correction
+
+    runHistData = True
 
 
 class ForwardInitialConditions(GeneralInitialConditions):
@@ -271,6 +273,8 @@ class ForwardInitialConditions(GeneralInitialConditions):
     transmission_guess = 0.87  # Experimental value from VesuvioTransmission
     multiple_scattering_order, number_of_events = 2, 1.0e5  # Used in MS correction
 
+    runHistData = True
+
 
 class YSpaceFitInitialConditions:
     """Y-space fitting configuration for the Thymol 10 K hydrogen J(y) analysis.
@@ -370,7 +374,7 @@ class BootstrapInitialConditions:
     nSamples = 650  # Used if running Bootstrap, otherwise code ignores it
     skipMSIterations = False  # Each replica runs with no MS or Gamma corrections
     userConfirmation = (
-        True  # Asks user to confirm procedure, will probably be deleted in the future
+        False  # Asks user to confirm procedure, will probably be deleted in the future
     )
     runningTest = False
 
@@ -405,10 +409,10 @@ class BootstrapAnalysis:
     filterAvg = True  # True discards some unreasonable values of widths and intensities
 
     # Flags below control the plots to show
-    plotRawWidthsIntensities = False
+    plotRawWidthsIntensities = True
     plotMeanWidthsIntensities = True
-    plotMeansEvolution = False
-    plot2DHists = False
+    plotMeansEvolution = True
+    plot2DHists = True
     plotYFitHists = True
 
 
