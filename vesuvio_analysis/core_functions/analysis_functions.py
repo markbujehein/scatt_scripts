@@ -9,7 +9,7 @@ from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 from .iminuit_costs import NCPCostFunction
-from .plot_style import set_thesis_style, figure_factory, set_print_options
+from .plot_style import set_thesis_style, figure_factory, set_print_options, COLORBLIND_PALETTE
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +344,7 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
 
     wsDataSum = SumSpectra(InputWorkspace=ws, OutputWorkspace=ws.name()+"_Sum")
     plotSumNCPFits(wsDataSum, *ncpSumWSs, IC)
+    plotIndividualNCPFits(ncpSumWSs[1], wsDataSum, IC)
     return ncpTotal
 
 
@@ -847,7 +848,44 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
     return
 
 
-def switchFirstTwoAxis(A: np.ndarray) -> np.ndarray:
+def plotIndividualNCPFits(
+    wsMNCPSum: List[Any], wsDataSum: Any, IC: Any
+) -> None:
+    """Save individual per-mass NCP diagnostic plots as PDFs.
+
+    Generates one PDF per atomic species (Mass0, Mass1, …) showing the
+    summed data alongside the mass-specific NCP component.  Skipped
+    when running a bootstrap sample (``IC.runningSampleWS`` is
+    ``True``).
+
+    Args:
+        wsMNCPSum: List of summed-spectra NCP workspaces, one per mass
+            (from :func:`createNcpWorkspaces`).
+        wsDataSum: Summed-spectra data workspace.
+        IC: Completed initial-conditions object with ``masses``,
+            ``runningSampleWS``, and ``figSavePath``.
+    """
+    if IC.runningSampleWS:
+        return
+
+    set_thesis_style()
+    for mass_idx, (m, wsNcp) in enumerate(zip(IC.masses, wsMNCPSum)):
+        fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
+        ax.errorbar(wsDataSum, "k.", label="Spectra")
+        ax.plot(wsNcp, color=COLORBLIND_PALETTE[mass_idx % len(COLORBLIND_PALETTE)],
+                label=f"NCP m={m:.4g}")
+        ax.set_xlabel("TOF")
+        ax.set_ylabel("Counts")
+        ax.set_title(f"NCP Fit — Mass{mass_idx} (m = {m:.4g})")
+        ax.legend()
+
+        fileName = f"{wsDataSum.name()}_Mass{mass_idx}_NCP.pdf"
+        savePath = IC.figSavePath / fileName
+        plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+
+
+
     """Transpose the first two axes of a 3-D array.
 
     Rearranges matrices per spectrum for iteration in the main fitting

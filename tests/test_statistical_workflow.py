@@ -11,10 +11,17 @@ Each test uses deterministic dummy data to verify:
    excludes noise labels (-1).
 3. Bayesian Bootstrap generates valid Dirichlet-distributed weights that
    sum to 1.0.
+4. Diagnostic visualisation functions produce figures without errors.
 """
 
 import unittest
+import tempfile
+from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend for CI
+
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -262,6 +269,165 @@ class TestBayesianBootstrap(unittest.TestCase):
         w1 = s1.generate_weights(20)
         w2 = s2.generate_weights(20)
         np.testing.assert_array_equal(w1, w2)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic Visualisation Functions
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticVisualisations(unittest.TestCase):
+    """Verifies that all five diagnostic plot functions run without error."""
+
+    def _make_pca_data(self, n=40, seed=7):
+        rng = np.random.default_rng(seed)
+        coords = rng.normal(size=(n, 2))
+        labels = np.zeros(n, dtype=int)
+        labels[:3] = -1
+        return coords, labels
+
+    def _make_ltheta_data(self, seed=7):
+        rng = np.random.default_rng(seed)
+        features = np.vstack([
+            rng.normal(loc=[1.0, 30.0], scale=[0.1, 1.0], size=(15, 2)),
+            rng.normal(loc=[3.0, 120.0], scale=[0.1, 1.0], size=(15, 2)),
+        ])
+        labels = np.array([0] * 15 + [1] * 15, dtype=int)
+        return features, labels
+
+    def test_plot_outlier_scatter_returns_figure(self):
+        """plot_outlier_scatter must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_outlier_scatter,
+        )
+        coords, labels = self._make_pca_data()
+        fig = plot_outlier_scatter(coords, labels)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_outlier_scatter_saves_file(self):
+        """plot_outlier_scatter must save a file when save_path is given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_outlier_scatter,
+        )
+        coords, labels = self._make_pca_data()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "outlier.png"
+            plot_outlier_scatter(coords, labels, save_path=out)
+            self.assertTrue(out.is_file())
+
+    def test_plot_cluster_ltheta_returns_figure(self):
+        """plot_cluster_ltheta must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_cluster_ltheta,
+        )
+        features, labels = self._make_ltheta_data()
+        fig = plot_cluster_ltheta(features, labels)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_cluster_ltheta_saves_file(self):
+        """plot_cluster_ltheta must save a file when save_path is given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_cluster_ltheta,
+        )
+        features, labels = self._make_ltheta_data()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "clusters.pdf"
+            plot_cluster_ltheta(features, labels, save_path=out)
+            self.assertTrue(out.is_file())
+
+    def test_plot_cluster_ltheta_noise_points(self):
+        """plot_cluster_ltheta must handle noise points (label=-1) gracefully."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_cluster_ltheta,
+        )
+        features, labels = self._make_ltheta_data()
+        labels_with_noise = labels.copy()
+        labels_with_noise[0] = -1
+        fig = plot_cluster_ltheta(features, labels_with_noise)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_bayesian_corner_returns_figure(self):
+        """plot_bayesian_corner must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_bayesian_corner,
+        )
+        rng = np.random.default_rng(42)
+        samples = rng.normal(size=(200, 3))
+        fig = plot_bayesian_corner(samples, ["width_H", "width_C", "intensity"])
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_bayesian_corner_single_param(self):
+        """plot_bayesian_corner must handle n_params=1 (single-parameter case)."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_bayesian_corner,
+        )
+        rng = np.random.default_rng(0)
+        samples = rng.normal(size=(100, 1))
+        fig = plot_bayesian_corner(samples, ["width_H"])
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_posterior_kde_returns_figure(self):
+        """plot_posterior_kde must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_posterior_kde,
+        )
+        rng = np.random.default_rng(3)
+        samples = rng.normal(loc=[5.0, 4.9], scale=[0.2, 0.1], size=(500, 2))
+        fig = plot_posterior_kde(
+            samples,
+            point_estimates=np.array([5.0, 4.9]),
+            param_names=["width_H", "width_C"],
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_posterior_kde_saves_file(self):
+        """plot_posterior_kde must save a file when save_path is given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_posterior_kde,
+        )
+        rng = np.random.default_rng(9)
+        samples = rng.normal(loc=[5.0], scale=[0.3], size=(300, 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "posterior.pdf"
+            plot_posterior_kde(
+                samples,
+                point_estimates=np.array([5.0]),
+                param_names=["width_H"],
+                save_path=out,
+            )
+            self.assertTrue(out.is_file())
+
+    def test_plot_optimizer_residuals_returns_figure(self):
+        """plot_optimizer_residuals must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_optimizer_residuals,
+        )
+        x = np.linspace(-20, 20, 100)
+        scipy_fit = np.exp(-0.5 * (x / 5) ** 2)
+        iminuit_fit = scipy_fit * 1.01  # 1% difference
+        fig = plot_optimizer_residuals(x, scipy_fit, iminuit_fit, rel_diff_pct=1.0)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_plot_optimizer_residuals_saves_file(self):
+        """plot_optimizer_residuals must save a file when save_path is given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_optimizer_residuals,
+        )
+        x = np.linspace(-10, 10, 50)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "residuals.pdf"
+            plot_optimizer_residuals(
+                x, np.zeros_like(x), np.zeros_like(x),
+                rel_diff_pct=0.0, save_path=out,
+            )
+            self.assertTrue(out.is_file())
 
 
 if __name__ == "__main__":
