@@ -750,7 +750,13 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
         costFun = MyLeastSquares(dataXNZ, dataYNZ, convolvedModel)
     else:
         costFun = cost.LeastSquares(dataXNZ, dataYNZ, dataENZ, convolvedModel)
-    
+    # cost.LeastSquares (and MyLeastSquares) derive _parameters from
+    # describe(convolvedModel), which returns the _parameters dict (without 'x')
+    # and drops its first entry assuming it is the independent variable.
+    # This causes 'y0' to be silently dropped.  Propagate the model's
+    # _parameters explicitly so Minuit sees all fitting parameters.
+    costFun._parameters = convolvedModel._parameters
+
     m = Minuit(costFun, **defaultPars)
 
     m.limits["A"] = (0, None)
