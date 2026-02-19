@@ -536,11 +536,14 @@ def weightedAvgArr(
     dataY[zerosMask] = np.nan  
     dataE[zerosMask] = np.nan
 
-    meanY = np.nansum(dataY/np.square(dataE), axis=0) / np.nansum(1/np.square(dataE), axis=0)
-    meanE = np.sqrt(1 / np.nansum(1/np.square(dataE), axis=0))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        invVar = 1 / np.square(dataE)
+        sumInvVar = np.nansum(invVar, axis=0)
+        meanY = np.nansum(dataY * invVar, axis=0) / sumInvVar
+        meanE = np.sqrt(1 / sumInvVar)
 
     # Change invalid data back to original masking format with zeros
-    nanInfMask = (meanE==np.inf) | (meanE==np.nan) | (meanY==np.nan)
+    nanInfMask = np.isinf(meanE) | np.isnan(meanE) | np.isnan(meanY)
     meanY[nanInfMask] = 0
     meanE[nanInfMask] = 0
 

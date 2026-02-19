@@ -255,6 +255,19 @@ class TestGlobalNCPCostFunctionInterface(unittest.TestCase):
         self.assertIsInstance(val, float)
         self.assertGreater(val, 0)
 
+    def test_model_property(self):
+        """``model`` property must expose the callable used in ``plotGlobalFit``."""
+        from vesuvio_analysis.core_functions.iminuit_costs import (
+            GlobalNCPCostFunction,
+        )
+        x, y0, _, e, model = self._make_model_and_data()
+        sig = ["x0", "y00", "A0", "x00", "sigma"]
+        c = GlobalNCPCostFunction(x, y0, e, model, sig)
+        self.assertIs(c.model, model)
+        # model must be callable and produce sensible output
+        yfit = c.model(x, 0, 5, 0, 3.0)
+        self.assertEqual(yfit.shape, x.shape)
+
 
 class TestCostSumIntegration(unittest.TestCase):
     """Verify that ``CostSum`` correctly identifies shared vs. local parameters."""
@@ -412,6 +425,77 @@ class TestMultipleSharedParams(unittest.TestCase):
         self.assertIn("A1", params)
         # 3 local per group (y0, A, x0) + 3 shared = 6 + 3 = 9
         self.assertEqual(len(params), 9)
+
+
+# ---------------------------------------------------------------------------
+# Test: weightedAvgArr produces no divide-by-zero warnings
+# ---------------------------------------------------------------------------
+
+def _weighted_avg_arr(dataYO: np.ndarray, dataEO: np.ndarray):
+    """Inline replica of the fixed ``weightedAvgArr`` from ``fit_in_yspace.py``.
+
+    ``fit_in_yspace`` cannot be imported without Mantid, so this function
+    replicates the fixed logic verbatim (following the same convention as
+    ``_MyLeastSquaresReplica`` above) to validate the numerical corrections
+    independently of the Mantid dependency.
+    """
+    dataY = dataYO.copy()
+    dataE = dataEO.copy()
+
+    zerosMask = dataY == 0
+    dataY[zerosMask] = np.nan
+    dataE[zerosMask] = np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        invVar = 1 / np.square(dataE)
+        sumInvVar = np.nansum(invVar, axis=0)
+        meanY = np.nansum(dataY * invVar, axis=0) / sumInvVar
+        meanE = np.sqrt(1 / sumInvVar)
+
+    nanInfMask = np.isinf(meanE) | np.isnan(meanE) | np.isnan(meanY)
+    meanY[nanInfMask] = 0
+    meanE[nanInfMask] = 0
+    return meanY, meanE
+
+
+class TestWeightedAvgArrNumerics(unittest.TestCase):
+    """Verify the divide-by-zero fix in ``weightedAvgArr``."""
+
+    def test_no_divide_by_zero_warning(self):
+        """All-zero column must not emit a RuntimeWarning."""
+        import warnings
+
+        # Two spectra; column 2 is all zeros (masked)
+        dataY = np.array([[1.0, 2.0, 0.0], [1.5, 2.5, 0.0]])
+        dataE = np.array([[0.1, 0.2, 0.0], [0.1, 0.2, 0.0]])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            # Should NOT raise RuntimeWarning for divide by zero / invalid value
+            meanY, meanE = _weighted_avg_arr(dataY, dataE)
+
+        # Masked column must remain zero
+        self.assertEqual(meanY[2], 0.0)
+        self.assertEqual(meanE[2], 0.0)
+
+    def test_masked_col_stays_zero(self):
+        """Output for all-zero columns must be zero (not NaN or inf)."""
+        dataY = np.array([[1.0, 0.0], [1.0, 0.0]])
+        dataE = np.array([[0.1, 0.0], [0.1, 0.0]])
+        meanY, meanE = _weighted_avg_arr(dataY, dataE)
+        self.assertEqual(meanY[1], 0.0)
+        self.assertEqual(meanE[1], 0.0)
+        self.assertTrue(np.isfinite(meanY).all())
+        self.assertTrue(np.isfinite(meanE).all())
+
+    def test_normal_weighted_average(self):
+        """Check the weighted average is numerically correct for valid data."""
+        # Equal errors → simple mean expected
+        dataY = np.array([[1.0, 3.0], [3.0, 5.0]])
+        dataE = np.array([[1.0, 1.0], [1.0, 1.0]])
+        meanY, meanE = _weighted_avg_arr(dataY, dataE)
+        np.testing.assert_allclose(meanY, [2.0, 4.0])
+        np.testing.assert_allclose(meanE, [np.sqrt(0.5), np.sqrt(0.5)])
 
 
 if __name__ == "__main__":
