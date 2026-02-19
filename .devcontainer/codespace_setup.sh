@@ -32,25 +32,30 @@ echo "╚═══════════════════════�
 echo -e "${RESET}"
 
 # ---------------------------------------------------------------------------
-# 1. Python version
+# 1. Python version (from pixi env)
 # ---------------------------------------------------------------------------
 _header "Python"
-PYTHON_VERSION=$(python --version 2>&1)
+PYTHON_VERSION=$(pixi run python --version 2>&1)
 echo "  ${PYTHON_VERSION}"
-if python -c "import sys; assert sys.version_info >= (3,10), 'Python 3.10+ required'"; then
+if pixi run python -c "import sys; assert sys.version_info >= (3,10), 'Python 3.10+ required'"; then
     _pass "Python version OK"
 else
     _fail "Python 3.10+ is required"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Install the project in editable mode (includes [test] extras)
+# 2. Verify pixi environment (pixi install already ran in postCreateCommand)
 # ---------------------------------------------------------------------------
 _header "Package installation"
-if pip install -e ".[test]" -q; then
-    _pass "vesuvio_analysis installed in editable mode (with [test] extras)"
+if pixi run python -c "import vesuvio_analysis" 2>/dev/null; then
+    _pass "vesuvio_analysis is importable in the pixi environment"
 else
-    _fail "pip install -e .[test] failed"
+    _warn "vesuvio_analysis not yet importable — running pixi install"
+    if pixi install -q; then
+        _pass "pixi install succeeded"
+    else
+        _fail "pixi install failed"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -59,11 +64,11 @@ fi
 _header "Scientific dependencies"
 DEPS=(numpy scipy matplotlib numba iminuit jacobi sklearn pydantic yaml)
 for dep in "${DEPS[@]}"; do
-    if python -c "import ${dep}" 2>/dev/null; then
-        VERSION=$(python -c "import ${dep}; v=getattr(${dep},'__version__','?'); print(v)" 2>/dev/null || echo "?")
+    if pixi run python -c "import ${dep}" 2>/dev/null; then
+        VERSION=$(pixi run python -c "import ${dep}; v=getattr(${dep},'__version__','?'); print(v)" 2>/dev/null || echo "?")
         _pass "${dep} (${VERSION})"
     else
-        _fail "${dep} is not importable — run: pip install ${dep}"
+        _fail "${dep} is not importable — run: pixi install"
     fi
 done
 
@@ -71,19 +76,19 @@ done
 # 4. Mantid framework check (optional — not required for the unit-test suite)
 # ---------------------------------------------------------------------------
 _header "Mantid framework (optional)"
-if python -c "from mantid.simpleapi import *" 2>/dev/null; then
-    MANTID_VERSION=$(python -c "import mantid; print(mantid.__version__)" 2>/dev/null || echo "?")
+if pixi run python -c "from mantid.simpleapi import *" 2>/dev/null; then
+    MANTID_VERSION=$(pixi run python -c "import mantid; print(mantid.__version__)" 2>/dev/null || echo "?")
     _pass "Mantid framework available (${MANTID_VERSION})"
 else
     _warn "Mantid framework not found — physics unit tests will run via mock_mantid.py"
-    _warn "To install Mantid: conda install -c mantid mantid"
+    _warn "Mantid is declared in pyproject.toml [tool.pixi.dependencies]; run: pixi install"
 fi
 
 # ---------------------------------------------------------------------------
 # 5. Matplotlib headless backend
 # ---------------------------------------------------------------------------
 _header "Matplotlib backend"
-BACKEND=$(python -c "import matplotlib; print(matplotlib.get_backend())")
+BACKEND=$(pixi run python -c "import matplotlib; print(matplotlib.get_backend())" 2>/dev/null || echo "unknown")
 echo "  Current backend: ${BACKEND}"
 if [[ "${MPLBACKEND:-}" == "Agg" ]]; then
     _pass "MPLBACKEND=Agg is set (headless mode active)"
@@ -113,7 +118,7 @@ _header "Numba / BLAS thread configuration"
 echo "  NUMBA_NUM_THREADS = ${NUMBA_NUM_THREADS:-<unset>}"
 echo "  OMP_NUM_THREADS   = ${OMP_NUM_THREADS:-<unset>}"
 echo "  MKL_NUM_THREADS   = ${MKL_NUM_THREADS:-<unset>}"
-NCPU=$(python -c "import os; print(os.cpu_count())" 2>/dev/null || echo "?")
+NCPU=$(pixi run python -c "import os; print(os.cpu_count())" 2>/dev/null || echo "?")
 echo "  Available CPUs    = ${NCPU}"
 _pass "Thread counts reported (adjust for machine type in devcontainer.json)"
 
@@ -121,8 +126,8 @@ _pass "Thread counts reported (adjust for machine type in devcontainer.json)"
 # 8. CI test suite (without Mantid — uses mock_mantid.py)
 # ---------------------------------------------------------------------------
 _header "CI test suite"
-echo "  Running: pytest tests/test_numba_regression.py tests/test_iminuit_cross_check.py tests/test_workspace_safety.py"
-if python -m pytest \
+echo "  Running: pixi run pytest tests/test_numba_regression.py tests/test_iminuit_cross_check.py tests/test_workspace_safety.py"
+if pixi run python -m pytest \
         tests/test_numba_regression.py \
         tests/test_iminuit_cross_check.py \
         tests/test_workspace_safety.py \

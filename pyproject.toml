@@ -3,7 +3,33 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.pixi.project]
+channels = ["mantid", "conda-forge"]
 platforms = ["linux-64"]
+
+# ---------------------------------------------------------------------------
+# Pixi conda dependencies (resolved via mantid + conda-forge channels).
+# Pixi replaces conda/mamba — it is a single Rust binary that resolves
+# conda and PyPI packages together, far faster than mamba.
+# ---------------------------------------------------------------------------
+[tool.pixi.dependencies]
+python = "3.11.*"
+mantid = "*"
+numpy = ">=2.0"
+scipy = "*"
+matplotlib = "*"
+numba = "*"
+scikit-learn = "*"
+pyyaml = "*"
+iminuit = "*"
+pydantic = ">=2.0"
+openblas = "*"
+pytest = ">=7.0"
+pytest-cov = "*"
+streamlit = "*"
+plotly = "*"
+dash = "*"
+ipykernel = "*"
+jupyterlab = "*"
 
 [project]
 name = "vesuvio_analysis"
@@ -95,5 +121,10 @@ addopts = "-v --tb=short"
 # Editable installs (pixi compatibility)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Pixi PyPI dependencies (installed into the pixi env via pip/uv).
+# jacobi is PyPI-only; the project itself is installed as an editable install.
+# ---------------------------------------------------------------------------
 [tool.pixi.pypi-dependencies]
-pixi_py = { path = "./vesuvio_analysis/", editable = true }
+vesuvio_analysis = { path = ".", editable = true }
+jacobi = "*"

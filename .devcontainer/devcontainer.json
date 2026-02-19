@@ -3,10 +3,10 @@
   // -------------------------------------------------------
   // Base image: official Mantid development image from GHCR
   //   ghcr.io/mantidproject/mantid-development-alma9:latest
-  // The Mantid C++ build environment and system libraries are pre-baked into
-  // that AlmaLinux 9 image; our Dockerfile adds Miniforge + the 'vesuvio'
-  // conda environment on top.  GitHub Codespace Prebuilds cache the result
-  // so Codespace startup is instant for the researcher.
+  // Package management: pixi (https://pixi.sh)
+  //   pixi is already the project's package manager (declared in pyproject.toml
+  //   via [tool.pixi.*]).  It resolves conda (mantid, conda-forge) + PyPI deps
+  //   together without a separate conda/mamba installation.
   "name": "VESUVIO DINS Analysis",
   "build": {
     "dockerfile": "Dockerfile",
@@ -69,7 +69,9 @@
         "github.copilot"
       ],
       "settings": {
-        "python.defaultInterpreterPath": "/opt/conda/envs/vesuvio/bin/python",
+        // pixi creates the env at <workspace>/.pixi/envs/default/ on first run.
+        // VS Code auto-discovers it; the path below is used as a fallback hint.
+        "python.defaultInterpreterPath": "${workspaceFolder}/.pixi/envs/default/bin/python",
         "python.terminal.activateEnvironment": true,
         "terminal.integrated.env.linux": {
           "MPLBACKEND": "Agg",
@@ -89,11 +91,13 @@
   // ---------------------------------------------------------------------------
   // Lifecycle hooks
   // ---------------------------------------------------------------------------
-  // postCreateCommand runs once after the container is first created.
-  // It installs the project in editable mode and runs the validation suite.
-  // For Prebuild caching, move heavy conda installs into the Dockerfile layer
-  // so they are baked in before the Codespace is handed to the researcher.
-  "postCreateCommand": "bash .devcontainer/codespace_setup.sh",
+  // postCreateCommand runs once after the container is first created (and
+  // during Codespace Prebuilds).
+  // `pixi install` reads pyproject.toml [tool.pixi.*], resolves conda +
+  // PyPI deps in one pass, and creates .pixi/envs/default/ in the workspace.
+  // Because the pixi binary is already in the Docker image, this step starts
+  // immediately — no bootstrapping required.
+  "postCreateCommand": "pixi install && bash .devcontainer/codespace_setup.sh",
 
   // Run as 'abc' — the non-root user defined in the Mantid alma9 base image
   // (uid 911).  This matches the user that the Mantid image entrypoint uses
