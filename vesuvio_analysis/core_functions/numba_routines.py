@@ -417,11 +417,7 @@ def calculateNcpSpec_numba(masses_1d, pars, ySpacesForEachMass,
     ncpForEachMass = (intensities * (JOfY + FSE)
                       * E0 * E0 ** (-0.92) * masses / deltaQ)
 
-    # --- total ---
-    n_bins = ySpacesForEachMass.shape[1]
-    ncpTotal = np.zeros(n_bins)
-    for i in range(n_masses):
-        for j in range(n_bins):
-            ncpTotal[j] += ncpForEachMass[i, j]
+    # --- total (vectorised reduction; faster than nested explicit loops) ---
+    ncpTotal = np.sum(ncpForEachMass, axis=0)
 
     return ncpForEachMass, ncpTotal
