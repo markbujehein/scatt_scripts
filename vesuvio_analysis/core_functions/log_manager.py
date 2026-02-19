@@ -40,7 +40,7 @@ from typing import Any, Optional
 import numpy as np
 
 
-# Threshold for the Sieve-3 numerical agreement gate
+# Threshold for the iMinuit–Scipy numerical agreement check
 _AGREEMENT_THRESHOLD: float = 0.01
 
 
@@ -235,7 +235,7 @@ class RunLogger:
         self._lines.append("")
 
     # ------------------------------------------------------------------
-    # Sieve-3 Agreement Gate
+    # iMinuit–Scipy Numerical Agreement Check
     # ------------------------------------------------------------------
 
     def log_agreement_gate(
@@ -245,10 +245,10 @@ class RunLogger:
         scipy_pars: np.ndarray,
         iminuit_pars: np.ndarray,
     ) -> None:
-        """Record the Sieve-3 numerical agreement gate between Scipy and iMinuit.
+        """Record the iMinuit–Scipy numerical agreement check.
 
         Computes the relative difference for chi-squared and for each
-        parameter.  Flags whether the agreement gate is passed or failed
+        parameter.  Flags whether the agreement check is passed or failed
         (threshold: 1 %).
 
         Args:
@@ -278,7 +278,7 @@ class RunLogger:
         par_pass = max_par_rel <= _AGREEMENT_THRESHOLD
         gate_pass = chi2_pass and par_pass
 
-        self._lines.append("sieve3_agreement_gate:")
+        self._lines.append("optimizer_agreement_check:")
         self._lines.append(f"  threshold: {_AGREEMENT_THRESHOLD}")
         self._lines.append(f"  scipy_chi2: {scipy_chi2}")
         self._lines.append(f"  iminuit_chi2: {iminuit_chi2}")

@@ -5,11 +5,11 @@
 # 1. Provision environment (pip + cache for speed)
 # 2. Run Numba regression tests  (test_numba_regression.py)
 # 3. Run iMinuit cross-check tests (test_iminuit_cross_check.py)
-#    — includes the 5 % Numerical Agreement Gate (Sieve 3)
+#    — includes the 1% iMinuit–Scipy Numerical Agreement Check
 # 4. Run workspace safety tests   (test_workspace_safety.py)
 #
 # The workflow fails if any test reports values outside the tolerance
-# defined in the test files (currently 1 % / 5 % depending on the gate).
+# defined in the test files (currently 1 % / 5 % depending on the check).
 #
 # Total target execution time: < 3 minutes with a warm cache.
 
@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
 
     strategy:
       fail-fast: true
@@ -62,15 +63,14 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 4. Install dependencies
-      #    Reads the dependency list from pyproject.toml (single source of
-      #    truth for versions).  pytest is added explicitly as a test-only
-      #    extra not listed in the package dependencies.
+      #    Installs the package with its [test] optional-dependency group
+      #    (pytest, pytest-cov) declared in pyproject.toml — single source
+      #    of truth for all dependencies.
       # -----------------------------------------------------------------------
       - name: Install package and dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
-          pip install -e .
+          pip install -e ".[test]"
 
       # -----------------------------------------------------------------------
       # 5. Numba regression gate
@@ -82,11 +82,11 @@ jobs:
           python -m pytest tests/test_numba_regression.py -v --tb=short
 
       # -----------------------------------------------------------------------
-      # 6. iMinuit / Scipy 5 % Agreement Gate (Sieve 3)
+      # 6. iMinuit–Scipy Numerical Agreement Check
       #    Fails if iMinuit and scipy optimisers disagree by more than the
-      #    tolerance defined in TestSieve3AgreementGate.
+      #    tolerance defined in TestOptimizerAgreementCheck.
       # -----------------------------------------------------------------------
-      - name: iMinuit cross-check tests (Sieve 3 — 5 % gate)
+      - name: iMinuit cross-check tests (1 % optimizer agreement check)
         run: |
           python -m pytest tests/test_iminuit_cross_check.py -v --tb=short
 

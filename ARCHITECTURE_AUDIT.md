@@ -592,27 +592,27 @@ with zero Mantid dependency.
 | 4 — Workspace Lifecycle | Entry/exit guards, boundary enforcement, naming conventions | ✅ | `test_workspace_safety.py` (23 tests) |
 | 5 — SoTU & Audit Alignment | Cross-check, 1% gate, roadmap sync | ✅ | (this document) |
 
-### 10.2 Sieve 3 — 1 % Numerical Agreement Gate
+### 10.2 iMinuit–Scipy 1% Numerical Agreement Check
 
 **Implementation:** `fitNcpToSingleSpec()` in `analysis_functions.py`.
 
 After the scipy SLSQP fit (primary) and the iMinuit MIGRAD fit (cross-
-validation) complete, the gate performs two checks:
+validation) complete, the check performs two comparisons:
 
 1. **Chi-squared comparison:** `|χ²_scipy − χ²_iminuit| / χ²_scipy > 1 %`
-   → `logger.warning("Sieve3 Spec …: χ² disagreement …")`
+   → `logger.warning("OptimizerCheck Spec …: χ² disagreement …")`
 2. **Parameter-vector comparison:** For each parameter where
    `|p_scipy| > 1e-12`, compute
    `|p_scipy − p_iminuit| / |p_scipy|`.  If any parameter exceeds 1 %
-   → `logger.warning("Sieve3 Spec …: parameter disagreement …")`
+   → `logger.warning("OptimizerCheck Spec …: parameter disagreement …")`
 
 Parameters near zero (`|p| ≤ 1e-12`) are excluded from relative-difference
-calculations to prevent spurious gate failures from numerical noise.
+calculations to prevent spurious failures from numerical noise.
 
-The gate threshold is controlled by `_AGREEMENT_THRESHOLD = 0.01` (local
+The check threshold is controlled by `_AGREEMENT_THRESHOLD = 0.01` (local
 constant inside `fitNcpToSingleSpec`).
 
-**Verification:** `tests/test_iminuit_cross_check.py::TestSieve3AgreementGate`
+**Verification:** `tests/test_iminuit_cross_check.py::TestOptimizerAgreementCheck`
 (4 tests).
 
 ### 10.3 NumPy 2.x Compatibility Fix
