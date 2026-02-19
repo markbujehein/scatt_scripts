@@ -19,7 +19,7 @@ Typical usage::
 
     set_thesis_style()       # apply Matplotlib rcParams once at module level
     set_print_options()      # apply numpy/numba float precision once globally
-    fig, ax = figure_factory()            # full-width (17 cm) figure, 4:3 ratio
+    fig, ax = figure_factory()              # full-width (17 cm), golden-ratio (~0.618) aspect
     fig, ax = figure_factory("half_width")  # half-width (8.25 cm) figure
 """
 
