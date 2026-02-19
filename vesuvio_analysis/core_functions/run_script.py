@@ -87,6 +87,16 @@ def runScript(
     # Set extra attributes from user attributes
     completeICFromInputs(fwdIC, scriptName, wsFrontIC)
     completeICFromInputs(bckwdIC, scriptName, wsBackIC)
+
+    # Propagate the fast-track smoke-test flag to all IC objects so that
+    # analysis_functions and bootstrap logic can cap iterations, limit samples,
+    # and adjust tolerances appropriately.
+    # Must be done before completeBootIC so directory/file naming uses the correct mode.
+    if getattr(userCtr, "runningTest", False):
+        bckwdIC.runningTest = True
+        fwdIC.runningTest = True
+        bootIC.runningTest = True
+
     completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
     completeYFitIC(yFitIC, scriptName)
 
@@ -184,7 +194,9 @@ def runScript(
             logger.write()
             return None, resYFit  # To match return below.
 
-        checkUserClearWS()  # Check if user is OK with cleaning all workspaces
+        # Skip interactive workspace-clear prompt when running a smoke test
+        if not getattr(userCtr, "runningTest", False):
+            checkUserClearWS()  # Check if user is OK with cleaning all workspaces
 
         res = None
         resYFit = None

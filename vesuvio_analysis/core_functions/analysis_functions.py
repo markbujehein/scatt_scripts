@@ -66,6 +66,11 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
     cropedWs = cropAndMaskWorkspace(ic, initialWs)
     wsToBeFitted = CloneWorkspace(InputWorkspace=cropedWs, OutputWorkspace=cropedWs.name()+"0")
 
+    # When running a smoke test, cap MS/GC iterations at 1 for speed.
+    # Override ic.noOfMSIterations so all downstream naming/lookups are consistent.
+    if getattr(ic, "runningTest", False):
+        ic.noOfMSIterations = min(1, ic.noOfMSIterations)
+
     for iteration in range(ic.noOfMSIterations + 1):
         # Workspace from previous iteration
         wsToBeFitted = mtd[ic.name+str(iteration)]
@@ -93,7 +98,7 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
             wsGC = createWorkspacesForGammaCorrection(ic, mWidths, mIntRatios, wsNCPM)
             Minus(LHSWorkspace="tmpNameWs", RHSWorkspace=wsGC, OutputWorkspace="tmpNameWs")
 
-        remaskValues(ic.name, "tmpNameWS")    # Masks cols in the same place as in ic.name
+        remaskValues(ic.name, "tmpNameWs")    # Masks cols in the same place as in ic.name
         RenameWorkspace(InputWorkspace="tmpNameWs", OutputWorkspace=ic.name+str(iteration+1))
     
     wsFinal = mtd[ic.name+str(ic.noOfMSIterations)]
@@ -1125,6 +1130,8 @@ def fitNcpToSingleSpec(
             resolutionPars, instrPars, kinematicArrays, ic,
         )
         m = Minuit(cost, *ic.initPars)
+        if getattr(ic, "runningTest", False):
+            m.tol = 1.0  # Loose EDM tolerance for fast smoke-test convergence
         m.migrad()
         m.hesse()
 
