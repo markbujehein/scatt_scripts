@@ -275,60 +275,126 @@ class TestRunningTestFlagPropagation(unittest.TestCase):
 class TestRunningTestMSIterationCap(unittest.TestCase):
     """Verify the MS-iteration cap logic from ``analysis_functions``.
 
-    We replicate the ``_n_iter`` logic inline so that this test is
-    independent of Mantid and produces a deterministic result in CI.
+    Mirrors the ``if getattr(ic, 'runningTest', False): ic.noOfMSIterations = min(1, ...)``
+    logic injected into ``iterativeFitForDataReduction``.
     """
 
-    def _effective_n_iter(self, noOfMSIterations: int, running_test: bool) -> int:
-        """Mirror the logic injected into ``iterativeFitForDataReduction``."""
-        return (
-            min(1, noOfMSIterations)
-            if running_test
-            else noOfMSIterations
-        )
+    @staticmethod
+    def _apply_cap(ic: Any) -> None:
+        """Mirror the cap applied at the start of ``iterativeFitForDataReduction``."""
+        if getattr(ic, "runningTest", False):
+            ic.noOfMSIterations = min(1, ic.noOfMSIterations)
 
     def test_cap_at_one_when_running_test_and_four_iterations(self) -> None:
-        self.assertEqual(self._effective_n_iter(4, True), 1)
+        class _IC:
+            noOfMSIterations = 4
+            runningTest = True
+        ic = _IC()
+        self._apply_cap(ic)
+        self.assertEqual(ic.noOfMSIterations, 1)
 
     def test_cap_at_zero_when_running_test_and_zero_iterations(self) -> None:
         """Zero iterations stays zero even in test mode (no-op run)."""
-        self.assertEqual(self._effective_n_iter(0, True), 0)
+        class _IC:
+            noOfMSIterations = 0
+            runningTest = True
+        ic = _IC()
+        self._apply_cap(ic)
+        self.assertEqual(ic.noOfMSIterations, 0)
 
     def test_uncapped_when_not_running_test(self) -> None:
-        self.assertEqual(self._effective_n_iter(4, False), 4)
+        class _IC:
+            noOfMSIterations = 4
+            runningTest = False
+        ic = _IC()
+        self._apply_cap(ic)
+        self.assertEqual(ic.noOfMSIterations, 4)
 
     def test_smoke_ic_noOfMSIterations_already_zero(self) -> None:
-        """Smoke-test IC has ``noOfMSIterations=0``: fast path is taken regardless."""
+        """Smoke-test IC has ``noOfMSIterations=0``: cap is a no-op."""
         ic = _SmokeForwardInitialConditions()
-        capped = self._effective_n_iter(ic.noOfMSIterations, ic.runningTest)
-        self.assertEqual(capped, 0)
+        self._apply_cap(ic)
+        self.assertEqual(ic.noOfMSIterations, 0)
+
+    def test_ic_attribute_mutated_in_place(self) -> None:
+        """IC.noOfMSIterations is modified in place so all downstream code is consistent."""
+        class _IC:
+            noOfMSIterations = 5
+            runningTest = True
+        ic = _IC()
+        self._apply_cap(ic)
+        # Downstream buildFinalWSName reads ic.noOfMSIterations directly
+        self.assertEqual(ic.noOfMSIterations, 1,
+                         "IC.noOfMSIterations must be mutated to the effective value.")
 
 
 class TestBootstrapNSamplesCap(unittest.TestCase):
-    """Verify that ``bootstrap.chooseNSamples`` caps at 3 when ``runningTest``."""
+    """Verify that ``bootstrap.chooseNSamples`` caps at 3 when ``runningTest``.
 
-    def _choose_n_samples(self, n_samples: int, running_test: bool) -> int:
-        """Replicate the cap injected into ``bootstrap.chooseNSamples``."""
-        if running_test:
-            return min(n_samples, 3)
-        return n_samples
+    These tests call the actual ``chooseNSamples`` function from
+    ``vesuvio_analysis.core_functions.bootstrap`` to validate the real
+    integration point rather than a local reimplementation.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Import chooseNSamples once for the whole class (after mock is installed)."""
+        from vesuvio_analysis.core_functions.bootstrap import chooseNSamples
+        cls._chooseNSamples = staticmethod(chooseNSamples)
+
+    class _BootIC:
+        """Minimal bootIC stub for testing chooseNSamples."""
+        def __init__(self, n_samples: int, bootstrap_type: str,
+                     running_test: bool) -> None:
+            self.nSamples = n_samples
+            self.bootstrapType = bootstrap_type
+            self.runningTest = running_test
+
+    class _MockNCP:
+        """Mock NCP workspace with a configurable blocksize."""
+        def __init__(self, blocksize: int) -> None:
+            self._blocksize = blocksize
+
+        def blocksize(self) -> int:
+            return self._blocksize
+
+    def _make_parent_ws(self) -> dict:
+        """Return a minimal parentWSnNCPs dict for BOOT_GAUSS_ERRS mode."""
+        return {}  # not used for non-JACKKNIFE bootstrap types
 
     def test_capped_at_three_with_large_nsamples(self) -> None:
-        self.assertEqual(self._choose_n_samples(100, True), 3)
+        boot = self._BootIC(100, "BOOT_GAUSS_ERRS", True)
+        result = self._chooseNSamples(boot, self._make_parent_ws())
+        self.assertEqual(result, 3)
 
     def test_capped_at_three_with_exactly_three(self) -> None:
-        self.assertEqual(self._choose_n_samples(3, True), 3)
+        boot = self._BootIC(3, "BOOT_GAUSS_ERRS", True)
+        result = self._chooseNSamples(boot, self._make_parent_ws())
+        self.assertEqual(result, 3)
 
     def test_below_three_unchanged(self) -> None:
-        self.assertEqual(self._choose_n_samples(2, True), 2)
+        boot = self._BootIC(2, "BOOT_GAUSS_ERRS", True)
+        result = self._chooseNSamples(boot, self._make_parent_ws())
+        self.assertEqual(result, 2)
 
     def test_no_cap_when_not_running_test(self) -> None:
-        self.assertEqual(self._choose_n_samples(50, False), 50)
+        boot = self._BootIC(50, "BOOT_GAUSS_ERRS", False)
+        result = self._chooseNSamples(boot, self._make_parent_ws())
+        self.assertEqual(result, 50)
 
-    def test_smoke_bootstrap_ic_n_samples(self) -> None:
+    def test_smoke_bootstrap_ic_capped(self) -> None:
+        """The smoke-test bootIC must result in ≤ 3 samples via chooseNSamples."""
         boot = _SmokeBootstrapInitialConditions()
-        capped = self._choose_n_samples(boot.nSamples, boot.runningTest)
-        self.assertLessEqual(capped, 3)
+        result = self._chooseNSamples(boot, self._make_parent_ws())
+        self.assertLessEqual(result, 3)
+
+    def test_jackknife_cap_overrides_blocksize(self) -> None:
+        """For JACKKNIFE with runningTest, blocksize is capped at 3 too."""
+        boot = self._BootIC(0, "JACKKNIFE", True)
+        boot.procedure = "FORWARD"
+        parent_ws = {"fwdNCP": self._MockNCP(blocksize=100), "bckwdNCP": self._MockNCP(1)}
+        result = self._chooseNSamples(boot, parent_ws)
+        self.assertEqual(result, 3)
 
 
 class TestSmallScaleICConfiguration(unittest.TestCase):
@@ -561,22 +627,42 @@ class TestOrchestratorHandoffLogic(unittest.TestCase):
     """
 
     def test_final_ws_name_matches_stage1_output(self) -> None:
-        """Stage 2 must look up the workspace produced at the end of Stage 1."""
+        """Stage 2 must look up the workspace produced at the end of Stage 1.
+
+        The key invariant: because ``iterativeFitForDataReduction`` now
+        overrides ``ic.noOfMSIterations = min(1, ic.noOfMSIterations)`` when
+        ``runningTest=True``, the workspace name that Stage 1 produces and the
+        name that ``buildFinalWSName`` (Stage 2) constructs are always
+        consistent — even when the user configured a larger iteration count.
+        """
+        from vesuvio_analysis.core_functions.ICHelpers import buildFinalWSName
+
         script_name = "smoke_thymol"
         procedure = "FORWARD"
+
+        # Case 1: Default smoke-test IC (noOfMSIterations=0)
         fwd_ic = _SmokeForwardInitialConditions()
+        # Simulate the cap that iterativeFitForDataReduction applies:
+        if getattr(fwd_ic, "runningTest", False):
+            fwd_ic.noOfMSIterations = min(1, fwd_ic.noOfMSIterations)
+        stage1_ws = f"{script_name}_{procedure}_{fwd_ic.noOfMSIterations}"
+        stage2_ws = buildFinalWSName(script_name, procedure, fwd_ic)
+        self.assertEqual(stage1_ws, stage2_ws,
+                         "Stage 1 → Stage 2 ws name mismatch (0-iteration case).")
 
-        # Replicate ICHelpers.buildFinalWSName
-        expected_ws_name = f"{script_name}_{procedure}_{fwd_ic.noOfMSIterations}"
-
-        # With runningTest=True and noOfMSIterations=0, _n_iter=0
-        _n_iter = min(1, fwd_ic.noOfMSIterations) if fwd_ic.runningTest else fwd_ic.noOfMSIterations
-        actual_ws_name = f"{script_name}_{procedure}_{_n_iter}"
-
-        self.assertEqual(
-            actual_ws_name, expected_ws_name,
-            "Stage 1 output workspace name does not match Stage 2 lookup key.",
-        )
+        # Case 2: runningTest=True with noOfMSIterations > 1
+        # Stage 1 caps to 1; Stage 2 must also see 1 (shared IC object).
+        fwd_ic_high = _SmokeForwardInitialConditions()
+        fwd_ic_high.noOfMSIterations = 5
+        fwd_ic_high.runningTest = True
+        if getattr(fwd_ic_high, "runningTest", False):
+            fwd_ic_high.noOfMSIterations = min(1, fwd_ic_high.noOfMSIterations)
+        stage1_ws_high = f"{script_name}_{procedure}_{fwd_ic_high.noOfMSIterations}"
+        stage2_ws_high = buildFinalWSName(script_name, procedure, fwd_ic_high)
+        self.assertEqual(stage1_ws_high, stage2_ws_high,
+                         "Stage 1 → Stage 2 ws name mismatch (>1 iteration case).")
+        self.assertEqual(fwd_ic_high.noOfMSIterations, 1,
+                         "IC.noOfMSIterations should be capped to 1 in test mode.")
 
     def test_bootstrap_ic_procedure_matches_routine_procedure(self) -> None:
         """Bootstrap procedure direction must match the routine procedure."""
@@ -588,18 +674,28 @@ class TestOrchestratorHandoffLogic(unittest.TestCase):
         )
 
     def test_running_test_propagated_from_userscript_to_ics(self) -> None:
-        """When UserScriptControls.runningTest is True, both ICs must mirror it."""
+        """When UserScriptControls.runningTest is True, all ICs must mirror it.
+
+        Mirrors the propagation block in ``run_script.runScript``:
+            if getattr(userCtr, "runningTest", False):
+                bckwdIC.runningTest = True
+                fwdIC.runningTest   = True
+                bootIC.runningTest  = True
+        """
         ctr = _SmokeUserScriptControls()
         fwd = _SmokeForwardInitialConditions()
         bck = _SmokeBackwardInitialConditions()
+        boot = _SmokeBootstrapInitialConditions()
 
-        # In run_script.py: if userCtr.runningTest: bckwdIC.runningTest = True ...
+        # Simulate the propagation in run_script.py
         if ctr.runningTest:
             fwd.runningTest = True
             bck.runningTest = True
+            boot.runningTest = True
 
         self.assertTrue(fwd.runningTest)
         self.assertTrue(bck.runningTest)
+        self.assertTrue(boot.runningTest)
 
 
 # =============================================================================

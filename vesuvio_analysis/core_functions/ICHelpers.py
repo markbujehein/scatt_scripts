@@ -120,10 +120,7 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
         IC.normVoigt = True
 
     # Default to not running as a fast-track smoke test
-    try:
-        r = IC.runningTest
-    except AttributeError:
-        IC.runningTest = False
+    IC.runningTest = getattr(IC, "runningTest", False)
 
     return 
 

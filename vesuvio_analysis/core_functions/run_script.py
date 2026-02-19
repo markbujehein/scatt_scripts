@@ -85,14 +85,18 @@ def runScript(
     # Set extra attributes from user attributes
     completeICFromInputs(fwdIC, scriptName, wsFrontIC)
     completeICFromInputs(bckwdIC, scriptName, wsBackIC)
-    completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
-    completeYFitIC(yFitIC, scriptName)
 
-    # Propagate the fast-track smoke-test flag to both IC objects so that
-    # analysis_functions can cap MS iterations and loosen iMinuit tolerance.
+    # Propagate the fast-track smoke-test flag to all IC objects so that
+    # analysis_functions and bootstrap logic can cap iterations, limit samples,
+    # and adjust tolerances appropriately.
+    # Must be done before completeBootIC so directory/file naming uses the correct mode.
     if getattr(userCtr, "runningTest", False):
         bckwdIC.runningTest = True
         fwdIC.runningTest = True
+        bootIC.runningTest = True
+
+    completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
+    completeYFitIC(yFitIC, scriptName)
 
     checkInputs(userCtr)
     checkInputs(bootIC)

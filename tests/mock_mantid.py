@@ -232,6 +232,13 @@ def _make_mantid_simpleapi_module() -> types.ModuleType:
     mod.SumSpectra = SumSpectra
     mod.CreateEmptyTableWorkspace = CreateEmptyTableWorkspace
 
+    # Declare explicit public names so that ``from mantid.simpleapi import *``
+    # does not trigger __getattr__ for __all__ and fail with a TypeError.
+    mod.__all__ = [
+        "LoadVesuvio", "SaveNexus", "Load", "CloneWorkspace",
+        "SumSpectra", "CreateEmptyTableWorkspace",
+    ]
+
     # Wildcard catch-all: any unrecognised name returns a no-op callable.
     def __getattr__(name: str) -> Callable[..., MockWorkspace]:
         def _noop(*args: Any, **kwargs: Any) -> MockWorkspace:
