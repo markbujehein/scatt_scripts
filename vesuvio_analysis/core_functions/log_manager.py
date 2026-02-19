@@ -35,7 +35,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -289,6 +289,91 @@ class RunLogger:
         self._lines.append(f"  max_par_rel_diff: {max_par_rel:.6f}")
         self._lines.append(f"  par_gate_passed: {par_pass}")
         self._lines.append(f"  overall_gate_passed: {gate_pass}")
+        self._lines.append("")
+
+    # ------------------------------------------------------------------
+    # Covariance Matrix
+    # ------------------------------------------------------------------
+
+    def log_covariance_matrix(
+        self, engine_name: str, cov_matrix: np.ndarray
+    ) -> None:
+        """Log the full 2-D covariance matrix for a fit engine.
+
+        The matrix is written row-by-row so that it can be reconstructed
+        by a line-by-line parser.
+
+        Args:
+            engine_name: Label for the optimizer (e.g. ``"iminuit"``,
+                ``"scipy"``).
+            cov_matrix: 2-D covariance array, shape ``(n_params, n_params)``.
+        """
+        cov_matrix = np.atleast_2d(np.asarray(cov_matrix, dtype=float))
+        self._lines.append(f"covariance_matrix_{engine_name}:")
+        for i, row in enumerate(cov_matrix):
+            items = ", ".join(f"{v:.6g}" for v in row.tolist())
+            self._lines.append(f"  row_{i}: [{items}]")
+        self._lines.append("")
+
+    # ------------------------------------------------------------------
+    # Bayesian Posterior Percentiles
+    # ------------------------------------------------------------------
+
+    def log_bayesian_percentiles(
+        self, param_names: List[str], samples: np.ndarray
+    ) -> None:
+        """Log the 5th, 50th, and 95th percentiles of posterior distributions.
+
+        Args:
+            param_names: Human-readable parameter names, length
+                ``n_params``.
+            samples: Bootstrap posterior samples, shape
+                ``(n_samples, n_params)``.  Each column corresponds to
+                one parameter.
+        """
+        samples = np.asarray(samples, dtype=float)
+        p5, p50, p95 = np.percentile(samples, [5, 50, 95], axis=0)
+        self._lines.append("bayesian_percentiles:")
+        for name, v5, v50, v95 in zip(param_names, p5, p50, p95):
+            self._lines.append(f"  {name}:")
+            self._lines.append(f"    p5:  {v5:.6g}")
+            self._lines.append(f"    p50: {v50:.6g}")
+            self._lines.append(f"    p95: {v95:.6g}")
+        self._lines.append("")
+
+    # ------------------------------------------------------------------
+    # Cluster Metadata
+    # ------------------------------------------------------------------
+
+    def log_cluster_metadata(
+        self,
+        cluster_groups: Dict[int, List[int]],
+        noise_indices: List[int],
+        noise_reason: str = "DBSCAN noise (label=-1)",
+    ) -> None:
+        """Log detector indices per cluster and noise exclusion metadata.
+
+        Args:
+            cluster_groups: Mapping ``{cluster_id: [detector_indices]}``,
+                as returned by
+                :meth:`PhysicsTrendClusterer.get_cluster_groups`.
+            noise_indices: Indices of detectors labelled as noise.
+            noise_reason: Human-readable reason for noise exclusion
+                (default: ``"DBSCAN noise (label=-1)"``).
+        """
+        self._lines.append("cluster_metadata:")
+        for cluster_id in sorted(cluster_groups):
+            indices = cluster_groups[cluster_id]
+            items = ", ".join(str(i) for i in indices)
+            self._lines.append(
+                f"  cluster_{cluster_id}: [{items}]  # n={len(indices)}"
+            )
+        if noise_indices:
+            items = ", ".join(str(i) for i in noise_indices)
+            self._lines.append(f"  noise_indices: [{items}]")
+            self._lines.append(f"  noise_reason: {noise_reason!r}")
+        else:
+            self._lines.append("  noise_indices: []")
         self._lines.append("")
 
     # ------------------------------------------------------------------

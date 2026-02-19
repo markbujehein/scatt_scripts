@@ -391,5 +391,113 @@ class TestFlagsLogging(unittest.TestCase):
         self.assertIn("runRoutine:", content)
 
 
+class TestCovarianceMatrixLogging(unittest.TestCase):
+    """Verify covariance matrix logging for fit engines."""
+
+    def _get_content(self, engine: str, matrix: np.ndarray) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = _make_logger(Path(tmp))
+            logger.log_covariance_matrix(engine, matrix)
+            return _read_log(logger)
+
+    def test_iminuit_section_present(self):
+        cov = np.eye(3)
+        content = self._get_content("iminuit", cov)
+        self.assertIn("covariance_matrix_iminuit:", content)
+
+    def test_scipy_section_present(self):
+        cov = np.eye(2)
+        content = self._get_content("scipy", cov)
+        self.assertIn("covariance_matrix_scipy:", content)
+
+    def test_matrix_rows_logged(self):
+        cov = np.array([[1.0, 0.5], [0.5, 2.0]])
+        content = self._get_content("iminuit", cov)
+        self.assertIn("row_0:", content)
+        self.assertIn("row_1:", content)
+
+    def test_diagonal_values_present(self):
+        cov = np.diag([3.14, 2.71])
+        content = self._get_content("scipy", cov)
+        self.assertIn("3.14", content)
+        self.assertIn("2.71", content)
+
+
+class TestBayesianPercentilesLogging(unittest.TestCase):
+    """Verify Bayesian posterior percentile logging."""
+
+    def _get_content(self, names, samples) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = _make_logger(Path(tmp))
+            logger.log_bayesian_percentiles(names, samples)
+            return _read_log(logger)
+
+    def test_section_present(self):
+        rng = np.random.default_rng(42)
+        samples = rng.normal(5.0, 0.3, (200, 1))
+        content = self._get_content(["width_H"], samples)
+        self.assertIn("bayesian_percentiles:", content)
+
+    def test_all_three_percentiles_present(self):
+        rng = np.random.default_rng(0)
+        samples = rng.normal(4.9, 0.2, (300, 1))
+        content = self._get_content(["width_C"], samples)
+        self.assertIn("p5:", content)
+        self.assertIn("p50:", content)
+        self.assertIn("p95:", content)
+
+    def test_param_name_logged(self):
+        rng = np.random.default_rng(1)
+        samples = rng.normal(size=(100, 2))
+        content = self._get_content(["intensity_H", "intensity_C"], samples)
+        self.assertIn("intensity_H:", content)
+        self.assertIn("intensity_C:", content)
+
+    def test_multicolumn_samples(self):
+        """Two-parameter samples should each have their percentiles logged."""
+        rng = np.random.default_rng(7)
+        samples = rng.normal(size=(500, 2))
+        content = self._get_content(["w1", "w2"], samples)
+        self.assertIn("w1:", content)
+        self.assertIn("w2:", content)
+
+
+class TestClusterMetadataLogging(unittest.TestCase):
+    """Verify cluster metadata logging for DBSCAN output."""
+
+    def _get_content(self, groups, noise, reason=None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = _make_logger(Path(tmp))
+            kwargs = {} if reason is None else {"noise_reason": reason}
+            logger.log_cluster_metadata(groups, noise, **kwargs)
+            return _read_log(logger)
+
+    def test_section_present(self):
+        content = self._get_content({0: [1, 2, 3], 1: [4, 5]}, [])
+        self.assertIn("cluster_metadata:", content)
+
+    def test_cluster_ids_logged(self):
+        content = self._get_content({0: [1, 2], 1: [3, 4]}, [])
+        self.assertIn("cluster_0:", content)
+        self.assertIn("cluster_1:", content)
+
+    def test_noise_indices_logged(self):
+        content = self._get_content({0: [1, 2]}, [10, 11])
+        self.assertIn("noise_indices:", content)
+        self.assertIn("10", content)
+        self.assertIn("11", content)
+
+    def test_empty_noise_logged(self):
+        content = self._get_content({0: [1, 2, 3]}, [])
+        self.assertIn("noise_indices: []", content)
+
+    def test_custom_noise_reason(self):
+        content = self._get_content(
+            {0: [0, 1]}, [5],
+            reason="Low signal-to-noise ratio",
+        )
+        self.assertIn("Low signal-to-noise ratio", content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
