@@ -10,6 +10,7 @@ from pathlib import Path
 from iminuit import Minuit, cost, util
 from iminuit.util import describe
 from .iminuit_costs import GlobalNCPCostFunction
+from .plot_style import set_thesis_style, figure_factory
 import jacobi
 import time
 
@@ -1094,7 +1095,8 @@ def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
     for p, v, e in zip(mObj.parameters, mObj.values, mObj.errors):
         leg += f"${p}={v:.2f} \pm {e:.2f}$\n"
 
-    fig, ax = plt.subplots(subplot_kw={"projection":"mantid"})
+    set_thesis_style()
+    fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
     ax.errorbar(wsMinuitFit, "k.", wkspIndex=0, label="Weighted Avg")
     ax.errorbar(wsMinuitFit, "r-", wkspIndex=1, label=leg)
     ax.set_xlabel("YSpace")
@@ -1104,7 +1106,7 @@ def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
 
     fileName = wsMinuitFit.name()+".pdf"
     savePath = yFitIC.figSavePath / fileName
-    plt.savefig(savePath, bbox_inches="tight")
+    plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
     return
 
