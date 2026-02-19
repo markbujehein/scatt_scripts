@@ -1038,7 +1038,7 @@ def fitNcpToSingleSpec(
     (MIGRAD + Hesse, optionally Minos) for cross-validation and
     rigorous error estimation.
 
-    **Sieve 3 — 1 % Numerical Agreement Gate:** After both fits
+    **iMinuit–Scipy 1% Numerical Agreement Check:** After both fits
     complete, the chi-squared values *and* parameter vectors are
     compared.  A warning is logged for any spectrum where the
     relative difference exceeds 1 %.
@@ -1094,7 +1094,7 @@ def fitNcpToSingleSpec(
         if runMinos:
             m.minos()
 
-        # --- Sieve 3: 1% Numerical Agreement Gate ---
+        # --- iMinuit–Scipy 1% Numerical Agreement Check ---
         _AGREEMENT_THRESHOLD = 0.01  # 1 %
         scipy_chi2 = result["fun"]
         iminuit_chi2 = m.fval
@@ -1104,7 +1104,7 @@ def fitNcpToSingleSpec(
             chi2_rel_diff = abs(scipy_chi2 - iminuit_chi2) / scipy_chi2
             if chi2_rel_diff > _AGREEMENT_THRESHOLD:
                 logger.warning(
-                    "Sieve3 Spec %.0f: χ² disagreement — scipy=%.4f "
+                    "OptimizerCheck Spec %.0f: χ² disagreement — scipy=%.4f "
                     "vs iMinuit=%.4f (%.1f%%)",
                     instrPars[0], scipy_chi2, iminuit_chi2,
                     chi2_rel_diff * 100,
@@ -1123,7 +1123,7 @@ def fitNcpToSingleSpec(
         if max_par_diff > _AGREEMENT_THRESHOLD:
             worst_idx = int(np.argmax(par_rel_diff))
             logger.warning(
-                "Sieve3 Spec %.0f: parameter disagreement — "
+                "OptimizerCheck Spec %.0f: parameter disagreement — "
                 "par[%d] scipy=%.4g vs iMinuit=%.4g (%.1f%%)",
                 instrPars[0], worst_idx,
                 scipy_pars[worst_idx], iminuit_pars[worst_idx],

@@ -11,7 +11,6 @@ version = "0.1.0"
 description = "Data Analysis scripts for the VESUVIO@ISIS instrument (Rutherford Appleton Laboratory, UK), extending functionalities of the Mantid Project. Based on Fortran code by Matthew Krzystyniak, Python port and further development by Gui Maciel Pereira."
 readme = "README.md"
 requires-python = ">=3.10"
-#requires-python = "~=3.10" option to contrain versioning further
 #license = {text = "MIT"} # the original repo has no license. Required for publication.
 
 # @GuiMacielPereira is the author of this Python package
@@ -35,20 +34,66 @@ dependencies = [
     "numba",
     "scikit-learn",
     "pydantic>=2.0",
+]
 
+[project.optional-dependencies]
+# Install test dependencies with:  pip install -e ".[test]"
+test = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+# Install all dev dependencies with:  pip install -e ".[dev]"
+dev = [
+    "vesuvio_analysis[test]",
+    "hatch",
+    "ruff",
 ]
 
 [project.urls]
 "Original Repository" = "https://github.com/GuiMacielPereira/scatt_scripts/"
 
+# ---------------------------------------------------------------------------
+# Hatch build configuration
+# ---------------------------------------------------------------------------
+
 [tool.hatch]
 version.source = "vcs"
-#build.hooks.vcs.version-file = "src/qchem_plotter/_version.py"
 
-#[tool.setuptools.packages.find]
-#where = ["."]
-#include = ["vesuvio_analysis*"]
+[tool.hatch.build.targets.wheel]
+packages = ["vesuvio_analysis"]
 
-# Editable installs
+# Default environment — used when running `hatch run`
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "pytest --cov=vesuvio_analysis --cov-report=term-missing {args:tests}"
+
+# Dedicated test environment — used by CI via `hatch run test:pytest`
+[tool.hatch.envs.test]
+dependencies = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[[tool.hatch.envs.test.matrix]]
+python = ["3.10", "3.11", "3.12"]
+
+# ---------------------------------------------------------------------------
+# Pytest configuration
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+# ---------------------------------------------------------------------------
+# Editable installs (pixi compatibility)
+# ---------------------------------------------------------------------------
+
 [tool.pixi.pypi-dependencies]
 pixi_py = { path = "./vesuvio_analysis/", editable = true }

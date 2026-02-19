@@ -10,8 +10,8 @@ Each test verifies a distinct aspect of the RunLogger class:
 1. A log file is created in the requested output directory.
 2. All seven InitialConditions class headers appear in the log.
 3. The environment block records Python, NumPy, and a Mantid entry.
-4. The Sieve-3 agreement gate is correctly recorded, including the
-   ``overall_gate_passed`` status.
+4. The iMinuit–Scipy numerical agreement check is correctly recorded,
+   including the ``overall_gate_passed`` status.
 5. Final fit results (mean_widths / mean_intensities) are serialized.
 6. GoF metrics (chi2, reduced_chi2, ndata) are captured.
 7. Named timestamps (ncp_start, ncp_end, yspace_start, yspace_end) are
@@ -245,7 +245,7 @@ class TestEnvironmentBlock(unittest.TestCase):
 
 
 class TestAgreementGate(unittest.TestCase):
-    """Verify Sieve-3 agreement gate recording."""
+    """Verify iMinuit–Scipy numerical agreement check recording."""
 
     def _run(self, scipy_chi2, iminuit_chi2, scipy_pars, iminuit_pars):
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,7 +258,7 @@ class TestAgreementGate(unittest.TestCase):
 
     def test_gate_section_present(self):
         content = self._run(1.0, 1.0, [1.0, 2.0], [1.0, 2.0])
-        self.assertIn("sieve3_agreement_gate:", content)
+        self.assertIn("optimizer_agreement_check:", content)
 
     def test_overall_gate_passed_when_within_threshold(self):
         content = self._run(1.0, 1.005, [1.0, 2.0], [1.005, 2.01])
