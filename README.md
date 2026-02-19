@@ -159,7 +159,8 @@ vesuvio_analysis/
 │   ├── iminuit_costs.py        # NCPCostFunction (_parameters dict interface)
 │   ├── fit_in_yspace.py        # J(y)-space fitting (multiple model backends)
 │   ├── statistical_plugins.py  # Phase 6: outlier detection, clustering, bootstrap
-│   ├── procedures.py           # High-level orchestration (requires Mantid)
+│   ├── run_script.py           # Top-level pipeline entry (runScript) used by submission scripts
+│   ├── procedures.py           # Shared orchestration utilities used by run_script.py (requires Mantid)
 │   ├── log_manager.py          # Structured YAML run logging
 │   └── ic_validation.py        # Pydantic v2 InitialConditions validation
 ├── ip_files/                   # Instrument parameter files for LoadVesuvio
