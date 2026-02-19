@@ -34,8 +34,7 @@ dependencies = [
     "jacobi",
     "numba",
     "scikit-learn",
-    "pydantic>=2.0",
-
+    "pydantic>=2.0"
 ]
 
 [project.urls]
