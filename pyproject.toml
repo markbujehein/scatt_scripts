@@ -11,7 +11,6 @@ version = "0.1.0"
 description = "Data Analysis scripts for the VESUVIO@ISIS instrument (Rutherford Appleton Laboratory, UK), extending functionalities of the Mantid Project. Based on Fortran code by Matthew Krzystyniak, Python port and further development by Gui Maciel Pereira."
 readme = "README.md"
 requires-python = ">=3.10"
-#requires-python = "~=3.10" option to contrain versioning further
 #license = {text = "MIT"} # the original repo has no license. Required for publication.
 
 # @GuiMacielPereira is the author of this Python package
@@ -96,6 +95,5 @@ addopts = "-v --tb=short"
 # Editable installs (pixi compatibility)
 # ---------------------------------------------------------------------------
 
-# Editable installs
 [tool.pixi.pypi-dependencies]
 pixi_py = { path = "./vesuvio_analysis/", editable = true }

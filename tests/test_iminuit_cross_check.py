@@ -10,7 +10,7 @@ Each test uses deterministic dummy data to verify:
 2. MIGRAD + Hesse reaches the same minimum as ``scipy.optimize.minimize``
    within a tight tolerance.
 3. Minos errors are computed without raising exceptions.
-4. **iMinuit–Scipy Numerical Agreement Check** logs a warning when the
+4. **1% iMinuit–Scipy Numerical Agreement Check** logs a warning when the
    two optimizers disagree on chi-squared or parameters by more than 1%.
 """
 
@@ -414,10 +414,10 @@ class TestHesseAndMinos(unittest.TestCase):
 class TestOptimizerAgreementCheck(unittest.TestCase):
     """Verify the 1% iMinuit–Scipy Numerical Agreement Check.
 
-    The gate compares chi-squared values and parameter vectors from
+    The check compares chi-squared values and parameter vectors from
     both optimizers and logs a warning when the relative difference
     exceeds the ``_AGREEMENT_THRESHOLD`` (1 %).  These tests exercise
-    the gate logic on well-conditioned problems to confirm:
+    the check logic on well-conditioned problems to confirm:
 
     1. When solvers agree (simple quadratic), no warning is emitted.
     2. The 1 % threshold is correctly applied to both chi² and pars.

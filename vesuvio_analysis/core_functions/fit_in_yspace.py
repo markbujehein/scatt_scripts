@@ -93,10 +93,12 @@ def extractNCPFromWorkspaces(wsFinal: Any, ic: Any) -> np.ndarray:
         ``(n_spectra, n_masses, n_bins)``.
     """
 
-    ncpForEachMass = mtd[wsFinal.name()+"_TOF_Fitted_Profile_0"].extractY()[np.newaxis, :, :]
+    ws0_y = mtd[wsFinal.name() + "_TOF_Fitted_Profile_0"].extractY()
+    n_spectra, n_bins = ws0_y.shape
+    ncpForEachMass = np.empty((ic.noOfMasses, n_spectra, n_bins))
+    ncpForEachMass[0] = ws0_y
     for i in range(1, ic.noOfMasses):
-        ncpToAppend = mtd[wsFinal.name()+"_TOF_Fitted_Profile_" + str(i)].extractY()[np.newaxis, :, :]
-        ncpForEachMass = np.append(ncpForEachMass, ncpToAppend, axis=0)    
+        ncpForEachMass[i] = mtd[wsFinal.name() + "_TOF_Fitted_Profile_" + str(i)].extractY()
 
     # Ensure shape of ncp matches data
     shape = ncpForEachMass.shape
