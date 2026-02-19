@@ -9,7 +9,7 @@ from scipy import optimize
 
 from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP
 from .iminuit_costs import NCPCostFunction
-from .plot_style import set_thesis_style, figure_factory, set_print_options
+from .plot_style import set_thesis_style, figure_factory, set_print_options, COLORBLIND_PALETTE
 
 logger = logging.getLogger(__name__)
 
@@ -872,7 +872,7 @@ def plotIndividualNCPFits(
     for mass_idx, (m, wsNcp) in enumerate(zip(IC.masses, wsMNCPSum)):
         fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
         ax.errorbar(wsDataSum, "k.", label="Spectra")
-        ax.plot(wsNcp, color=plt.rcParams["axes.prop_cycle"].by_key()["color"][mass_idx % 8],
+        ax.plot(wsNcp, color=COLORBLIND_PALETTE[mass_idx % len(COLORBLIND_PALETTE)],
                 label=f"NCP m={m:.4g}")
         ax.set_xlabel("TOF")
         ax.set_ylabel("Counts")
