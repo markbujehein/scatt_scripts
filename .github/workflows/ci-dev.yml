@@ -1,0 +1,100 @@
+# Development Gate CI — fast feedback for PRs targeting the 'dev' branch.
+#
+# Stages
+# ──────
+# 1. Provision environment (pip + cache for speed)
+# 2. Run Numba regression tests     (test_numba_regression.py)
+# 3. Run iMinuit–Scipy agreement tests (test_iminuit_cross_check.py)
+#    — includes the 1 % iMinuit–Scipy Numerical Agreement Check (optimizer_agreement_check)
+# 4. Run workspace safety tests     (test_workspace_safety.py)
+#
+# Auto-Gating: the workflow fails if any test reports values outside the
+# tolerance defined in the test files (currently 1 % / 5 % depending on
+# the check), enforcing the 'Numerical Truth' thresholds from
+# ARCHITECTURE_AUDIT.md before a PR can be merged to dev.
+#
+# Total target execution time: < 3 minutes with a warm cache.
+
+name: CI — Development Gate
+
+on:
+  pull_request:
+    branches:
+      - dev
+
+jobs:
+  dev-gate:
+    name: Dev Gate (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Set up Python
+      # -----------------------------------------------------------------------
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # -----------------------------------------------------------------------
+      # 3. Restore / populate pip cache
+      #    Key includes the OS, Python version, and a hash of pyproject.toml
+      #    so the cache is invalidated when dependencies change.
+      # -----------------------------------------------------------------------
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      # -----------------------------------------------------------------------
+      # 4. Install dependencies
+      #    Installs the package with its [test] optional-dependency group
+      #    (pytest, pytest-cov) declared in pyproject.toml — single source
+      #    of truth for all dependencies.
+      # -----------------------------------------------------------------------
+      - name: Install package and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      # -----------------------------------------------------------------------
+      # 5. Numba regression gate
+      #    Asserts NumPy vs Numba-accelerated paths agree to atol=1e-8 for
+      #    all resolution kernels and the full NCP orchestrator.
+      # -----------------------------------------------------------------------
+      - name: Numba regression tests
+        run: |
+          python -m pytest tests/test_numba_regression.py -v --tb=short
+
+      # -----------------------------------------------------------------------
+      # 6. iMinuit–Scipy Numerical Agreement Check  (optimizer_agreement_check)
+      #    Fails if iMinuit and scipy optimisers disagree by more than the
+      #    tolerance defined in TestOptimizerAgreementCheck (1 %).
+      # -----------------------------------------------------------------------
+      - name: iMinuit cross-check tests (1 % optimizer agreement check)
+        run: |
+          python -m pytest tests/test_iminuit_cross_check.py -v --tb=short
+
+      # -----------------------------------------------------------------------
+      # 7. Workspace safety tests (no Mantid required — mock ADS used)
+      # -----------------------------------------------------------------------
+      - name: Workspace safety tests
+        run: |
+          python -m pytest tests/test_workspace_safety.py -v --tb=short

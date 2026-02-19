@@ -10,7 +10,7 @@ Each test uses deterministic dummy data to verify:
 2. MIGRAD + Hesse reaches the same minimum as ``scipy.optimize.minimize``
    within a tight tolerance.
 3. Minos errors are computed without raising exceptions.
-4. **Sieve 3 — 1% Numerical Agreement Gate** logs a warning when the
+4. **iMinuit–Scipy Numerical Agreement Check** logs a warning when the
    two optimizers disagree on chi-squared or parameters by more than 1%.
 """
 
@@ -411,8 +411,8 @@ class TestHesseAndMinos(unittest.TestCase):
             self.skipTest("MIGRAD did not converge; Minos skipped.")
 
 
-class TestSieve3AgreementGate(unittest.TestCase):
-    """Verify the 1% Numerical Agreement Gate (Sieve 3).
+class TestOptimizerAgreementCheck(unittest.TestCase):
+    """Verify the 1% iMinuit–Scipy Numerical Agreement Check.
 
     The gate compares chi-squared values and parameter vectors from
     both optimizers and logs a warning when the relative difference
