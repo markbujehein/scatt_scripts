@@ -34,7 +34,13 @@ dependencies = [
     "jacobi",
     "numba",
     "scikit-learn",
-    "pydantic>=2.0"
+    "pydantic==2.12.5"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-cov",
 ]
 
 [project.urls]
