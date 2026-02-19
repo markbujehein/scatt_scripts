@@ -117,13 +117,28 @@ Four fully annotated example scripts are provided:
    sample's run numbers, masses, and fit bounds.
 
 3. Execute the script.  On first run, `LoadVesuvio` (Mantid) fetches the raw
-   data from the ISIS archive and caches it as Nexus files under
-   `experiments/<sample>/input_ws/`.  Subsequent runs load from the cache.
-   If `LoadVesuvio` is unavailable, copy `.nxs` files manually into that
-   directory using the naming convention of the example samples.
+   data from the ISIS archive and caches it as Nexus files under a
+   **versioned subdirectory** of `experiments/<sample>/input_ws/`, for example:
 
-4. All subsequent data reduction reads from the local Nexus cache.
+       experiments/<sample>/input_ws/backward_1.0/
+       experiments/<sample>/input_ws/forward_1.0/
 
+   Alongside the `.nxs` files, a matching JSON parameter log is written
+   (e.g. `backward_1.0.json`) and is used by `ICHelpers.inputDirsForSample()`
+   to re-use an existing cache.  Subsequent runs load from this versioned
+   cache instead of calling `LoadVesuvio` again.
+
+   If `LoadVesuvio` is unavailable on your system, **do not** copy files only
+   into `experiments/<sample>/input_ws/`.  Instead, create the appropriate
+   versioned directory (e.g. `experiments/<sample>/input_ws/backward_1.0/`)
+   and place the `.nxs` files there, following the naming convention of the
+   example samples, and ensure that a corresponding JSON file
+   (e.g. `backward_1.0.json`) exists in `experiments/<sample>/input_ws/`
+   describing the same parameters.  This layout matches what the helper
+   functions expect and prevents unnecessary attempts to call `LoadVesuvio`.
+
+4. All subsequent data reduction reads from the local Nexus cache in
+   `experiments/<sample>/input_ws/<version_tag>/`.
 5. Bootstrap resampling results are stored under
    `experiments/<sample>/bootstrap_data/` (residual / Gaussian-error
    resampling) or `experiments/<sample>/jackknife_data/` (jackknife).
