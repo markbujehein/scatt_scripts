@@ -119,6 +119,12 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
     except AttributeError:
         IC.normVoigt = True
 
+    # Default to not running as a fast-track smoke test
+    try:
+        r = IC.runningTest
+    except AttributeError:
+        IC.runningTest = False
+
     return 
 
 

@@ -88,6 +88,12 @@ def runScript(
     completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
     completeYFitIC(yFitIC, scriptName)
 
+    # Propagate the fast-track smoke-test flag to both IC objects so that
+    # analysis_functions can cap MS iterations and loosen iMinuit tolerance.
+    if getattr(userCtr, "runningTest", False):
+        bckwdIC.runningTest = True
+        fwdIC.runningTest = True
+
     checkInputs(userCtr)
     checkInputs(bootIC)
     assert not (userCtr.runRoutine & bootIC.runBootstrap), (
@@ -182,7 +188,9 @@ def runScript(
             logger.write()
             return None, resYFit  # To match return below.
 
-        checkUserClearWS()  # Check if user is OK with cleaning all workspaces
+        # Skip interactive workspace-clear prompt when running a smoke test
+        if not getattr(userCtr, "runningTest", False):
+            checkUserClearWS()  # Check if user is OK with cleaning all workspaces
 
         res = None
         resYFit = None

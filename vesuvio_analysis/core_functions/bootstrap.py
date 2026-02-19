@@ -222,7 +222,8 @@ def runOriginalBeforeBootstrap(bckwdIC, fwdIC, bootIC, yFitIC):
 def chooseNSamples(bootIC, parentWSnNCPs: dict):
     """
     Returns number of samples to run.
-    If Jackknife is running, no of samples is the number of bins in the workspace."""
+    If Jackknife is running, no of samples is the number of bins in the workspace.
+    When runningTest is True, samples are capped at 3 for fast execution."""
 
     nSamples = bootIC.nSamples
     if bootIC.bootstrapType=="JACKKNIFE":
@@ -231,6 +232,8 @@ def chooseNSamples(bootIC, parentWSnNCPs: dict):
         elif bootIC.procedure=="BACKWARD": key = "bckwdNCP"
 
         nSamples = parentWSnNCPs[key].blocksize()   # Number of cols from ncp workspace, accounts for missing last col or not
+    if getattr(bootIC, "runningTest", False):
+        nSamples = min(nSamples, 3)
     return nSamples
 
 

@@ -66,7 +66,14 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
     cropedWs = cropAndMaskWorkspace(ic, initialWs)
     wsToBeFitted = CloneWorkspace(InputWorkspace=cropedWs, OutputWorkspace=cropedWs.name()+"0")
 
-    for iteration in range(ic.noOfMSIterations + 1):
+    # When running a smoke test, cap MS/GC iterations at 1 for speed.
+    _n_iter = (
+        min(1, ic.noOfMSIterations)
+        if getattr(ic, "runningTest", False)
+        else ic.noOfMSIterations
+    )
+
+    for iteration in range(_n_iter + 1):
         # Workspace from previous iteration
         wsToBeFitted = mtd[ic.name+str(iteration)]
 
@@ -76,7 +83,7 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
         createMeansAndStdTableWS(wsToBeFitted.name(), ic, mWidths, stdWidths, mIntRatios, stdIntRatios)
    
         # When last iteration, skip MS and GC
-        if iteration == ic.noOfMSIterations: break 
+        if iteration == _n_iter: break 
 
         # Replace zero columns (bins) with ncp total fit
         # If ws has no zero column, then remains unchanged.
@@ -96,7 +103,7 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
         remaskValues(ic.name, "tmpNameWS")    # Masks cols in the same place as in ic.name
         RenameWorkspace(InputWorkspace="tmpNameWs", OutputWorkspace=ic.name+str(iteration+1))
     
-    wsFinal = mtd[ic.name+str(ic.noOfMSIterations)]
+    wsFinal = mtd[ic.name+str(_n_iter)]
     fittingResults = resultsObject(ic)
     fittingResults.save()
     return wsFinal, fittingResults
@@ -1087,6 +1094,8 @@ def fitNcpToSingleSpec(
             resolutionPars, instrPars, kinematicArrays, ic,
         )
         m = Minuit(cost, *ic.initPars)
+        if getattr(ic, "runningTest", False):
+            m.tol = 1.0  # Loose EDM tolerance for fast smoke-test convergence
         m.migrad()
         m.hesse()
 
