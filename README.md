@@ -48,24 +48,21 @@ $$y = \frac{M}{\hbar q}\left(E_0 - E_1 - E_\mathrm{recoil}\right)$$
 
 ## Installation
 
-### Option 1 — Pixi (recommended)
-
-[Pixi](https://prefix.dev/) manages the Conda environment and editable Python install
-in a single step:
+### Option 1 — pip (recommended)
 
 ```bash
 # Clone the repository
 git clone https://github.com/markbujehein/scatt_scripts.git
 cd scatt_scripts
 
-# Install all dependencies (reads pyproject.toml + pixi.toml)
-pixi install
+# Install the package and test dependencies in editable mode
+pip install -e ".[test]"
 
 # Run the test suite (no Mantid required)
-pixi run pytest
+python -m pytest tests/ -v
 ```
 
-### Option 2 — Conda + pip
+### Option 2 — Conda + pip (full Mantid environment)
 
 ```bash
 conda create -n vesuvio python=3.11
@@ -74,19 +71,16 @@ conda activate vesuvio
 # Install Mantid (required for full data reduction; skip for test-only installs)
 conda install -c mantid mantid
 
-# Install the package and its dependencies in editable mode
+# Install the package and all development dependencies in editable mode
 pip install -e ".[dev]"
 
 # Run the test suite
 python -m pytest tests/ -v
 ```
 
-### Option 3 — pip only (CI / test-only)
-
-```bash
-pip install -e ".[test]"
-python -m pytest tests/ -v
-```
+> **Pixi users:** If you manage a local Mantid workspace with
+> [Pixi](https://prefix.dev/), the `[tool.pixi.*]` section in `pyproject.toml`
+> provides the necessary configuration.  No separate `pixi.toml` is required.
 
 Core runtime dependencies (`numpy`, `scipy`, `iminuit`, `numba`, `scikit-learn`,
 `pydantic>=2.0`, `jacobi`, `matplotlib`, `pyyaml`) are declared in `pyproject.toml`
@@ -117,28 +111,28 @@ Four fully annotated example scripts are provided:
    sample's run numbers, masses, and fit bounds.
 
 3. Execute the script.  On first run, `LoadVesuvio` (Mantid) fetches the raw
-   data from the ISIS archive and caches it as Nexus files under a
+   data from the ISIS archive and caches it as Nexus files inside a
    **versioned subdirectory** of `experiments/<sample>/input_ws/`, for example:
 
        experiments/<sample>/input_ws/backward_1.0/
+           <sample>_raw_backward.nxs
+           <sample>_empty_backward.nxs
+           <sample>_backward.json   ← parameter log used to detect the cache
+
        experiments/<sample>/input_ws/forward_1.0/
+           <sample>_raw_forward.nxs
+           <sample>_empty_forward.nxs
+           <sample>_forward.json
 
-   Alongside the `.nxs` files, a matching JSON parameter log is written
-   (e.g. `backward_1.0.json`) and is used by `ICHelpers.inputDirsForSample()`
-   to re-use an existing cache.  Subsequent runs load from this versioned
-   cache instead of calling `LoadVesuvio` again.
+   `ICHelpers.inputDirsForSample()` searches these directories recursively for a
+   matching JSON log.  If a match is found the cached `.nxs` files are loaded
+   directly; otherwise `LoadVesuvio` is called and a new versioned directory is
+   created.  If `LoadVesuvio` is unavailable, create the versioned subdirectory
+   manually, copy the `.nxs` files in, and place a matching JSON file (same
+   format as the example samples) alongside them so that the cache detection
+   logic can locate them.
 
-   If `LoadVesuvio` is unavailable on your system, **do not** copy files only
-   into `experiments/<sample>/input_ws/`.  Instead, create the appropriate
-   versioned directory (e.g. `experiments/<sample>/input_ws/backward_1.0/`)
-   and place the `.nxs` files there, following the naming convention of the
-   example samples, and ensure that a corresponding JSON file
-   (e.g. `backward_1.0.json`) exists in `experiments/<sample>/input_ws/`
-   describing the same parameters.  This layout matches what the helper
-   functions expect and prevents unnecessary attempts to call `LoadVesuvio`.
-
-4. All subsequent data reduction reads from the local Nexus cache in
-   `experiments/<sample>/input_ws/<version_tag>/`.
+4. All subsequent data reduction reads from the matching versioned cache directory.
 5. Bootstrap resampling results are stored under
    `experiments/<sample>/bootstrap_data/` (residual / Gaussian-error
    resampling) or `experiments/<sample>/jackknife_data/` (jackknife).
@@ -154,19 +148,19 @@ Four fully annotated example scripts are provided:
 ```
 vesuvio_analysis/
 ├── core_functions/
+│   ├── run_script.py           # Top-level pipeline entry point (runScript) used by submission scripts
 │   ├── analysis_functions.py   # NCP fitting: scipy SLSQP + iMinuit MIGRAD
 │   ├── numba_routines.py       # @njit-accelerated resolution kernels
 │   ├── iminuit_costs.py        # NCPCostFunction (_parameters dict interface)
 │   ├── fit_in_yspace.py        # J(y)-space fitting (multiple model backends)
 │   ├── statistical_plugins.py  # Phase 6: outlier detection, clustering, bootstrap
-│   ├── run_script.py           # Top-level pipeline entry (runScript) used by submission scripts
 │   ├── procedures.py           # Shared orchestration utilities used by run_script.py (requires Mantid)
 │   ├── log_manager.py          # Structured YAML run logging
 │   └── ic_validation.py        # Pydantic v2 InitialConditions validation
 ├── ip_files/                   # Instrument parameter files for LoadVesuvio
 └── mcp_server/                 # MCP servers for log inspection and ADS state
 tests/                          # unittest-based test suite (zero Mantid dependency)
-experiments/                    # Per-sample data and results (git-ignored)
+experiments/                    # Per-sample data and results (generated at runtime; see .gitignore)
 ```
 
 ---
