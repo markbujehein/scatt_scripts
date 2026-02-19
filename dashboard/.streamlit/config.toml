@@ -1,0 +1,23 @@
+# VESUVIO Nanoscience Explorer — Streamlit server configuration
+#
+# This file enforces local-first, air-gapped execution:
+#   - Binds the server to 127.0.0.1 (loopback only) so no external network
+#     exposure occurs.
+#   - Disables the automatic external-IP lookup that causes outbound HTTP
+#     requests to checkip.amazonaws.com.
+#   - Disables usage-statistics reporting (telemetry) to Snowflake/Streamlit.
+#
+# Run the dashboard with:
+#   streamlit run dashboard/result_viewer.py
+
+[browser]
+# Disable Streamlit telemetry and usage reporting.
+gatherUsageStats = false
+
+[server]
+# Bind exclusively to the loopback interface (prevents any external access
+# and silences the checkip.amazonaws.com IP-detection request).
+address = "127.0.0.1"
+# Headless mode: suppresses the automatic browser-open attempt and disables
+# the external IP lookup that triggers AWS network requests.
+headless = true

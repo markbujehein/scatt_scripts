@@ -12,3 +12,6 @@ experiments/
 
 # pixi environment (created by `pixi install` at workspace setup time)
 .pixi/
+
+# VESUVIO analysis output artefacts (large binary data files)
+outputs/*.npz
