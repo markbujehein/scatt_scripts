@@ -137,7 +137,7 @@ See the full file for the complete rule set.
 
 ### Tier 2 — Tools (MCP Servers)
 
-Two MCP servers are provided in `vesuvio_analysis/mcp_server/`:
+Three MCP servers are provided in `vesuvio_analysis/mcp_server/`:
 
 #### `mantid_ads_server.py` — Mantid ADS State
 
@@ -160,6 +160,32 @@ Tools exposed:
 | `git_commit` | — | `{commit, branch}` | Trace failing run to exact code revision |
 | `check_version_compatibility` | — | `{compatible, issues}` | Self-correcting agent: detect iMinuit v1, Pydantic v1, NumPy 2 + old Numba |
 
+#### `log_inspector_server.py` — Run Log Inspector (PR Review Grounding)
+
+Exposes the YAML-formatted run logs written by `RunLogger` as MCP tools.
+Enables review agents to ground code reviews in **real execution data**.
+
+Tools exposed:
+
+| Tool | Input | Output | Use case |
+|---|---|---|---|
+| `log_list` | `root?: str` | `{count, log_files}` | Discover available run logs |
+| `log_read_latest` | `root?: str` | `{content, path}` | Read the most recent run's full log |
+| `log_read` | `path: str` | `{content, size_bytes}` | Read a specific log file |
+| `log_grep` | `pattern: str, root?: str` | `{matches}` | Search for `np.trapz`, `Sieve`, or `overall_gate_passed` in all logs |
+| `log_check_agreement` | `root?: str` | `{overall_gate_passed, chi2_gate_passed, par_gate_passed, threshold}` | Extract the `optimizer_agreement_check` block — primary review-grounding tool |
+
+**Usage in a review session:**
+```bash
+# Check if the last run passed the optimizer agreement gate
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"log_check_agreement","arguments":{}}}' \
+  | python -m vesuvio_analysis.mcp_server.log_inspector_server
+
+# Search for deprecated np.trapz in all run logs
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"log_grep","arguments":{"pattern":"np\\.trapz"}}}' \
+  | python -m vesuvio_analysis.mcp_server.log_inspector_server
+```
+
 **Claude Desktop configuration** (add to `~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
@@ -171,6 +197,10 @@ Tools exposed:
     "vesuvio-env": {
       "command": "python",
       "args": ["-m", "vesuvio_analysis.mcp_server.environment_server"]
+    },
+    "vesuvio-logs": {
+      "command": "python",
+      "args": ["-m", "vesuvio_analysis.mcp_server.log_inspector_server"]
     }
   }
 }

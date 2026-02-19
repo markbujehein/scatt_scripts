@@ -16,4 +16,11 @@ environment_server
     versions, platform) as an MCP resource, enabling self-correcting
     agents to diagnose ``AttributeError`` / ``RuntimeError`` failures
     caused by version mismatches.
+
+log_inspector_server
+    Exposes VESUVIO run log files (written by ``RunLogger``) as MCP tools.
+    Enables review agents to ground their code reviews in real execution
+    data by querying ``optimizer_agreement_check`` outcomes, searching for
+    deprecated-API usage (``np.trapz``), and reading the full log of the
+    most recent analysis run.
 """
