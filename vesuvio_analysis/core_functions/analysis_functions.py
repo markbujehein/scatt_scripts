@@ -64,7 +64,12 @@ def iterativeFitForDataReduction(ic: Any) -> Tuple[Any, "resultsObject"]:
     # This mirrors the runningTest fast-track flag described in PR #35 and
     # allows high-frequency code validation without a full production run.
     if os.environ.get("VESUVIO_RUNNING_TEST", "0") == "1":
+        prev_iterations = getattr(ic, "noOfMSIterations", None)
         ic.noOfMSIterations = 0
+        logger.info(
+            "VESUVIO_RUNNING_TEST=1: overriding ic.noOfMSIterations from %s to 0",
+            prev_iterations,
+        )
 
     initialWs = loadRawAndEmptyWsFromUserPath(ic)  # Do this before alternative bootstrap to extract name()   
 

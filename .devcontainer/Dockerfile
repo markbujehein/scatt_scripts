@@ -4,8 +4,9 @@
 #
 # Base image
 # ----------
-# Official Mantid development image from the GitHub Container Registry:
-#   ghcr.io/mantidproject/mantid-development-alma9:latest
+# Official Mantid development image from the GitHub Container Registry,
+# pinned to an immutable digest for reproducibility and supply-chain safety:
+#   ghcr.io/mantidproject/mantid-development-alma9@sha256:60268b2fa11213a3dc6517b2927afb07afdda6926047f581f82a54155491f6a9
 #
 # This AlmaLinux 9 image ships with the full Mantid C++ build environment
 # (compiler toolchain, system libraries, LaTeX) and is maintained by the
@@ -23,6 +24,9 @@
 #   • Already declared as the project's package manager in pyproject.toml
 #     via [tool.pixi.*] sections.
 #
+# The pixi binary is pinned to a specific release and its SHA-256 checksum
+# is verified at build time to prevent supply-chain attacks.
+#
 # Prebuild caching
 # ----------------
 # The pixi binary is baked into this Docker image layer.  On first Codespace
@@ -37,7 +41,7 @@
 # devcontainer.json is set to match.
 # =============================================================================
 
-FROM ghcr.io/mantidproject/mantid-development-alma9:latest
+FROM ghcr.io/mantidproject/mantid-development-alma9@sha256:60268b2fa11213a3dc6517b2927afb07afdda6926047f581f82a54155491f6a9
 
 # VS Code devcontainer overrides the ENTRYPOINT/CMD with its own keep-alive
 # process, so the Mantid image's custom entrypoint.sh is not invoked.
@@ -46,11 +50,22 @@ CMD ["/bin/bash"]
 
 # ---------------------------------------------------------------------------
 # 1. Install pixi — single binary, replaces Miniforge + mamba entirely.
+#    Pinned to v0.39.0 and verified against its published SHA-256 checksum
+#    to prevent supply-chain attacks from a compromised install script.
 #    PIXI_HOME=/usr/local places the binary at /usr/local/bin/pixi so it is
 #    on PATH for all users (including 'abc').
 # ---------------------------------------------------------------------------
-RUN curl -fsSL https://pixi.sh/install.sh | PIXI_HOME=/usr/local bash \
-    && chmod a+x /usr/local/bin/pixi
+ARG PIXI_VERSION=0.39.0
+# SHA-256 of pixi-x86_64-unknown-linux-musl.tar.gz for v0.39.0
+ARG PIXI_SHA256=68a87f0a48e24a43c9c5e4b9db6ee57428effd5b753bc91b43e52a58b4d8f636
+RUN set -eux; \
+    curl -fsSL \
+      "https://github.com/prefix-dev/pixi/releases/download/v${PIXI_VERSION}/pixi-x86_64-unknown-linux-musl.tar.gz" \
+      -o /tmp/pixi.tar.gz; \
+    echo "${PIXI_SHA256}  /tmp/pixi.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/pixi.tar.gz -C /usr/local/bin pixi; \
+    chmod a+x /usr/local/bin/pixi; \
+    rm -f /tmp/pixi.tar.gz
 
 # ---------------------------------------------------------------------------
 # 2. Matplotlib headless backend — set system-wide so every script inherits it
@@ -71,10 +86,11 @@ ENV OPENBLAS_NUM_THREADS=4
 
 # ---------------------------------------------------------------------------
 # 4. VESUVIO_RUNNING_TEST fast-track flag
-#    Caps noOfMSIterations to 0 and limits nSamples ≤ 3 for high-frequency
-#    code validation.  Set to "0" or unset for production.
+#    Default to "0" in the image so production-like runs in the same container
+#    are unaffected.  The Codespace sets it to "1" via devcontainer.json
+#    containerEnv, keeping fast-track mode scoped to the Codespace only.
 # ---------------------------------------------------------------------------
-ENV VESUVIO_RUNNING_TEST=1
+ENV VESUVIO_RUNNING_TEST=0
 
 WORKDIR /workspaces/scatt_scripts
 
