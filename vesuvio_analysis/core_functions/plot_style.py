@@ -9,7 +9,9 @@ Covers two complementary concerns:
 
 2. **Numerical print options** — a single call that configures
    ``numpy.set_printoptions`` (which also governs how Numba array results are
-   displayed) for reproducible, human-readable diagnostic output.
+   displayed) for reproducible, human-readable diagnostic output.  These
+   helpers are consumed by both ``analysis_functions`` and ``fit_in_yspace``
+   plotting routines.
 
 Typical usage::
 
