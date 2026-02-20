@@ -283,6 +283,8 @@ The contributor should:
 
 ## 8. MCP-Grounded Reviews
 
+### 8.1 Analysis Pipeline MCP Tools
+
 When the MCP servers in `vesuvio_analysis/mcp_server/` are running, the
 review agent should call the following tools **before** running the static
 checklist:
@@ -304,6 +306,38 @@ If step 4 returns `overall_gate_passed: False`, all agreement-check items
 > Run `python -m vesuvio_analysis.mcp_server.environment_server` to enable
 > MCP-grounded reviews.
 ```
+
+### 8.2 Zotero Literature Grounding (Local MCP)
+
+A `zotero-mcp` server is declared in `.github/mcp-servers.json`.  It
+bridges Copilot to the researcher's local Zotero desktop library via
+`localhost:23119` (`ZOTERO_LOCAL=true`).  No API key or internet access
+is required or permitted.
+
+**Prerequisite:** Enable *"Allow other applications on this computer to
+communicate with Zotero"* in **Zotero → Edit → Preferences → Advanced →
+Allow other applications…** before starting the agent.
+
+**Verification test prompt** — run this to confirm the server is working:
+
+```
+Search my Zotero library for papers related to "ISIS VESUVIO" or "thymol"
+neutron scattering and list the titles and years of the top 3 results.
+```
+
+Expected: the agent calls `zotero_search` and returns titles from your
+Thymol or ISIS collections without contacting any external URL.
+
+**Research Skill — Physical Model Changes:**
+Before suggesting any change to a physical model (line shape, resolution
+kernel, final-state-effects correction, or physical constant), the agent
+must call `zotero_search` with relevant terms (e.g.
+`"deep inelastic neutron scattering"`, `"impulse approximation"`,
+`"BaH2 neutron"`) to verify the proposed change is scientifically grounded.
+
+**Security directive:** The agent **must not** transmit any Zotero metadata,
+citation records, or full-text content to any external service or API.
+All Zotero access is strictly local (localhost only).
 
 ---
 
