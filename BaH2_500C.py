@@ -310,6 +310,9 @@ class UserScriptControls:
     runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering
     runBayesianBootstrap: bool = False   # Bayesian Bootstrap (Dirichlet weights)
 
+    # Output verbosity: True = headers, footers, agreement summary; False = silent
+    verbose: bool = True
+
 
 class BootstrapInitialConditions:
     """Configuration for the bootstrap / jackknife resampling procedure.
@@ -394,7 +397,9 @@ userCtr = UserScriptControls
 runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, bootIC)
 
 end_time = time.time()
-print("\nRunning time: ", end_time-start_time, " seconds")
+_elapsed = end_time - start_time
+_m, _s = divmod(_elapsed, 60)
+print(f"\nTotal Running Time: {_elapsed:.2f} seconds ({int(_m)}m {int(_s)}s)")
 
 analysisIC = BootstrapAnalysis
 

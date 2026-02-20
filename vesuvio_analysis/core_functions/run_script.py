@@ -1,4 +1,5 @@
 from typing import Any, List, Optional, Tuple
+import time
 
 import numpy as np
 from mantid.api import mtd
@@ -21,6 +22,9 @@ from vesuvio_analysis.core_functions.procedures import (
     runJointBackAndForwardProcedure,
     runPreProcToEstHRatio,
 )
+
+_SEP_DOUBLE = "=" * 60
+_SEP_SINGLE = "-" * 60
 
 
 def runScript(
@@ -83,6 +87,15 @@ def runScript(
         AssertionError: If both ``runRoutine`` and ``runBootstrap`` are
             ``True``, or if input flags contain invalid values.
     """
+
+    # --- Mantid log suppression: silence repetitive Notice messages ---
+    try:
+        from mantid.kernel import ConfigService
+        ConfigService.setLogLevel(3)  # 3 = Warning; keeps errors visible
+    except Exception:
+        pass
+
+    _verbose = getattr(userCtr, "verbose", True)
 
     # Set extra attributes from user attributes
     completeICFromInputs(fwdIC, scriptName, wsFrontIC)
@@ -179,11 +192,29 @@ def runScript(
             | (bootIC.procedure == "BACKWARD")
             | (bootIC.procedure == "JOINT")
         ), "Invalid Bootstrap procedure."
+        if _verbose:
+            print(f"\n{_SEP_DOUBLE}")
+            print(f"  Bootstrap Procedure — {bootIC.procedure}")
+            print(f"{_SEP_DOUBLE}\n")
+        _t0 = time.time()
         logger.write()
-        return runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC), None
+        boot_result = runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
+        if _verbose:
+            _elapsed = time.time() - _t0
+            _m, _s = divmod(_elapsed, 60)
+            print(f"\n{_SEP_SINGLE}")
+            print(f"  Bootstrap complete — {_elapsed:.2f}s ({int(_m)}m {int(_s)}s)")
+            print(f"{_SEP_SINGLE}\n")
+        return boot_result, None
 
     # Default workflow for procedure + fit in y space
     if userCtr.runRoutine:
+        if _verbose:
+            print(f"\n{_SEP_DOUBLE}")
+            print(f"  VESUVIO Routine — {direction}")
+            print(f"{_SEP_DOUBLE}\n")
+        _t0 = time.time()
+
         # Check if final ws are loaded:
         wsInMtd = [ws in mtd for ws in wsNames]  # Bool list
         if (len(wsInMtd) > 0) and all(
@@ -192,6 +223,12 @@ def runScript(
             for wsName, IC in zip(wsNames, ICs):
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
             logger.write()
+            if _verbose:
+                _elapsed = time.time() - _t0
+                _m, _s = divmod(_elapsed, 60)
+                print(f"\n{_SEP_SINGLE}")
+                print(f"  Analysis complete — {_elapsed:.2f}s ({int(_m)}m {int(_s)}s)")
+                print(f"{_SEP_SINGLE}\n")
             return None, resYFit  # To match return below.
 
         # Skip interactive workspace-clear prompt when running a smoke test
@@ -221,6 +258,13 @@ def runScript(
 
         # --- Phase 6: Statistical Analysis (post-fit) ---
         _runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)
+
+        if _verbose:
+            _elapsed = time.time() - _t0
+            _m, _s = divmod(_elapsed, 60)
+            print(f"\n{_SEP_SINGLE}")
+            print(f"  Analysis complete — {_elapsed:.2f}s ({int(_m)}m {int(_s)}s)")
+            print(f"{_SEP_SINGLE}\n")
 
         logger.write()
         return res, resYFit  # Return results used only in tests
@@ -467,8 +511,14 @@ def _runStatisticalAnalysis(
             residuals = spectra - ncp_total
             bootstrap = BayesianBootstrap(n_samples=1000, seed=42)
             weighted = bootstrap.compute_weighted_residuals(residuals)
+            boot_mean = float(np.mean(weighted))
+            boot_std = float(np.std(weighted))
             print(
                 f"[Phase 6] Bayesian bootstrap: generated "
                 f"{weighted.shape[0]} weighted residual profiles, "
                 f"shape {weighted.shape}"
+            )
+            print(
+                f"[Phase 6] Bootstrap summary: "
+                f"mean = {boot_mean:.4f}, std = {boot_std:.4f}"
             )

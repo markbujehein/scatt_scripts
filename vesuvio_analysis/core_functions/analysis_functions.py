@@ -32,6 +32,45 @@ except ImportError:
 # Format print output of arrays
 set_print_options()
 
+# ---------------------------------------------------------------------------
+# Optimizer agreement check accumulator — cleared before each workspace fit
+# and populated per-spectrum inside fitNcpToSingleSpec.
+# ---------------------------------------------------------------------------
+_optimizer_check_log: list = []
+
+_SEP_DOUBLE = "=" * 60
+_SEP_SINGLE = "-" * 60
+
+# iMinuit–Scipy agreement threshold (1 %)
+_AGREEMENT_THRESHOLD_ANALYSIS = 0.01
+
+
+def _print_optimizer_agreement_summary() -> None:
+    """Print an aggregated iMinuit–Scipy Agreement Check summary.
+
+    Reads from the module-level ``_optimizer_check_log`` list which is
+    populated per-spectrum inside ``fitNcpToSingleSpec``.  Should be
+    called immediately after ``fitNcpToArray`` completes.
+    """
+    if not _optimizer_check_log:
+        return
+    max_diff = max(max(c, p) for c, p in _optimizer_check_log)
+    n_fail = sum(
+        1 for c, p in _optimizer_check_log
+        if c > _AGREEMENT_THRESHOLD_ANALYSIS or p > _AGREEMENT_THRESHOLD_ANALYSIS
+    )
+    n_total = len(_optimizer_check_log)
+    gate_pass = n_fail == 0
+    status = "PASS" if gate_pass else "FAIL"
+    print(f"\n{_SEP_SINGLE}")
+    print(
+        f"  iMinuit\u2013Scipy Agreement Check: {status} "
+        f"(Max Difference: {max_diff * 100:.2f}% | "
+        f"Tolerance: {_AGREEMENT_THRESHOLD_ANALYSIS * 100:.2f}%)"
+    )
+    print(f"  Spectra checked: {n_total}, Failed: {n_fail}")
+    print(_SEP_SINGLE)
+
 
 def iterativeFitForDataReduction(
     ic: Any,
@@ -236,9 +275,9 @@ def createTableInitialParameters(ic: Any) -> None:
     for m, iw, bw, ii, bi, inc, bc in zip(ic.masses.astype(float), ic.initPars[1::3], ic.bounds[1::3], ic.initPars[0::3], ic.bounds[0::3], ic.initPars[2::3], ic.bounds[2::3]):
         meansTableWS.addRow([m, iw, str(bw), ii, str(bi), inc, str(bc)])
         print("\nMass: ", m)
-        print(f"{'Initial Intensity:':>20s} {ii:<8.3f} Bounds: {bi}")
-        print(f"{'Initial Width:':>20s} {iw:<8.3f} Bounds: {bw}")
-        print(f"{'Initial Center:':>20s} {inc:<8.3f} Bounds: {bc}")
+        print(f"{'Initial Intensity:':>20s} {ii:<8.4f} Bounds: {bi}")
+        print(f"{'Initial Width:':>20s} {iw:<8.4f} Bounds: {bw}")
+        print(f"{'Initial Center:':>20s} {inc:<8.4f} Bounds: {bc}")
     print("\n")    
 
 
@@ -405,7 +444,9 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     
     print("\nFitting NCP:\n")
 
+    _optimizer_check_log.clear()
     arrFitPars = fitNcpToArray(IC, dataY, dataE, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
+    _print_optimizer_agreement_summary()
     createTableWSForFitPars(ws.name(), IC.noOfMasses, arrFitPars)
     arrBestFitPars = arrFitPars[:, 1:-2]
     ncpForEachMass, ncpTotal = calculateNcpArr(IC, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
@@ -920,6 +961,7 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
     fileName = wsDataSum.name()+"_NCP_Fits.pdf"
     savePath = IC.figSavePath / fileName
     plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+    print(f"Saved: {fileName} to {IC.figSavePath}")
     plt.close(fig)
     return
 
@@ -958,6 +1000,7 @@ def plotIndividualNCPFits(
         fileName = f"{wsDataSum.name()}_Mass{mass_idx}_NCP.pdf"
         savePath = IC.figSavePath / fileName
         plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+        print(f"Saved: {fileName} to {IC.figSavePath}")
         plt.close(fig)
 
 
@@ -1211,6 +1254,8 @@ def fitNcpToSingleSpec(
                     instrPars[0], scipy_chi2, iminuit_chi2,
                     chi2_rel_diff * 100,
                 )
+        else:
+            chi2_rel_diff = 0.0
 
         # Parameter-vector comparison
         iminuit_pars = np.array(m.values)
@@ -1231,6 +1276,9 @@ def fitNcpToSingleSpec(
                 scipy_pars[worst_idx], iminuit_pars[worst_idx],
                 max_par_diff * 100,
             )
+
+        # Accumulate for the end-of-workspace summary
+        _optimizer_check_log.append((chi2_rel_diff, max_par_diff))
     except Exception:
         logger.debug(
             "iMinuit fit failed for spec %.0f, scipy result used.",
