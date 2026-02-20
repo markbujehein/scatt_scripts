@@ -81,6 +81,29 @@ The `ci-dev.yml` workflow runs on every PR to `dev`:
 Permissions: `contents: read` + `pull-requests: write` (Copilot PR annotations enabled).
 The `codeql` job additionally requires `security-events: write`.
 
+---
+
+## Research Skills
+
+### Zotero Literature Grounding
+
+A local `zotero-mcp` server is configured in `.github/mcp-servers.json`.
+It connects to the Zotero desktop application on `localhost:23119`
+(`ZOTERO_LOCAL=true`) and requires no API key or external network access.
+
+**Research Skill — Physical Model Changes:**
+> Before suggesting any change to a physical model (line shape, resolution
+> kernel, final-state-effects correction, or physical constant), search the
+> local Zotero library for relevant neutron scattering papers to ensure the
+> proposed change is scientifically grounded.  Call `zotero_search` with
+> terms such as `"neutron Compton scattering"`, `"deep inelastic neutron
+> scattering"`, `"impulse approximation"`, or the specific element/compound
+> under study (e.g. `"BaH2"`, `"thymol"`, `"ISIS VESUVIO"`).
+
+**Security directive:** The agent **must not** transmit any Zotero metadata,
+citation records, or full-text extracts to any external service, API, or
+third-party tool.  All Zotero access is strictly local (localhost only).
+
 ### CodeQL configuration notes
 - Advanced Setup (YAML-based) replaces GitHub Default Setup for `needs:` dependency control.
 - Scoped to Python only; `outputs/`, `tests/smoke_test_output/`, `experiments/` are excluded.
