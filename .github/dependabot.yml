@@ -1,0 +1,71 @@
+# Dependabot — Automated Dependency Governance
+#
+# Target branch: 'dev'  (all dependency PRs land on dev first, consistent
+# with the branch strategy in CONTRIBUTING.md §2).
+#
+# Nanoscience stack pinning rationale
+# ────────────────────────────────────
+# Mantid, Numba, and NumPy are tightly coupled to the JIT-compiled resolution
+# kernels (numba_routines.py @njit) and the Mantid workspace lifecycle.
+# Major-version bumps in these packages have historically broken the NCP
+# line-shape and/or Numba @njit compilation.
+#
+# This configuration replaces the coarse repository-level "Dependabot toggle"
+# with a per-package governance model:
+#   • Security patches (semver patch-level) → PRs are labelled 'dependencies'
+#     and can be reviewed/merged quickly.
+#   • Minor/major upgrades for physics-critical packages → require explicit
+#     sign-off from a maintainer (PR body will explain why the constraint
+#     exists) before merging into dev.
+#
+# This prevents silent physics regressions caused by automatic dependency
+# bumps while still surfacing CVEs and keeping non-critical packages current.
+
+version: 2
+
+updates:
+  # -------------------------------------------------------------------------
+  # GitHub Actions — keep CI action versions current.
+  # Targets the dev branch; PRs are labelled 'dependencies'.
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "dev"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+
+  # -------------------------------------------------------------------------
+  # Pip (PyPI) — track runtime and test dependencies from pyproject.toml.
+  #
+  # Semver-major upgrades for numba and numpy are suppressed because:
+  #   • numba: @njit kernels in numba_routines.py must be validated against
+  #     the Numba regression tests (atol=1e-8) before any major-version
+  #     upgrade is accepted.
+  #   • numpy: np.trapezoid / API stability — the full regression suite must
+  #     pass (np.trapz was removed in NumPy 2.4; future removals are possible).
+  #
+  # Minor/patch updates for these packages are still surfaced as PRs so that
+  # bug-fix and security releases are not missed.
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "dev"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    ignore:
+      # Numba: validate @njit kernels (atol=1e-8) before accepting major bumps.
+      - dependency-name: "numba"
+        update-types: ["version-update:semver-major"]
+      # NumPy: validate full regression suite before accepting major bumps.
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
