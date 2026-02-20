@@ -5,9 +5,10 @@ from vesuvio_analysis.core_functions.analysis_functions import calculateMeansAnd
 from vesuvio_analysis.core_functions.ICHelpers import setBootstrapDirs
 from vesuvio_analysis.core_functions.fit_in_yspace import selectModelAndPars
 import numpy as np
-import matplotlib .pyplot as plt
+import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy import stats
+from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
 
 currentPath = Path(__file__).parent.absolute() 
 experimentsPath = currentPath / ".." / ".. " / "experiments"
@@ -221,7 +222,9 @@ def plotRawWidthsAndIntensities(analysisIC, IC, bootPars, parentPars):
     parentWidths, parentIntensities = extractParentMeans(parentPars, IC)
     noOfMasses = len(parentWidths)
 
-    fig, axs = plt.subplots(2, noOfMasses)
+    set_thesis_style()
+    fig, axs = figure_factory("full_width", aspect_ratio=0.8,
+                               nrows=2, ncols=noOfMasses)
 
     for axIdx, startIdx, kind, parentMeans in zip([0, 1], [1, 0], ["Width", "Intensity"], [parentWidths, parentIntensities]):
 
@@ -311,9 +314,10 @@ def plotMeanWidthsAndIntensities(analysisIC, IC, meanWidths, meanIntensities, pa
 
     print("\n\n Test passed! Mean Widths match!")
 
-    fig, axs = plt.subplots(2, 1)
+    set_thesis_style()
+    fig, axs = figure_factory("full_width", aspect_ratio=0.8, nrows=2, ncols=1)
     axs[0].set_title("Histograms of mean Widths")
-    axs[1].set_title("Histograms of mean Intensitiess")
+    axs[1].set_title("Histograms of mean Intensities")
 
     for ax, means, parentMeans in zip(axs.flatten(), [meanWidths, meanIntensities], [parentWidths, parentIntensities]):
         plotHists(ax, means, disableAvg=True, disableCI=True)
@@ -330,7 +334,8 @@ def plotMeansEvolution(IC, meanWidths, meanIntensities):
     if not(IC.plotMeansEvolution):
         return
 
-    fig, axs = plt.subplots(2, 2)
+    set_thesis_style()
+    fig, axs = figure_factory("full_width", aspect_ratio=0.8, nrows=2, ncols=2)
     axs[0, 0].set_title("Evolution of mean Widths")
     plotMeansOverNoSamples(axs[0, 0], meanWidths)
 
@@ -353,7 +358,8 @@ def plotMeansEvolutionYFit(analysisIC, minuitFitVals):
     if not(analysisIC.plotMeansEvolution):
         return
     
-    fig, ax = plt.subplots(2, 1)
+    set_thesis_style()
+    fig, ax = figure_factory("full_width", aspect_ratio=0.8, nrows=2, ncols=1)
     ax[0].set_title("Evolution of y-space fit parameters")
     plotMeansOverNoSamples(ax[0], minuitFitVals)
 
@@ -420,7 +426,9 @@ def plot2DHists(bootSamples, mode):
     """bootSamples has histogram rows for each parameter"""
 
     plotSize = len(bootSamples)
-    fig, axs = plt.subplots(plotSize, plotSize, tight_layout=True)
+    set_thesis_style()
+    fig, axs = figure_factory("full_width", aspect_ratio=1.0,
+                               nrows=plotSize, ncols=plotSize)
 
     for i in range(plotSize):
         for j in range(plotSize):
@@ -479,7 +487,9 @@ def plotYFitHists(analysisIC, yFitIC, yFitHists):
         return
 
     # Plot each parameter in an individual histogram
-    fig, axs = plt.subplots(2, int(np.ceil(len(yFitHists)/2)), figsize=(12, 7), tight_layout=True)
+    set_thesis_style()
+    fig, axs = figure_factory("full_width", aspect_ratio=0.7,
+                               nrows=2, ncols=int(np.ceil(len(yFitHists) / 2)))
 
     # To label each histogram, extract signature of function used for the fit
     model, defaultPars, sharedPars = selectModelAndPars(yFitIC.fitModel)

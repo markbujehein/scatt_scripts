@@ -15,7 +15,7 @@ from pathlib import Path
 from iminuit import Minuit, cost, util
 from iminuit.util import describe
 from vesuvio_analysis.core_functions.iminuit_costs import GlobalNCPCostFunction
-from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
+from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory, COLORBLIND_PALETTE, EXPERIMENTAL_STYLE, THEORETICAL_STYLE
 import jacobi
 import time
 
@@ -1146,10 +1146,14 @@ def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
 
     set_thesis_style()
     fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
-    ax.errorbar(wsMinuitFit, "k.", wkspIndex=0, label="Weighted Avg")
-    ax.errorbar(wsMinuitFit, "r-", wkspIndex=1, label=leg)
-    ax.set_xlabel("YSpace")
-    ax.set_ylabel("Counts")
+    # Experimental: weighted-average J(y) spectrum — points + error bars
+    ax.errorbar(wsMinuitFit, wkspIndex=0, color=COLORBLIND_PALETTE[7],
+                label="Weighted Avg", **EXPERIMENTAL_STYLE)
+    # Theoretical: Minuit best-fit model curve — smooth line, no error bars
+    ax.plot(wsMinuitFit, wkspIndex=1, color=COLORBLIND_PALETTE[3],
+            label=leg, **THEORETICAL_STYLE)
+    ax.set_xlabel(r"$y$ ($\AA^{-1}$)")
+    ax.set_ylabel(r"$J(y)$ (a.u.)")
     ax.set_title("Minuit Fit")
     ax.legend()
 
@@ -2528,35 +2532,57 @@ def plotGlobalFit(
         print("\nToo many axes to show in figure, skipping the plot ...\n")
         return
 
+    set_thesis_style()
     rows = 2
-    fig, axs = plt.subplots(
-        rows, 
-        int(np.ceil(len(dataY)/rows)),
-        figsize=(15, 8), 
-        tight_layout=True,
-        subplot_kw={'projection':'mantid'}
+    n_cols = int(np.ceil(len(dataY) / rows))
+    fig, axs = figure_factory(
+        "full_width",
+        aspect_ratio=0.8,
+        nrows=rows,
+        ncols=n_cols,
+        subplot_kw={"projection": "mantid"},
     )
-    fig.canvas.setWindowTitle(wsName+"_Plot_of_Global_Fit")
+    if hasattr(fig, "canvas"):
+        # fig.canvas.setWindowTitle(wsName + "_Plot_of_Global_Fit")
+        try:
+            set_title = getattr(fig.canvas, "setWindowTitle", None)
+            if set_title is None:
+                set_title = getattr(fig.canvas, "set_window_title", None)
+            if set_title is not None:
+                set_title(wsName + "_Plot_of_Global_Fit")
+        except Exception:
+            # Backend may not support setting a window title; ignore and continue.
+            pass
+    axs_flat = np.asarray(axs).flat
 
-    # Data used in Global Fit
-    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs.flat)):
-        ax.errorbar(x, y, yerr, fmt="k.", label=f"Data Group {i}") 
+    # Experimental: J(y) data per detector group — points + error bars
+    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_flat)):
+        ax.errorbar(x, y, yerr, color=COLORBLIND_PALETTE[7],
+                    label=f"Data Group {i}", **EXPERIMENTAL_STYLE)
 
-    # Global Fit 
-    for x, costFun, ax in zip(dataX, totCost, axs.flat):
+    # Theoretical: global fit model — smooth line on dense grid
+    for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_flat)):
         signature = describe(costFun)
-
         values = mObj.values[signature]
         errors = mObj.errors[signature]
 
-        yfit = costFun.model(x, *values)
+        # Evaluate on a dense grid so the model line is visually smooth even for coarse data.
+        x_dense = np.linspace(float(x.min()), float(x.max()), max(500, 5 * len(x)))
+        # The dense grid generation uses max(500, 5 * len(x)) points which could
+        # be excessive for large datasets. For example, if x has 1000 points, 
+        # this creates 5000 evaluation points. Consider capping the maximum number 
+        # of points to prevent unnecessary computation while maintaining visual smoothness:
+        # num_points = min(max(500, 5 * len(x)), 2000)
+        # x_dense = np.linspace(float(x.min()), float(x.max()), num_points)
 
-        # Build a decent legend
-        leg = []
-        for p, v, e in zip(signature, values, errors):
-            leg.append(f"${p} = {v:.3f} \pm {e:.3f}$")
+        yfit_smooth = costFun.model(x_dense, *values)
 
-        ax.fill_between(x, yfit, label="\n".join(leg), alpha=0.4)
+        leg = [f"${p} = {v:.3f} \\pm {e:.3f}$"
+               for p, v, e in zip(signature, values, errors)]
+        colour = COLORBLIND_PALETTE[i % len(COLORBLIND_PALETTE)]
+        ax.plot(x_dense, yfit_smooth, color=colour,
+                label="\n".join(leg), **THEORETICAL_STYLE)
         ax.legend()
+    fig.tight_layout()
     fig.show()
     return
