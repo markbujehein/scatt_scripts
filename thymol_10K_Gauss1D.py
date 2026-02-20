@@ -171,7 +171,7 @@ class BackwardInitialConditions(GeneralInitialConditions):
     transmission_guess = 0.6  # Experimental value from VesuvioTransmission
     multiple_scattering_order, number_of_events = 2, 1.0e5  # Used in MS correction
 
-    runHistData = True
+    runHistData = False
 
 
 class ForwardInitialConditions(GeneralInitialConditions):
@@ -335,9 +335,16 @@ class UserScriptControls:
     # Choose on which ws to perform the fit in y space
     fitInYSpace = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
 
-    runOutlierDetection = True
-    runPhysicsClustering = True
-    runBayesianBootstrap = True
+    # Fast-track flag: when True, truncates expensive operations for smoke testing
+    runningTest: bool = False
+
+    # Phase 6 statistical analysis toggles
+    runOutlierDetection: bool = False    # PCA hardware-outlier detection
+    runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering
+    runBayesianBootstrap: bool = False   # Bayesian Bootstrap (Dirichlet weights)
+
+    # Output verbosity: True = headers, footers, agreement summary; False = silent
+    verbose: bool = True
 
 
 class BootstrapInitialConditions:
@@ -417,12 +424,12 @@ class BootstrapAnalysis:
 
 
 # Initialize classes and run script below
-# Not for users
+# Not for useers
 
 start_time = time.time()
 
 wsBackIC = LoadVesuvioBackParameters
-wsFrontIC = LoadVesuvioFrontParameters
+wsFrontIC = LoadVesuvioFrontParameters  
 bckwdIC = BackwardInitialConditions
 fwdIC = ForwardInitialConditions
 yFitIC = YSpaceFitInitialConditions
@@ -431,9 +438,11 @@ userCtr = UserScriptControls
 
 runScript(userCtr, scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC, bootIC)
 
-end_time = time.time()
-print("\nRunning time: ", end_time - start_time, " seconds")
-
 analysisIC = BootstrapAnalysis
 
 runAnalysisOfStoredBootstrap(bckwdIC, fwdIC, yFitIC, bootIC, analysisIC, userCtr)
+
+end_time = time.time()
+_elapsed = end_time - start_time
+_m, _s = divmod(_elapsed, 60)
+print(f"\nTotal Running Time: {_elapsed:.2f} seconds ({int(_m)}m {int(_s)}s)")
