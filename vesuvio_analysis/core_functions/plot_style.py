@@ -13,16 +13,27 @@ Covers two complementary concerns:
    helpers are consumed by both ``analysis_functions`` and ``fit_in_yspace``
    plotting routines.
 
+**The Bordallo Principle** — strict visual separation of data categories:
+
+* :data:`EXPERIMENTAL_STYLE` — kwargs for ``ax.errorbar()`` representing
+  measured scattering data (points + error bars, high-contrast foreground).
+* :data:`THEORETICAL_STYLE` — kwargs for ``ax.plot()`` representing model /
+  fit curves (smooth lines, slightly recessed behind data points).
+
 Typical usage::
 
     from vesuvio_analysis.core_functions.plot_style import (
         set_thesis_style, set_print_options, figure_factory,
+        EXPERIMENTAL_STYLE, THEORETICAL_STYLE,
     )
 
     set_thesis_style()       # apply Matplotlib rcParams once at module level
     set_print_options()      # apply numpy/numba float precision once globally
     fig, ax = figure_factory()              # full-width (17 cm), golden-ratio (~0.618) aspect
     fig, ax = figure_factory("half_width")  # half-width (8.25 cm) figure
+
+    ax.errorbar(x, y, yerr, color=col, label="Data", **EXPERIMENTAL_STYLE)
+    ax.plot(x_dense, y_model, color=col, label="Fit",  **THEORETICAL_STYLE)
 """
 
 from __future__ import annotations
@@ -53,6 +64,32 @@ COLORBLIND_PALETTE: list[str] = [
     "#F0E442",  # yellow
     "#000000",  # black
 ]
+
+# ---------------------------------------------------------------------------
+# Bordallo Principle — canonical style dicts for data-category distinction
+# ---------------------------------------------------------------------------
+
+#: Kwargs for ``ax.errorbar()`` — measured scattering / experimental data.
+#: Always rendered as discrete points with error bars in the foreground.
+EXPERIMENTAL_STYLE: dict = {
+    "linestyle": "None",
+    "marker": "o",
+    "markersize": 4,
+    "capsize": 3,
+    "elinewidth": 0.8,
+    "alpha": 1.0,
+    "zorder": 3,  # foreground — on top of theoretical curves
+}
+
+#: Kwargs for ``ax.plot()`` — theoretical model or fit curves.
+#: Always rendered as smooth continuous lines behind the data points.
+THEORETICAL_STYLE: dict = {
+    "linestyle": "-",
+    "marker": "None",
+    "linewidth": 1.5,
+    "alpha": 0.85,
+    "zorder": 2,  # behind experimental data points
+}
 
 
 def cm_to_inches(cm: float) -> float:
@@ -124,10 +161,12 @@ def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> 
         "figure.titlesize": 12,
 
         # --- Font family ---
-        # DejaVu Serif is always available; switch to 'text.usetex: True'
-        # for full Computer Modern if a LaTeX installation is present.
+        # DejaVu Serif is always available; text.usetex enables full Computer
+        # Modern rendering when a LaTeX installation is present on the system.
         "font.family": "serif",
         "font.serif": ["DejaVu Serif", "Times New Roman", "serif"],
+        "text.usetex": True,
+        "text.latex.preamble": r"\usepackage{amsmath}",
 
         # --- Lines & markers ---
         "lines.linewidth": 1.5,
@@ -137,6 +176,9 @@ def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> 
         # --- Axes ---
         "axes.linewidth": 0.8,
         "axes.prop_cycle": mpl.cycler(color=COLORBLIND_PALETTE),
+        "axes.spines.top": False,    # remove decorative top/right spines
+        "axes.spines.right": False,
+        "axes.grid": False,          # explicit — no grid in publication figures
 
         # --- Ticks ---
         "xtick.direction": "in",
