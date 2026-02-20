@@ -42,7 +42,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
+from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
 
 
 # ---------------------------------------------------------------------------

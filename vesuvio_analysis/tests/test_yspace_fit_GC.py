@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import unittest
 import numpy.testing as nptest
-from .tests_IC import scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC
+from vesuvio_analysis.tests.tests_IC import scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC
 testPath = Path(__file__).absolute().parent 
 np.set_printoptions(suppress=True, precision=8, linewidth=150)
 

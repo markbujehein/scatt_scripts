@@ -36,7 +36,7 @@ from sklearn.covariance import EllipticEnvelope
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from .plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
+from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
 
 
 # ---------------------------------------------------------------------------
