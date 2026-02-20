@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 from mantid.api import mtd
-from mantid.simpleapi import ConvertToYSpace, DeleteWorkspaces, SumSpectra
+from mantid.simpleapi import ConvertToYSpace, DeleteWorkspaces, Rebin, SumSpectra
 
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
 from vesuvio_analysis.core_functions.correction_plots import dispatch_correction_plots
@@ -350,6 +350,30 @@ def _convertToYSpaceSummed(
     """
     tmp_name = ws_name + "_JoY_tmp"
     ws_joy = ConvertToYSpace(ws_name, Mass=mass, OutputWorkspace=tmp_name)
+
+    # ConvertToYSpace produces detector-specific (ragged) bin edges because the
+    # y-space transformation depends on each detector's angle and flight path.
+    # SumSpectra requires common bin boundaries for all histograms, so we must
+    # rebin to a common grid first.  The grid is inferred from the workspace
+    # itself to avoid hard-coding a y-space range, ensuring the fix is valid
+    # regardless of the runHistData setting.
+    x_all = ws_joy.extractX()
+    x_min = float(np.min(x_all))
+    x_max = float(np.max(x_all))
+    step = float(np.median(np.abs(np.diff(x_all, axis=1))))
+    if step <= 0.0:
+        raise ValueError(
+            f"_convertToYSpaceSummed: inferred y-space bin width is "
+            f"{step:.6g} for workspace '{ws_name}'. "
+            "ConvertToYSpace may have produced a degenerate workspace."
+        )
+    rebin_params = f"{x_min:.6f},{step:.6f},{x_max:.6f}"
+    ws_joy = Rebin(
+        InputWorkspace=ws_joy,
+        Params=rebin_params,
+        FullBinsOnly=True,
+        OutputWorkspace=tmp_name,
+    )
     ws_sum = SumSpectra(ws_joy, OutputWorkspace=tmp_name + "_Sum")
 
     raw_x = ws_sum.extractX()
@@ -495,9 +519,10 @@ def _runStatisticalAnalysis(
                 ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
             )
             # instrPars columns: [spec, det, angle, T0, L0, L1]
-            L1 = instrPars[:, 5]
+            # Total flight path L = L0 (moderator→sample) + L1 (sample→detector)
+            L_total = instrPars[:, 4] + instrPars[:, 5]
             theta = instrPars[:, 2]
-            features = np.column_stack([L1, theta])
+            features = np.column_stack([L_total, theta])
             clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
             labels = clusterer.fit_predict(features)
             groups = clusterer.get_cluster_groups(labels)
