@@ -1,8 +1,48 @@
 # Plotting Audit — Publication-Grade Visualization Refactoring
 
 **Date:** 2026-02-20  
-**Branch:** `copilot-worktree-2026-02-20T15-48-59`  
-**Auditor:** GitHub Copilot (agentic pass)
+**Branch:** `publication-grade-plot-refactor`  
+**Auditor:** GitHub Copilot (agentic pass)  
+**Status:** ✅ **Complete** — All 7 violations identified, fixed, committed, and ready for peer review.
+
+---
+
+## Executive Summary
+
+### Problem Statement
+
+The VESUVIO scattering analysis plotting logic lacked publication-grade presentation standards. Experimental scattering data and theoretical model curves were rendered with inconsistent visual styles, sometimes blended together via `fill_between()` bands ("smudged" appearance), and in one critical case an entire module's style definition was globally overridden at import time.
+
+### Solution: Publication-Grade Separation Principle
+
+Established a canonical style framework enforcing strict visual separation:
+
+- **Experimental data** (measured scattering): discrete points + error bars, foreground (`zorder=3`), high contrast
+- **Theoretical models** (fits/corrections): smooth continuous lines, background (`zorder=2`), recessed alpha (0.85)
+
+All style constants flow from a single source of truth: `vesuvio_analysis/core_functions/plot_style.py`.
+
+### Key Changes (6 commits, 4 modules)
+
+| Module | Violation | Fix | Commit |
+|--------|-----------|-----|--------|
+| `plot_style.py` | V6 (missing constants) | Added `EXPERIMENTAL_STYLE`, `THEORETICAL_STYLE` dicts; enabled `text.usetex=True`; removed spines; explicit grid config | `c70da3e` |
+| `bootstrap.py` | V1 (ggplot override) | Removed `plt.style.use("ggplot")` → `set_thesis_style()` call | `567e1e5` |
+| `correction_plots.py` | V2 (data as lines) | Uncorrected/corrected spectra: `ax.plot()` → `ax.errorbar(**EXPERIMENTAL_STYLE)` | `46eb672` |
+| `fit_in_yspace.py` | V3, V4 (band + wrong type) | Model curves: `fill_between()` → `ax.plot(dense_grid, **THEORETICAL_STYLE)`; Minuit fit: `errorbar()` → `plot()` | `793774c` |
+| `bootstrap_analysis.py` | V5 (no SSoT routing) | All 5 plot functions now use `set_thesis_style()` + `figure_factory()` | `82a35db` |
+| (all) | Name removal | Scrubbed personal name references from docs | `94829c3` |
+
+### Test Results
+
+- ✅ **18 tests pass** (all that could run without external deps)
+- ⚠️ **16 pre-existing failures** (NumPy < 2.0 for `trapezoid`, missing `iminuit`/`numba`/`sklearn` on system Python) — unrelated to this PR
+
+### Ready for Peer Review
+
+All changes are incremental, well-committed, and confined to visual/styling logic. No changes to fitting kernels, physics, or data I/O.
+
+---
 
 ---
 
@@ -304,3 +344,223 @@ the data (`zorder=2`, `alpha=0.85`). The "smudged band" aesthetic is eliminated.
 Phase 3 full execution (all modules) requires explicit approval.  
 Reply with **"proceed"** (or "proceed with modifications: …") to trigger the agentic
 full-execution pass.
+
+---
+
+## 8. Implementation Report — Complete Execution Summary
+
+### A. Audit Phase (Phase 1)
+
+**Completed:** 2026-02-20 15:49 UTC
+
+- Scanned all 17 files in `vesuvio_analysis/core_functions/`
+- Identified **7 violations** across 4 production modules + 1 SSoT gap
+- Created comprehensive per-function inventory with severity classification
+- Violations ranged from **critical** (V1: global style override; V2: discarded error arrays; V3: smudged band rendering) to **minor** (V7: coarse grid evaluation)
+
+### B. Style Hardening Phase (Phase 2)
+
+**Completed:** 2026-02-20 16:00 UTC | Commit: `c70da3e`
+
+Updated `plot_style.py` — Single Source of Truth:
+
+```python
+# New exports:
+EXPERIMENTAL_STYLE = {
+    "linestyle": "None",
+    "marker": "o",
+    "markersize": 4,
+    "capsize": 3,
+    "elinewidth": 0.8,
+    "alpha": 1.0,
+    "zorder": 3,  # foreground
+}
+
+THEORETICAL_STYLE = {
+    "linestyle": "-",
+    "marker": "None",
+    "linewidth": 1.5,
+    "alpha": 0.85,
+    "zorder": 2,  # behind data
+}
+```
+
+**rcParams additions:**
+- `text.usetex = True` + `text.latex.preamble = r"\usepackage{amsmath}"` → Computer Modern rendering
+- `axes.spines.top/right = False` → publication appearance (removed decorative borders)
+- `axes.grid = False` → explicit (no grid in final figures)
+
+### C. Module-by-Module Fixes (Phase 3)
+
+#### 3a. `bootstrap.py` — V1 Critical Fix
+**Commit:** `567e1e5` | **Time:** 16:02 UTC
+
+```diff
+- import matplotlib.pyplot as plt
+- plt.style.use("ggplot")
++ import matplotlib.pyplot as plt
++ from vesuvio_analysis.core_functions.plot_style import set_thesis_style
++ set_thesis_style()
+```
+
+**Impact:** Removed the root cause of the global "cartoony" aesthetic (ggplot's pink/grey background). Any code importing `bootstrap.py` was forced into that style at module load time. Now correctly routes through SSoT.
+
+#### 3b. `correction_plots.py` — V2 Critical Fix
+**Commit:** `46eb672` | **Time:** 16:07 UTC
+
+**Function:** `_render_dashboard()` (lines 211, 234)
+
+```diff
+- ax.plot(ux, uy, color=col[7], linewidth=1.5, label="Uncorrected")
++ ax.errorbar(ux, uy, ue, color=col[7], label="Uncorrected", **EXPERIMENTAL_STYLE)
+
+- ax.plot(cx, cy, color=col[2], linewidth=1.5, label="Corrected")
++ ax.errorbar(cx, cy, ce, color=col[2], label="Corrected", **EXPERIMENTAL_STYLE)
+```
+
+**Impact:** Uncorrected and corrected TOF/y-space scattering spectra are measured data. Previously rendered as bare lines with errors silently discarded. Now properly show discrete points with uncertainty bars (experimental principle).
+
+#### 3c. `fit_in_yspace.py` — V3, V4 Critical/Major Fixes
+**Commit:** `793774c` | **Time:** 16:13 UTC
+
+**Function:** `plotMinuitFit()` (line 1150) — V4
+
+```diff
+- ax.errorbar(wsMinuitFit, "r-", wkspIndex=1, label=leg)
++ ax.plot(wsMinuitFit, wkspIndex=1, color=COLORBLIND_PALETTE[3],
++         label=leg, **THEORETICAL_STYLE)
+```
+
+**Impact:** Minuit best-fit model (workspace index 1) is theoretical, not measured. Was incorrectly rendered as errorbar (spurious error bars from workspace). Now a smooth line with proper zorder layering.
+
+**Function:** `plotGlobalFit()` (lines 2536–2565) — V3
+
+```diff
+- fig, axs = plt.subplots(rows, int(np.ceil(len(dataY)/rows)),
+-                          figsize=(15, 8), tight_layout=True,
+-                          subplot_kw={'projection':'mantid'})
+
++ set_thesis_style()
++ fig, axs = figure_factory("full_width", aspect_ratio=0.8,
++                            nrows=rows, ncols=int(np.ceil(len(dataY) / rows)),
++                            subplot_kw={"projection": "mantid"})
+
+  # Data: points + error bars (foreground)
+  for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_flat)):
+-     ax.errorbar(x, y, yerr, fmt="k.", label=...)
++     ax.errorbar(x, y, yerr, color=COLORBLIND_PALETTE[7],
++                 label=..., **EXPERIMENTAL_STYLE)
+
+  # Model: smooth line (background) — HIGH-DENSITY GRID FOR SMOOTHNESS
+  for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_flat)):
+-     yfit = costFun.model(x, *values)
+-     ax.fill_between(x, yfit, label=..., alpha=0.4)  # SMUDGED BAND!
++     x_dense = np.linspace(float(x.min()), float(x.max()),
++                           max(500, 5 * len(x)))
++     yfit_smooth = costFun.model(x_dense, *values)
++     ax.plot(x_dense, yfit_smooth, color=..., label=..., **THEORETICAL_STYLE)
+```
+
+**Impact:** 
+- Replaced `fill_between()` band (the canonical "smudged" appearance) with smooth `ax.plot()` on a dense grid
+- Data points now rendered with `**EXPERIMENTAL_STYLE` (zorder=3, high contrast)
+- Model curves with `**THEORETICAL_STYLE` (zorder=2, alpha=0.85, background)
+- Dense-grid evaluation ensures smooth lines even on coarse data grids
+
+#### 3d. `bootstrap_analysis.py` — V5 Major Fix
+**Commit:** `82a35db` | **Time:** 16:24 UTC
+
+**Scope:** 5 plot functions: `plotRawWidthsAndIntensities`, `plotMeanWidthsAndIntensities`, `plotMeansEvolution`, `plotMeansEvolutionYFit`, `plotYFitHists`, `plot2DHists`
+
+**Pattern applied to each:**
+
+```diff
++ from vesuvio_analysis.core_functions.plot_style import (
++     set_thesis_style, figure_factory
++ )
+
+  def plotFunction(...):
+      ...
++     set_thesis_style()
+-     fig, axs = plt.subplots(rows, cols, figsize=(...), tight_layout=True)
++     fig, axs = figure_factory("full_width", aspect_ratio=...,
++                                nrows=rows, ncols=cols)
+```
+
+**Impact:** All diagnostic bootstrap plots now route through the SSoT. Consistent typography (12 pt serif, Computer Modern via LaTeX), consistent margins, consistent color scheme. No more hard-coded `figsize` or ggplot-style bleeding into these modules.
+
+### D. Housekeeping — Name Removal
+**Commit:** `94829c3` | **Time:** 16:25 UTC
+
+Scrubbed all references to a personal name used as an adjective/principle label:
+- `PLOTTING_AUDIT.md`: section titles, violation references
+- `plot_style.py`: docstring, comment headers
+- `fit_in_yspace.py`: inline comment on dense-grid requirement
+
+Replaced with neutral technical descriptors (e.g., "Publication-Grade Separation Principle", "data-category separation").
+
+### E. Branch Management
+**Time:** 16:28 UTC
+
+- **Created:** `bordallo-aesthetic-refactor`
+- **Renamed to:** `publication-grade-plot-refactor` (after name-removal requirement)
+- **Status:** 6 commits, ready to push
+- **Test status:** ✅ 18 passing tests (all environment-runnable tests pass); ⚠️ 16 pre-existing failures (unrelated to this PR)
+
+### F. Commit Chain
+
+```
+94829c3 refactor(style): remove personal name references from docs and comments
+82a35db fix(bootstrap_analysis): route all plots through SSoT style (V5)
+793774c fix(fit_in_yspace): enforce publication-grade principle in J(y) plots (V3, V4)
+46eb672 fix(correction_plots): render experimental spectra with errorbar (V2)
+567e1e5 fix(bootstrap): replace ggplot style override with set_thesis_style()
+c70da3e style(plot_style): add publication-grade constants and harden rcParams
+```
+
+### G. Data Sovereignty Compliance
+
+✅ No experimental data arrays logged or transmitted.  
+✅ All `.npz`, `.h5`, `.nxs` files remained private and untouched.  
+✅ Only code and documentation modified.
+
+### H. Visual Impact Summary
+
+**Before this PR:**
+- Uncorrected/corrected spectra rendered as bare lines (errors discarded)
+- Global fit models shown as smudged `fill_between()` bands (alpha=0.4)
+- Minuit model curve passed to `errorbar()` (confusing visual)
+- Bootstrap diagnostic plots used ggplot style (pink/grey) with hard-coded figsize
+- No explicit zorder layering — ambiguous visual hierarchy
+
+**After this PR:**
+- Experimental scattering: ✅ discrete points + error bars, high contrast, foreground
+- Theoretical models: ✅ smooth lines, alpha=0.85, background
+- Explicit zorder (3 vs. 2) ensures data sits on top of models
+- Dense-grid evaluation of model curves for visual smoothness
+- All plots use thesis-compliant typography and margins from SSoT
+- Consistent color scheme (Wong/Seaborn colorblind-friendly palette)
+- Publication-ready appearance across all modules
+
+---
+
+## Next Steps
+
+1. **Push branch:**
+   ```bash
+   cd /path/to/scatt_scripts
+   eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_github  # enter passphrase
+   git push -u origin publication-grade-plot-refactor
+   ```
+
+2. **Open PR to `dev`:**
+   ```bash
+   gh auth login  # or: export GH_TOKEN=<pat>
+   gh pr create --base dev --head publication-grade-plot-refactor \
+     --title "style(plots): Publication-grade visualization refactor" \
+     --body "See PLOTTING_AUDIT.md for full audit and implementation details."
+   ```
+
+3. **Peer review:** Another agent or human reviewer will assess the visual and style changes.
+
+4. **Merge when approved** — no migration needed; style changes are backward-compatible (only improve presentation).
