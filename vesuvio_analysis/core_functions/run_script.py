@@ -519,9 +519,10 @@ def _runStatisticalAnalysis(
                 ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
             )
             # instrPars columns: [spec, det, angle, T0, L0, L1]
-            L1 = instrPars[:, 5]
+            # Total flight path L = L0 (moderator→sample) + L1 (sample→detector)
+            L_total = instrPars[:, 4] + instrPars[:, 5]
             theta = instrPars[:, 2]
-            features = np.column_stack([L1, theta])
+            features = np.column_stack([L_total, theta])
             clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
             labels = clusterer.fit_predict(features)
             groups = clusterer.get_cluster_groups(labels)
