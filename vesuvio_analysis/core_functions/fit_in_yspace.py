@@ -14,8 +14,8 @@ from scipy import  signal
 from pathlib import Path
 from iminuit import Minuit, cost, util
 from iminuit.util import describe
-from .iminuit_costs import GlobalNCPCostFunction
-from .plot_style import set_thesis_style, figure_factory
+from vesuvio_analysis.core_functions.iminuit_costs import GlobalNCPCostFunction
+from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
 import jacobi
 import time
 

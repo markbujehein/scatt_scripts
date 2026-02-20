@@ -1,4 +1,4 @@
-from ..core_functions.ICHelpers import completeICFromInputs
+from vesuvio_analysis.core_functions.ICHelpers import completeICFromInputs
 import numpy as np
 from pathlib import Path
 

@@ -13,9 +13,9 @@ from iminuit import Minuit
 from mantid.simpleapi import *
 from scipy import optimize
 
-from .fit_in_yspace import passDataIntoWS, replaceZerosWithNCP, switchFirstTwoAxis
-from .iminuit_costs import NCPCostFunction
-from .plot_style import set_thesis_style, figure_factory, set_print_options, COLORBLIND_PALETTE
+from vesuvio_analysis.core_functions.fit_in_yspace import passDataIntoWS, replaceZerosWithNCP, switchFirstTwoAxis
+from vesuvio_analysis.core_functions.iminuit_costs import NCPCostFunction
+from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory, set_print_options, COLORBLIND_PALETTE
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import numpy.testing as nptest
 from pathlib import Path
-from .tests_IC import scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC
+from vesuvio_analysis.tests.tests_IC import scriptName, wsBackIC, wsFrontIC, bckwdIC, fwdIC, yFitIC
 testPath = Path(__file__).absolute().parent 
 
 np.random.seed(3)   # Set seed so that tests match everytime

@@ -6,7 +6,7 @@ from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from .stream_manager import StreamManager
 
-from .analysis_functions import iterativeFitForDataReduction
+from vesuvio_analysis.core_functions.analysis_functions import iterativeFitForDataReduction
 from mantid.api import AnalysisDataService, mtd
 from mantid.simpleapi import CreateEmptyTableWorkspace
 import numpy as np
