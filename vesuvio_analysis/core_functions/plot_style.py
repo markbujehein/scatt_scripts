@@ -13,7 +13,7 @@ Covers two complementary concerns:
    helpers are consumed by both ``analysis_functions`` and ``fit_in_yspace``
    plotting routines.
 
-**The Bordallo Principle** — strict visual separation of data categories:
+**Publication-Grade Separation Principle** — strict visual separation of data categories:
 
 * :data:`EXPERIMENTAL_STYLE` — kwargs for ``ax.errorbar()`` representing
   measured scattering data (points + error bars, high-contrast foreground).
@@ -66,7 +66,7 @@ COLORBLIND_PALETTE: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Bordallo Principle — canonical style dicts for data-category distinction
+# Canonical style dicts enforcing experimental vs. theoretical data-category distinction
 # ---------------------------------------------------------------------------
 
 #: Kwargs for ``ax.errorbar()`` — measured scattering / experimental data.

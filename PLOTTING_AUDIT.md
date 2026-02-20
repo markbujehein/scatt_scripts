@@ -1,4 +1,4 @@
-# Plotting Audit — "Bordallo" Aesthetic Refactoring
+# Plotting Audit — Publication-Grade Visualization Refactoring
 
 **Date:** 2026-02-20  
 **Branch:** `copilot-worktree-2026-02-20T15-48-59`  
@@ -99,7 +99,7 @@ No issues. Both are optimizer diagnostic plots.
 | 2232 | `ax.scatter(centers[:, 0], centers[:, 1], ...)` | **Instrumental** — k-means centroids | ✓ Acceptable. |
 | 2253 | `ax.scatter(L1, theta, label=f"Group {i}")` | **Instrumental** — clustered detector positions | ✓ Acceptable. |
 
-No issues with the Bordallo principle (no experimental scattering vs. model comparison here).
+No issues with the data-category separation principle (no experimental scattering vs. model comparison here).
 
 ---
 
@@ -146,7 +146,7 @@ No issues with the Bordallo principle (no experimental scattering vs. model comp
 | `plot_posterior_kde` | `ax.plot(x_grid, kde(x_grid), ...)` | **Statistical** — posterior KDE curve | ✓ Correct smooth line for continuous density. |
 | `plot_optimizer_residuals` | `ax.plot(...)` × 3 | **Theoretical** — optimizer fit comparison | ✓ Correct. Both SciPy and iMinuit fits are theoretical models. |
 
-No Bordallo-principle violations. `set_thesis_style()` + `figure_factory()` used throughout. ✓
+No data-category separation violations. `set_thesis_style()` + `figure_factory()` used throughout. ✓
 
 ---
 
@@ -275,7 +275,7 @@ fig, axs = figure_factory(nrows=2, ncols=noOfMasses)
 ## 6. Dry-Run: `plotGlobalFitMinimizerResults()` in `fit_in_yspace.py`
 
 This is the **primary comparison script** (J(y) global fit visualization) and the most
-egregious Bordallo violation (V3). The proposed changes are:
+most critical data-category violation (V3). The proposed changes are:
 
 1. **Add imports** at module level:
    ```python

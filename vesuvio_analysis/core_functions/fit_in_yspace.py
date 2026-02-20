@@ -2558,7 +2558,7 @@ def plotGlobalFit(
         errors = mObj.errors[signature]
 
         # Evaluate on a high-density grid so the line is smooth even on a
-        # coarse data grid (Bordallo Principle §3B smoothing requirement).
+        # coarse data grid — evaluate on dense grid so the model line is visually smooth.
         x_dense = np.linspace(float(x.min()), float(x.max()), max(500, 5 * len(x)))
         yfit_smooth = costFun.model(x_dense, *values)
 
