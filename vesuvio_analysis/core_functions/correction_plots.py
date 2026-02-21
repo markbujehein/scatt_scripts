@@ -164,7 +164,6 @@ def _extract_ws_data(
 
     return x, y_sum, e_sum
 
-
 def _build_theoretical_style(linestyle: str) -> Dict[str, Any]:
     """Return theoretical style with an explicit linestyle override."""
     return {**THEORETICAL_STYLE, "linestyle": linestyle}
