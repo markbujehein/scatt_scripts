@@ -8,8 +8,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.environment_server"
-      ],
-      "description": "VESUVIO dependency version inspector and compatibility checker"
+      ]
     },
     "vesuvio-ads": {
       "type": "stdio",
@@ -19,8 +18,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.mantid_ads_server"
-      ],
-      "description": "Mantid AnalysisDataService (ADS) workspace state inspector"
+      ]
     },
     "vesuvio-log": {
       "type": "stdio",
@@ -30,8 +28,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.log_inspector_server"
-      ],
-      "description": "VESUVIO run-log reader: list, read, grep, and check optimizer agreement"
+      ]
     },
     "vesuvio-playwright": {
       "type": "stdio",
@@ -41,8 +38,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.playwright_researcher_server"
-      ],
-      "description": "Mantid/ISIS documentation navigator (whitelisted domains only)"
+      ]
     },
     "vesuvio-monitor": {
       "type": "stdio",
@@ -52,8 +48,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.system_monitor_server"
-      ],
-      "description": "CPU/memory resource monitor for VESUVIO fitting runs"
+      ]
     },
     "vesuvio-files": {
       "type": "stdio",
@@ -63,8 +58,7 @@
         "python",
         "-m",
         "vesuvio_analysis.mcp_server.thesis_files_server"
-      ],
-      "description": "Whitelisted project file accessor (scatt_scripts and thesis_draft only)"
+      ]
     }
   }
 }

@@ -173,12 +173,16 @@ experiments/                    # Per-sample data and results (generated at runt
 
 ## MCP Servers
 
-Three core MCP servers expose VESUVIO pipeline internals to LLM agents over
-JSON-RPC 2.0 / stdio transport.
+Six MCP servers expose VESUVIO pipeline internals to LLM agents over
+JSON-RPC 2.0 / stdio transport: three core servers (`environment_server`,
+`mantid_ads_server`, `log_inspector_server`) and three auxiliary servers
+(`playwright_researcher_server`, `system_monitor_server`,
+`thesis_files_server`) for documentation navigation, system monitoring,
+and project file access.
 
 ### Running inside the devcontainer
 
-The devcontainer (`.devcontainer/`) has all three servers available immediately
+The devcontainer (`.devcontainer/`) has all six servers available immediately
 after `pixi install` completes.  Start any server in a terminal tab:
 
 ```bash
@@ -215,9 +219,9 @@ docker run --rm -i \
   vesuvio-mcp-log
 ```
 
-Pre-built images are pushed to the GitHub Container Registry on every commit
-to `dev` / `main` by the [`mcp-docker.yml`](.github/workflows/mcp-docker.yml)
-workflow:
+Pre-built images are published to the GitHub Container Registry by the
+[`mcp-docker.yml`](.github/workflows/mcp-docker.yml) workflow when relevant
+MCP-related changes are made:
 
 ```
 ghcr.io/markbujehein/vesuvio-mcp-environment:latest
