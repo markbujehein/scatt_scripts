@@ -10,9 +10,9 @@
 #
 # Images produced
 # ───────────────
-#   ghcr.io/<owner>/vesuvio-mcp-environment  (environment_server.py)
-#   ghcr.io/<owner>/vesuvio-mcp-ads          (mantid_ads_server.py)
-#   ghcr.io/<owner>/vesuvio-mcp-log          (log_inspector_server.py)
+#   ghcr.io/markbujehein/vesuvio-mcp-environment  (environment_server.py)
+#   ghcr.io/markbujehein/vesuvio-mcp-ads          (mantid_ads_server.py)
+#   ghcr.io/markbujehein/vesuvio-mcp-log          (log_inspector_server.py)
 #
 # Each image is tagged with:
 #   • latest       — always points to the most recent push on dev/main

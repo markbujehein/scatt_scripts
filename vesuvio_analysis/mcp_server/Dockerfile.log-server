@@ -24,12 +24,18 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # log_inspector_server.py uses only stdlib (json, sys, os, re, pathlib).
+# The server resolves the log root from its own __file__ path:
+#   Path(__file__).resolve().parents[2] / "experiments"
+# Inside the container this resolves to /app/experiments — exactly where the
+# volume mount below places the host experiments/ directory.
 COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
 COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
 COPY vesuvio_analysis/mcp_server/log_inspector_server.py ./vesuvio_analysis/mcp_server/log_inspector_server.py
 
-# Default log root; override at runtime with LOG_ROOT env var if needed.
+# Create a non-root user for security.
+RUN adduser --disabled-password --gecos "" vesuvio
+USER vesuvio
+
 ENV PYTHONPATH=/app
-ENV LOG_ROOT=/app/experiments
 
 ENTRYPOINT ["python", "-m", "vesuvio_analysis.mcp_server.log_inspector_server"]

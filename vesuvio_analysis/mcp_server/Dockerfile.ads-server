@@ -28,6 +28,10 @@ COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
 COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
 COPY vesuvio_analysis/mcp_server/mantid_ads_server.py ./vesuvio_analysis/mcp_server/mantid_ads_server.py
 
+# Create a non-root user for security.
+RUN adduser --disabled-password --gecos "" vesuvio
+USER vesuvio
+
 ENV PYTHONPATH=/app
 
 ENTRYPOINT ["python", "-m", "vesuvio_analysis.mcp_server.mantid_ads_server"]
