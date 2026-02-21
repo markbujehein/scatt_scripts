@@ -71,7 +71,8 @@ _TOOLS = [
                     "description": "Optional search query in the page"
                 }
             },
-            "required": ["url"]
+            "required": ["url"],
+            "additionalProperties": False,
         },
     },
 ]
@@ -90,6 +91,11 @@ def _send(obj: dict[str, Any]) -> None:
 def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
+def _log(level: str, data: str) -> None:
+    """Send an MCP log notification to the client (notifications/message)."""
+    _send({"jsonrpc": "2.0", "method": "notifications/message",
+           "params": {"level": level, "logger": "vesuvio-playwright-researcher", "data": data}})
+
 def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method", "")
     req_id = req.get("id")
@@ -100,8 +106,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "logging": {}},
                 "serverInfo": {
                     "name": "vesuvio-playwright-researcher",
                     "version": "0.1.0",
@@ -118,6 +124,14 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         handler = _TOOL_HANDLERS.get(tool_name)
         if handler is None:
             return _error_response(req_id, -32601, f"Unknown tool: {tool_name}")
+        tool_def = next((t for t in _TOOLS if t["name"] == tool_name), None)
+        if tool_def:
+            for req_arg in tool_def["inputSchema"].get("required", []):
+                if req_arg not in tool_args:
+                    return _error_response(
+                        req_id, -32602,
+                        f"Invalid params: missing required argument '{req_arg}' for tool '{tool_name}'.",
+                    )
         try:
             result = handler(tool_args)
             return {
@@ -129,14 +143,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 },
             }
         except Exception as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [{"type": "text", "text": str(e)}],
-                    "isError": True,
-                },
-            }
+            _log("error", f"Tool '{tool_name}' raised: {e}")
+            return _error_response(req_id, -32603, f"Internal error: {e}")
 
     if method == "notifications/initialized":
         return None
