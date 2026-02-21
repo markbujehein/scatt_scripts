@@ -326,6 +326,18 @@ class UserScriptControls:
         fitInYSpace: Selects which final workspace is passed to the y-space
             fitting procedure.  Can differ from procedure.
             Options: None, 'BACKWARD', 'FORWARD', 'JOINT'.
+        runningTest: If True, truncates expensive operations (iterations,
+            bootstrap samples) for fast smoke-testing.  Propagated to all IC
+            objects by run_script.runScript().
+        runOutlierDetection: If True, runs PCA-based hardware-outlier detection
+            as part of the Phase 6 statistical analysis stage.
+        runPhysicsClustering: If True, runs DBSCAN physics-trend clustering
+            as part of the Phase 6 statistical analysis stage.
+        runBayesianBootstrap: If True, applies Dirichlet-weighted Bayesian
+            Bootstrap resampling in the Phase 6 statistical analysis stage.
+        verbose: If True, print pipeline headers, footers, and the optimizer
+            agreement summary.  If False, suppress all informational output
+            (errors and warnings are always shown).
     """
 
     runRoutine = True
