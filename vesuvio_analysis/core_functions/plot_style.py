@@ -38,6 +38,7 @@ Typical usage::
 
 from __future__ import annotations
 
+import shutil
 import sys
 
 import matplotlib.pyplot as plt
@@ -45,6 +46,11 @@ import matplotlib as mpl
 import numpy as np
 from typing import Any, Optional, Tuple
 
+# ---------------------------------------------------------------------------
+# LaTeX availability — detected once at import time so that set_thesis_style()
+# can enable text.usetex only when a LaTeX installation is present.
+# ---------------------------------------------------------------------------
+_HAS_LATEX: bool = shutil.which("latex") is not None
 
 # ---------------------------------------------------------------------------
 # Physical layout constants (A4 + 2 cm margins)
@@ -163,10 +169,11 @@ def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> 
         # --- Font family ---
         # DejaVu Serif is always available; text.usetex enables full Computer
         # Modern rendering when a LaTeX installation is present on the system.
+        # Falls back to Matplotlib's built-in mathtext on headless/CI systems.
         "font.family": "serif",
         "font.serif": ["DejaVu Serif", "Times New Roman", "serif"],
-        "text.usetex": True,
-        "text.latex.preamble": r"\usepackage{amsmath}",
+        "text.usetex": _HAS_LATEX,
+        **( {"text.latex.preamble": r"\usepackage{amsmath}"} if _HAS_LATEX else {} ),
 
         # --- Lines & markers ---
         "lines.linewidth": 1.5,
