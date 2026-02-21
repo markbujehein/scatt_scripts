@@ -1,0 +1,35 @@
+# Lightweight image for the VESUVIO run-log inspector MCP server.
+#
+# This server is pure-stdlib and has no external Python dependencies.
+# It reads YAML-formatted .log files written by RunLogger and exposes
+# them as MCP tools (log_list, log_read_latest, log_read, log_grep,
+# log_check_agreement).
+#
+# Mount the host experiments/ directory to give the server access to
+# real run logs (see --volume flag in the Run example below).
+#
+# Size target: ~130 MB (python:3.11-slim, no extra packages).
+#
+# Build:
+#   docker build -f vesuvio_analysis/mcp_server/Dockerfile.log-server \
+#                -t vesuvio-mcp-log .
+#
+# Run (with host log directory mounted read-only):
+#   docker run --rm -i \
+#     -v /path/to/scatt_scripts/experiments:/app/experiments:ro \
+#     vesuvio-mcp-log
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# log_inspector_server.py uses only stdlib (json, sys, os, re, pathlib).
+COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
+COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
+COPY vesuvio_analysis/mcp_server/log_inspector_server.py ./vesuvio_analysis/mcp_server/log_inspector_server.py
+
+# Default log root; override at runtime with LOG_ROOT env var if needed.
+ENV PYTHONPATH=/app
+ENV LOG_ROOT=/app/experiments
+
+ENTRYPOINT ["python", "-m", "vesuvio_analysis.mcp_server.log_inspector_server"]

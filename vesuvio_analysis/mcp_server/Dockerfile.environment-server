@@ -1,0 +1,37 @@
+# Lightweight image for the VESUVIO environment-inspector MCP server.
+#
+# Size target: ~300–400 MB (python:3.11-slim base).
+# This server has no Mantid C++ dependency — it inspects the Python
+# environment only via importlib and subprocess.
+#
+# Build:
+#   docker build -f vesuvio_analysis/mcp_server/Dockerfile.environment-server \
+#                -t vesuvio-mcp-environment .
+#
+# Run:
+#   docker run --rm -i vesuvio-mcp-environment
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install only the dependencies that environment_server.py inspects
+# (so the version-check tool returns realistic results inside the container).
+RUN pip install --no-cache-dir \
+    numpy \
+    scipy \
+    iminuit \
+    numba \
+    pydantic \
+    pyyaml \
+    matplotlib \
+    jacobi \
+    scikit-learn
+
+COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
+COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
+COPY vesuvio_analysis/mcp_server/environment_server.py ./vesuvio_analysis/mcp_server/environment_server.py
+
+ENV PYTHONPATH=/app
+
+ENTRYPOINT ["python", "-m", "vesuvio_analysis.mcp_server.environment_server"]
