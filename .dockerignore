@@ -1,0 +1,32 @@
+# Exclude large directories that are never needed in the MCP server images.
+# This keeps the Docker build context small and fast.
+
+# Pixi environment (conda/pip packages — re-installed inside the image via pip)
+.pixi/
+
+# Analysis output files (never baked into images — data sovereignty)
+outputs/
+experiments/
+
+# Test artefacts
+tests/smoke_test_output/
+.pytest_cache/
+**/__pycache__/
+*.py[cod]
+
+# Git metadata
+.git/
+
+# Dev tooling
+.devcontainer/
+.vscode/
+.github/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Build artefacts
+dist/
+*.egg-info/
