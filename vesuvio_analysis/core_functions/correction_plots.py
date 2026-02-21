@@ -164,6 +164,10 @@ def _extract_ws_data(
 
     return x, y_sum, e_sum
 
+def _build_theoretical_style(linestyle: str) -> Dict[str, Any]:
+    """Return theoretical style with an explicit linestyle override."""
+    return {**THEORETICAL_STYLE, "linestyle": linestyle}
+
 
 # ---------------------------------------------------------------------------
 # Core plot functions (Mantid-free)
@@ -216,9 +220,9 @@ def _render_dashboard(
         frac = _area_fraction_pct(mx, my, ux, uy)
         ax.plot(
             mx, my,
-            color=col[0], linestyle="--",
+            color=col[0],
             label=rf"$C_{{MS}}$ [{frac:.1f}% of signal]",
-            **{k: v for k, v in THEORETICAL_STYLE.items() if k != "linestyle"},
+            **_build_theoretical_style("--"),
         )
 
     # --- Gamma correction ($C_{\gamma}(t)$) — theoretical correction term ---
@@ -227,9 +231,9 @@ def _render_dashboard(
         frac = _area_fraction_pct(gx, gy, ux, uy)
         ax.plot(
             gx, gy,
-            color=col[1], linestyle=":",
+            color=col[1],
             label=rf"$C_{{\gamma}}$ [{frac:.1f}% of signal]",
-            **{k: v for k, v in THEORETICAL_STYLE.items() if k != "linestyle"},
+            **_build_theoretical_style(":"),
         )
 
     # --- Corrected (experimental scattering spectrum) ---

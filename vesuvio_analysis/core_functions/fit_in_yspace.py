@@ -2545,7 +2545,16 @@ def plotGlobalFit(
         subplot_kw={"projection": "mantid"},
     )
     if hasattr(fig, "canvas"):
-        fig.canvas.setWindowTitle(wsName + "_Plot_of_Global_Fit")
+        # fig.canvas.setWindowTitle(wsName + "_Plot_of_Global_Fit")
+        try:
+            set_title = getattr(fig.canvas, "setWindowTitle", None)
+            if set_title is None:
+                set_title = getattr(fig.canvas, "set_window_title", None)
+            if set_title is not None:
+                set_title(wsName + "_Plot_of_Global_Fit")
+        except Exception:
+            # Backend may not support setting a window title; ignore and continue.
+            pass
     axs_flat = np.asarray(axs).flat
 
     # Experimental: J(y) data per detector group — points + error bars
@@ -2559,9 +2568,10 @@ def plotGlobalFit(
         values = mObj.values[signature]
         errors = mObj.errors[signature]
 
-        # Evaluate on a high-density grid so the line is smooth even on a
-        # coarse data grid — evaluate on dense grid so the model line is visually smooth.
-        x_dense = np.linspace(float(x.min()), float(x.max()), max(500, 5 * len(x)))
+        # Evaluate on a dense grid so the model line is visually smooth even for coarse data.
+        # Cap at 2000 points to avoid excessive evaluation cost for large datasets.
+        x_dense = np.linspace(float(x.min()), float(x.max()), min(max(500, 5 * len(x)), 2000))
+
         yfit_smooth = costFun.model(x_dense, *values)
 
         leg = [f"${p} = {v:.3f} \\pm {e:.3f}$"

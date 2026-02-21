@@ -317,7 +317,7 @@ def plotMeanWidthsAndIntensities(analysisIC, IC, meanWidths, meanIntensities, pa
     set_thesis_style()
     fig, axs = figure_factory("full_width", aspect_ratio=0.8, nrows=2, ncols=1)
     axs[0].set_title("Histograms of mean Widths")
-    axs[1].set_title("Histograms of mean Intensitiess")
+    axs[1].set_title("Histograms of mean Intensities")
 
     for ax, means, parentMeans in zip(axs.flatten(), [meanWidths, meanIntensities], [parentWidths, parentIntensities]):
         plotHists(ax, means, disableAvg=True, disableCI=True)

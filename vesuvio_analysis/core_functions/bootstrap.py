@@ -8,8 +8,6 @@ import numpy as np
 from pathlib import Path
 import time
 import matplotlib.pyplot as plt
-from vesuvio_analysis.core_functions.plot_style import set_thesis_style
-set_thesis_style()
 currentPath = Path(__file__).parent.absolute()
 
 
