@@ -1,0 +1,39 @@
+# Lightweight image for the VESUVIO Mantid ADS inspector MCP server.
+#
+# NOTE: This server interacts with the Mantid AnalysisDataService at runtime,
+# but the server process itself has no hard Mantid C++ build dependency.
+# When Mantid is not available the server degrades gracefully — all ADS tools
+# return a descriptive error message rather than crashing.  Use the full
+# devcontainer for real ADS inspection with a live Mantid session.
+#
+# Size target: ~150 MB (python:3.11-slim, no Mantid C++ libs).
+#
+# Build:
+#   docker build -f vesuvio_analysis/mcp_server/Dockerfile.ads-server \
+#                -t vesuvio-mcp-ads .
+#
+# Run (standalone, graceful-degradation mode):
+#   docker run --rm -i vesuvio-mcp-ads
+#
+# Run (with Mantid via shared Python socket — advanced):
+#   Expose ADS over a named pipe and mount into the container.
+
+FROM python:3.11.9-slim
+
+WORKDIR /app
+
+# numpy is required by the ads_workspace_stats tool handler.
+# Mantid itself remains an optional runtime dependency (graceful degradation).
+RUN pip install --no-cache-dir numpy
+
+COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
+COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
+COPY vesuvio_analysis/mcp_server/mantid_ads_server.py ./vesuvio_analysis/mcp_server/mantid_ads_server.py
+
+# Create a non-root user for security.
+RUN adduser --disabled-password --gecos "" vesuvio
+USER vesuvio
+
+ENV PYTHONPATH=/app
+
+ENTRYPOINT ["python", "-m", "vesuvio_analysis.mcp_server.mantid_ads_server"]

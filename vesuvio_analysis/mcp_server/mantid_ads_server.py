@@ -127,7 +127,12 @@ _TOOLS: list[dict[str, Any]] = [
             "AnalysisDataService (mtd).  Use this to inspect pipeline "
             "state between reduction iterations."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "ads_workspace_shape",
@@ -140,6 +145,7 @@ _TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "Workspace name in the ADS."},
             },
             "required": ["name"],
+            "additionalProperties": False,
         },
     },
     {
@@ -155,6 +161,7 @@ _TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "Workspace name in the ADS."},
             },
             "required": ["name"],
+            "additionalProperties": False,
         },
     },
     {
@@ -163,7 +170,12 @@ _TOOLS: list[dict[str, Any]] = [
             "Check whether the Mantid ADS is empty.  Use after pipeline "
             "teardown to verify that all workspaces were properly cleaned up."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
     },
 ]
 
@@ -190,6 +202,12 @@ def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
+def _log(level: str, data: str) -> None:
+    """Send an MCP log notification to the client (notifications/message)."""
+    _send({"jsonrpc": "2.0", "method": "notifications/message",
+           "params": {"level": level, "logger": "vesuvio-mantid-ads", "data": data}})
+
+
 def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     """Dispatch a single JSON-RPC request and return the response."""
     method = req.get("method", "")
@@ -201,8 +219,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "logging": {}},
                 "serverInfo": {
                     "name": "vesuvio-mantid-ads",
                     "version": "0.1.0",
@@ -223,13 +241,26 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         handler = _TOOL_HANDLERS.get(tool_name)
         if handler is None:
             return _error_response(req_id, -32601, f"Unknown tool: {tool_name}")
-        result = handler(tool_args)
+        # Validate required args before calling the handler.
+        tool_def = next((t for t in _TOOLS if t["name"] == tool_name), None)
+        if tool_def:
+            for req_arg in tool_def["inputSchema"].get("required", []):
+                if req_arg not in tool_args:
+                    return _error_response(
+                        req_id, -32602,
+                        f"Invalid params: missing required argument '{req_arg}' for tool '{tool_name}'.",
+                    )
+        try:
+            result = handler(tool_args)
+        except Exception as exc:  # noqa: BLE001
+            _log("error", f"Tool '{tool_name}' raised: {exc}")
+            return _error_response(req_id, -32603, f"Internal error: {exc}")
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
                 "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                "isError": "error" in result,
+                "isError": isinstance(result, dict) and "error" in result,
             },
         }
 

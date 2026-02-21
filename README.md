@@ -159,9 +159,81 @@ vesuvio_analysis/
 │   └── ic_validation.py        # Pydantic v2 InitialConditions validation
 ├── ip_files/                   # Instrument parameter files for LoadVesuvio
 └── mcp_server/                 # MCP servers for log inspection and ADS state
+    ├── environment_server.py   #   Dependency version inspector + compatibility check
+    ├── mantid_ads_server.py    #   Mantid AnalysisDataService state inspector
+    ├── log_inspector_server.py #   VESUVIO run-log reader and grep tool
+    ├── playwright_researcher_server.py  # Mantid/ISIS documentation navigator
+    ├── system_monitor_server.py         # CPU/memory resource tracker
+    └── thesis_files_server.py           # Whitelisted project file accessor
 tests/                          # unittest-based test suite (zero Mantid dependency)
 experiments/                    # Per-sample data and results (generated at runtime; see .gitignore)
 ```
+
+---
+
+## MCP Servers
+
+Six MCP servers expose VESUVIO pipeline internals to LLM agents over
+JSON-RPC 2.0 / stdio transport: three core servers (`environment_server`,
+`mantid_ads_server`, `log_inspector_server`) and three auxiliary servers
+(`playwright_researcher_server`, `system_monitor_server`,
+`thesis_files_server`) for documentation navigation, system monitoring,
+and project file access.
+
+### Running inside the devcontainer
+
+The devcontainer (`.devcontainer/`) has all six servers available immediately
+after `pixi install` completes.  Start any server in a terminal tab:
+
+```bash
+# Environment / dependency inspector
+pixi run python -m vesuvio_analysis.mcp_server.environment_server
+
+# Mantid ADS state inspector (requires a live Mantid session on the same host)
+pixi run python -m vesuvio_analysis.mcp_server.mantid_ads_server
+
+# Run-log inspector (reads YAML logs from experiments/)
+pixi run python -m vesuvio_analysis.mcp_server.log_inspector_server
+```
+
+### Lightweight Docker images (Phase 3)
+
+Standalone Docker images are available for deploying MCP servers without the
+full Mantid devcontainer (~130–400 MB vs ~2–3 GB):
+
+```bash
+# Build all three images from the repo root
+docker build -f vesuvio_analysis/mcp_server/Dockerfile.environment-server \
+             -t vesuvio-mcp-environment .
+docker build -f vesuvio_analysis/mcp_server/Dockerfile.ads-server \
+             -t vesuvio-mcp-ads .
+docker build -f vesuvio_analysis/mcp_server/Dockerfile.log-server \
+             -t vesuvio-mcp-log .
+
+# Run the environment inspector
+docker run --rm -i vesuvio-mcp-environment
+
+# Run the log inspector with host experiments/ mounted read-only
+docker run --rm -i \
+  -v "$(pwd)/experiments:/app/experiments:ro" \
+  vesuvio-mcp-log
+```
+
+Pre-built images are published to the GitHub Container Registry by the
+[`mcp-docker.yml`](.github/workflows/mcp-docker.yml) workflow when relevant
+MCP-related changes are made:
+
+```
+ghcr.io/markbujehein/vesuvio-mcp-environment:latest
+ghcr.io/markbujehein/vesuvio-mcp-ads:latest
+ghcr.io/markbujehein/vesuvio-mcp-log:latest
+```
+
+### VS Code / Claude Desktop configuration
+
+A ready-to-use MCP configuration is provided at `.vscode/mcp.json`.  VS Code
+Copilot Chat and compatible MCP hosts will auto-discover the servers from this
+file when the workspace is opened.
 
 ---
 
