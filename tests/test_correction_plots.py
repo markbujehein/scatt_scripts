@@ -477,5 +477,60 @@ class TestCorrectionWSNamingConvention(unittest.TestCase):
         self.assertEqual(corrected, "BaH2_500C_FORWARD_3")
 
 
+
+# ---------------------------------------------------------------------------
+# Test 9: Rebin-params guard for ragged JoY workspaces
+# ---------------------------------------------------------------------------
+
+class TestRebinParamsFromRaggedX(unittest.TestCase):
+    """Validate the rebin-params computation that guards against the
+    ``SumSpectra`` "must have common bin boundaries" error.
+
+    ``_convertToYSpaceSummed`` derives a common Rebin ``Params`` string from
+    the ragged x-arrays produced by ``ConvertToYSpace``.  These tests verify
+    the numpy logic independently of Mantid.
+    """
+
+    @staticmethod
+    def _compute_rebin_params(x_all: np.ndarray) -> str:
+        """Mirror the computation inside ``_convertToYSpaceSummed``."""
+        x_min = float(np.min(x_all))
+        x_max = float(np.max(x_all))
+        step = float(np.median(np.abs(np.diff(x_all, axis=1))))
+        return f"{x_min:.6f},{step:.6f},{x_max:.6f}"
+
+    def test_ragged_x_gives_valid_params(self) -> None:
+        """Ragged per-spectrum x-arrays → three-component params string."""
+        n_spectra, n_bins = 4, 50
+        # Each spectrum has slightly different x-range (detector-specific)
+        x_all = np.array([
+            np.linspace(-20.0 + 0.1 * i, 20.0 - 0.1 * i, n_bins + 1)
+            for i in range(n_spectra)
+        ])
+        params = self._compute_rebin_params(x_all)
+        parts = params.split(",")
+        self.assertEqual(len(parts), 3)
+        start, width, stop = float(parts[0]), float(parts[1]), float(parts[2])
+        self.assertLess(start, stop, msg="x_min must be less than x_max")
+        self.assertGreater(width, 0.0, msg="step must be positive")
+
+    def test_uniform_x_preserves_grid(self) -> None:
+        """When all spectra already share a common x-grid, params recover it."""
+        n_spectra, n_bins = 3, 40
+        x_common = np.linspace(-15.0, 15.0, n_bins + 1)
+        x_all = np.tile(x_common, (n_spectra, 1))
+        params = self._compute_rebin_params(x_all)
+        start, width, stop = (float(p) for p in params.split(","))
+        self.assertAlmostEqual(start, -15.0, places=4)
+        self.assertAlmostEqual(stop, 15.0, places=4)
+        self.assertAlmostEqual(width, 30.0 / n_bins, places=4)
+
+    def test_step_is_always_positive(self) -> None:
+        """Bin width derived via abs(np.diff) is always positive."""
+        x_all = np.array([np.linspace(-30.0, 0.0, 61)] * 5)
+        _, width, _ = (float(p) for p in self._compute_rebin_params(x_all).split(","))
+        self.assertGreater(width, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

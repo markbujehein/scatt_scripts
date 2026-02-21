@@ -42,7 +42,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
+from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, EXPERIMENTAL_STYLE, THEORETICAL_STYLE, figure_factory, set_thesis_style
 
 
 # ---------------------------------------------------------------------------
@@ -207,31 +207,33 @@ def _render_dashboard(
     ux, uy, ue = data[_KEY_UNCORRECTED]
     cx, cy, ce = data[_KEY_CORRECTED]
 
-    # --- Uncorrected ---
-    ax.plot(ux, uy, color=col[7], linewidth=1.5, label="Uncorrected")
+    # --- Uncorrected (experimental scattering spectrum) ---
+    ax.errorbar(ux, uy, ue, color=col[7], label="Uncorrected", **EXPERIMENTAL_STYLE)
 
-    # --- MS correction ($C_{MS}(t)$) ---
+    # --- MS correction ($C_{MS}(t)$) — theoretical correction term ---
     if scenario in ("A", "C") and _KEY_MS in data:
         mx, my, me = data[_KEY_MS]
         frac = _area_fraction_pct(mx, my, ux, uy)
         ax.plot(
             mx, my,
-            color=col[0], linewidth=1.5, linestyle="--",
+            color=col[0], linestyle="--",
             label=rf"$C_{{MS}}$ [{frac:.1f}% of signal]",
+            **{k: v for k, v in THEORETICAL_STYLE.items() if k != "linestyle"},
         )
 
-    # --- Gamma correction ($C_{\gamma}(t)$) ---
+    # --- Gamma correction ($C_{\gamma}(t)$) — theoretical correction term ---
     if scenario in ("B", "C") and _KEY_GAMMA in data:
         gx, gy, ge = data[_KEY_GAMMA]
         frac = _area_fraction_pct(gx, gy, ux, uy)
         ax.plot(
             gx, gy,
-            color=col[1], linewidth=1.5, linestyle=":",
+            color=col[1], linestyle=":",
             label=rf"$C_{{\gamma}}$ [{frac:.1f}% of signal]",
+            **{k: v for k, v in THEORETICAL_STYLE.items() if k != "linestyle"},
         )
 
-    # --- Corrected ---
-    ax.plot(cx, cy, color=col[2], linewidth=1.5, label="Corrected")
+    # --- Corrected (experimental scattering spectrum) ---
+    ax.errorbar(cx, cy, ce, color=col[2], label="Corrected", **EXPERIMENTAL_STYLE)
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)

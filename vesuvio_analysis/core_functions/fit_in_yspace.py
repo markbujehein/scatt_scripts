@@ -15,7 +15,7 @@ from pathlib import Path
 from iminuit import Minuit, cost, util
 from iminuit.util import describe
 from vesuvio_analysis.core_functions.iminuit_costs import GlobalNCPCostFunction
-from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
+from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory, COLORBLIND_PALETTE, EXPERIMENTAL_STYLE, THEORETICAL_STYLE
 import jacobi
 import time
 
@@ -1146,10 +1146,14 @@ def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
 
     set_thesis_style()
     fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
-    ax.errorbar(wsMinuitFit, "k.", wkspIndex=0, label="Weighted Avg")
-    ax.errorbar(wsMinuitFit, "r-", wkspIndex=1, label=leg)
-    ax.set_xlabel("YSpace")
-    ax.set_ylabel("Counts")
+    # Experimental: weighted-average J(y) spectrum — points + error bars
+    ax.errorbar(wsMinuitFit, wkspIndex=0, color=COLORBLIND_PALETTE[7],
+                label="Weighted Avg", **EXPERIMENTAL_STYLE)
+    # Theoretical: Minuit best-fit model curve — smooth line, no error bars
+    ax.plot(wsMinuitFit, wkspIndex=1, color=COLORBLIND_PALETTE[3],
+            label=leg, **THEORETICAL_STYLE)
+    ax.set_xlabel(r"$y$ ($\AA^{-1}$)")
+    ax.set_ylabel(r"$J(y)$ (a.u.)")
     ax.set_title("Minuit Fit")
     ax.legend()
 
@@ -1844,9 +1848,10 @@ def runGlobalFit(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Perform a simultaneous (global) fit across detector groups.
 
-    Groups detectors using k-means clustering in (L1, θ) space,
-    computes a summed ``cost.LeastSquares`` over all groups (with
-    shared line-shape parameters), and minimises with iMinuit.
+    Groups detectors using k-means clustering in (L, θ) space where
+    L = L0 + L1 is the total flight path, computes a summed
+    ``cost.LeastSquares`` over all groups (with shared line-shape
+    parameters), and minimises with iMinuit.
 
     Args:
         wsYSpace: Per-spectrum J(y) workspace.
@@ -2019,10 +2024,10 @@ def takeOutMaskedSpectra(
 # ------- Groupings 
 
 def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
-    """Group detectors using k-means clustering in (L1, θ) space.
+    """Group detectors using k-means clustering in (L, θ) space.
 
-    Normalises L1 and θ, applies k-means, and returns a list of index
-    groups.
+    Normalises the total flight path L = L0 + L1 and θ, applies k-means,
+    and returns a list of index groups.
 
     Args:
         ipData: Instrument parameters (unmasked), shape
@@ -2039,23 +2044,24 @@ def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
 
     print(f"\nNumber of groups: {yFitIC.nGlobalFitGroups}")
 
-    L1 = ipData[:, -1].copy()
+    # Total flight path L = L0 (moderator→sample, col 4) + L1 (sample→detector, col 5)
+    L_total = ipData[:, -2].copy() + ipData[:, -1].copy()
     theta = ipData[:, 2].copy()  
 
     # Normalize  ranges to similar values, needed for clustering
-    L1 /= np.sum(L1)       
+    L_total /= np.sum(L_total)       
     theta /= np.sum(theta)
 
-    L1 *= 2           # Bigger weight to L1
+    L_total *= 2           # Bigger weight to L
 
-    points = np.vstack((L1, theta)).T
-    assert points.shape == (len(L1), 2), "Wrong shape."
+    points = np.vstack((L_total, theta)).T
+    assert points.shape == (len(L_total), 2), "Wrong shape."
     # Initial centers of groups
     startingIdxs = np.linspace(0, len(points)-1, yFitIC.nGlobalFitGroups).astype(int)
     centers = points[startingIdxs, :]    # Centers of cluster groups, NOT fitting parameter
 
     if False:    # Set to True to investigate problems with groupings
-        plotDetsAndInitialCenters(L1, theta, centers)
+        plotDetsAndInitialCenters(L_total, theta, centers)
 
     clusters = kMeansClustering(points, centers)
     idxList = formIdxList(clusters)
@@ -2217,22 +2223,22 @@ def formIdxList(clusters: np.ndarray) -> List[List[int]]:
 
 
 def plotDetsAndInitialCenters(
-    L1: np.ndarray, theta: np.ndarray, centers: np.ndarray
+    L_total: np.ndarray, theta: np.ndarray, centers: np.ndarray
 ) -> None:
     """Debug plot of detector positions and initial k-means centroids.
 
     Args:
-        L1: Normalised L1 values.
+        L_total: Normalised total flight path L = L0 + L1 values.
         theta: Normalised theta values.
         centers: Initial centroids, shape ``(k, 2)``.
     """
     fig, ax = plt.subplots(tight_layout=True, subplot_kw={'projection':'mantid'})  
     fig.canvas.setWindowTitle("Starting centroids for groupings")
-    ax.scatter(L1, theta, alpha=0.3, color="r", label="Detectors")
+    ax.scatter(L_total, theta, alpha=0.3, color="r", label="Detectors")
     ax.scatter(centers[:, 0], centers[:, 1], color="k", label="Starting centroids")
     ax.axes.xaxis.set_ticks([])  # Numbers plotted do not correspond to real numbers, so hide them
     ax.axes.yaxis.set_ticks([]) 
-    ax.set_xlabel("L1")
+    ax.set_xlabel("L (L0+L1)")
     ax.set_ylabel("Theta")
     ax.legend()
     fig.show()
@@ -2248,15 +2254,15 @@ def plotFinalGroups(ax: Any, ipData: np.ndarray, idxList: List[List[int]]) -> No
     """
 
     for i, idxs in enumerate(idxList):
-        L1 = ipData[idxs, -1]
+        L_total = ipData[idxs, -2] + ipData[idxs, -1]
         theta = ipData[idxs, 2]
-        ax.scatter(L1, theta, label=f"Group {i}")
+        ax.scatter(L_total, theta, label=f"Group {i}")
 
         dets = ipData[idxs, 0]
-        for det, x, y in zip(dets, L1, theta):
+        for det, x, y in zip(dets, L_total, theta):
             ax.text(x, y, str(int(det)), fontsize=8)
 
-    ax.set_xlabel("L1")
+    ax.set_xlabel("L (L0+L1)")
     ax.set_ylabel("Theta")
     ax.legend()
     return
@@ -2528,35 +2534,42 @@ def plotGlobalFit(
         print("\nToo many axes to show in figure, skipping the plot ...\n")
         return
 
+    set_thesis_style()
     rows = 2
-    fig, axs = plt.subplots(
-        rows, 
-        int(np.ceil(len(dataY)/rows)),
-        figsize=(15, 8), 
-        tight_layout=True,
-        subplot_kw={'projection':'mantid'}
+    n_cols = int(np.ceil(len(dataY) / rows))
+    fig, axs = figure_factory(
+        "full_width",
+        aspect_ratio=0.8,
+        nrows=rows,
+        ncols=n_cols,
+        subplot_kw={"projection": "mantid"},
     )
-    fig.canvas.setWindowTitle(wsName+"_Plot_of_Global_Fit")
+    if hasattr(fig, "canvas"):
+        fig.canvas.setWindowTitle(wsName + "_Plot_of_Global_Fit")
+    axs_flat = np.asarray(axs).flat
 
-    # Data used in Global Fit
-    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs.flat)):
-        ax.errorbar(x, y, yerr, fmt="k.", label=f"Data Group {i}") 
+    # Experimental: J(y) data per detector group — points + error bars
+    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_flat)):
+        ax.errorbar(x, y, yerr, color=COLORBLIND_PALETTE[7],
+                    label=f"Data Group {i}", **EXPERIMENTAL_STYLE)
 
-    # Global Fit 
-    for x, costFun, ax in zip(dataX, totCost, axs.flat):
+    # Theoretical: global fit model — smooth line on dense grid
+    for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_flat)):
         signature = describe(costFun)
-
         values = mObj.values[signature]
         errors = mObj.errors[signature]
 
-        yfit = costFun.model(x, *values)
+        # Evaluate on a high-density grid so the line is smooth even on a
+        # coarse data grid — evaluate on dense grid so the model line is visually smooth.
+        x_dense = np.linspace(float(x.min()), float(x.max()), max(500, 5 * len(x)))
+        yfit_smooth = costFun.model(x_dense, *values)
 
-        # Build a decent legend
-        leg = []
-        for p, v, e in zip(signature, values, errors):
-            leg.append(f"${p} = {v:.3f} \pm {e:.3f}$")
-
-        ax.fill_between(x, yfit, label="\n".join(leg), alpha=0.4)
+        leg = [f"${p} = {v:.3f} \\pm {e:.3f}$"
+               for p, v, e in zip(signature, values, errors)]
+        colour = COLORBLIND_PALETTE[i % len(COLORBLIND_PALETTE)]
+        ax.plot(x_dense, yfit_smooth, color=colour,
+                label="\n".join(leg), **THEORETICAL_STYLE)
         ax.legend()
+    fig.tight_layout()
     fig.show()
     return
