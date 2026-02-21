@@ -181,7 +181,7 @@ _TOOLS: list[dict[str, Any]] = [
             "Python version and platform string.  Use this to diagnose "
             "AttributeError or ImportError failures."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
         "name": "git_commit",
@@ -189,7 +189,7 @@ _TOOLS: list[dict[str, Any]] = [
             "Return the current git commit hash and branch name.  Use this to "
             "trace a failing run back to the exact code revision."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
         "name": "check_version_compatibility",
@@ -199,7 +199,7 @@ _TOOLS: list[dict[str, Any]] = [
             "a list of issues if any are found, or an empty list if the "
             "environment is compatible."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
 ]
 
@@ -224,6 +224,12 @@ def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
+def _log(level: str, data: str) -> None:
+    """Send an MCP log notification to the client (notifications/message)."""
+    _send({"jsonrpc": "2.0", "method": "notifications/message",
+           "params": {"level": level, "logger": "vesuvio-environment", "data": data}})
+
+
 def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method", "")
     req_id = req.get("id")
@@ -234,8 +240,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "logging": {}},
                 "serverInfo": {
                     "name": "vesuvio-environment",
                     "version": "0.1.0",
@@ -252,7 +258,11 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         handler = _TOOL_HANDLERS.get(tool_name)
         if handler is None:
             return _error_response(req_id, -32601, f"Unknown tool: {tool_name}")
-        result = handler(tool_args)
+        try:
+            result = handler(tool_args)
+        except Exception as exc:  # noqa: BLE001
+            _log("error", f"Tool '{tool_name}' raised: {exc}")
+            return _error_response(req_id, -32603, f"Internal error: {exc}")
         return {
             "jsonrpc": "2.0",
             "id": req_id,

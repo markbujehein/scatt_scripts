@@ -18,12 +18,14 @@
 # Run (with Mantid via shared Python socket — advanced):
 #   Expose ADS over a named pipe and mount into the container.
 
-FROM python:3.11-slim
+FROM python:3.11.9-slim
 
 WORKDIR /app
 
-# No extra pip packages required: mantid_ads_server.py only imports
-# stdlib + optional Mantid (handles ImportError gracefully).
+# numpy is required by the ads_workspace_stats tool handler.
+# Mantid itself remains an optional runtime dependency (graceful degradation).
+RUN pip install --no-cache-dir numpy
+
 COPY vesuvio_analysis/__init__.py ./vesuvio_analysis/__init__.py
 COPY vesuvio_analysis/mcp_server/__init__.py ./vesuvio_analysis/mcp_server/__init__.py
 COPY vesuvio_analysis/mcp_server/mantid_ads_server.py ./vesuvio_analysis/mcp_server/mantid_ads_server.py

@@ -25,10 +25,16 @@ _ALLOWED_PATHS = [
 _WORKSPACE_ROOT = Path(__file__).parent.parent.parent.parent  # up to Mantid/
 
 def _is_path_allowed(path: str) -> bool:
-    """Check if the path is within allowed directories."""
+    """Check if the path is within allowed directories.
+
+    Rejects absolute paths outright to prevent ``Path / abs`` bypass.
+    """
+    # Reject absolute paths before joining — Python's pathlib discards the
+    # left operand when the right side is absolute (e.g. Path("/x") / "/etc").
+    if Path(path).is_absolute():
+        return False
     try:
-        abs_path = _WORKSPACE_ROOT / path
-        abs_path = abs_path.resolve()
+        abs_path = (_WORKSPACE_ROOT / path).resolve()
         for allowed in _ALLOWED_PATHS:
             allowed_path = (_WORKSPACE_ROOT / allowed).resolve()
             if abs_path.is_relative_to(allowed_path):
@@ -73,7 +79,8 @@ _TOOLS = [
                     "description": "Relative path to the directory from workspace root."
                 }
             },
-            "required": ["path"]
+            "required": ["path"],
+            "additionalProperties": False,
         },
     },
     {
@@ -90,7 +97,8 @@ _TOOLS = [
                     "description": "Relative path to the file from workspace root."
                 }
             },
-            "required": ["path"]
+            "required": ["path"],
+            "additionalProperties": False,
         },
     },
 ]
@@ -110,6 +118,11 @@ def _send(obj: dict[str, Any]) -> None:
 def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
+def _log(level: str, data: str) -> None:
+    """Send an MCP log notification to the client (notifications/message)."""
+    _send({"jsonrpc": "2.0", "method": "notifications/message",
+           "params": {"level": level, "logger": "vesuvio-thesis-files", "data": data}})
+
 def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method", "")
     req_id = req.get("id")
@@ -120,8 +133,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "logging": {}},
                 "serverInfo": {
                     "name": "vesuvio-thesis-files",
                     "version": "0.1.0",
@@ -138,6 +151,14 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         handler = _TOOL_HANDLERS.get(tool_name)
         if handler is None:
             return _error_response(req_id, -32601, f"Unknown tool: {tool_name}")
+        tool_def = next((t for t in _TOOLS if t["name"] == tool_name), None)
+        if tool_def:
+            for req_arg in tool_def["inputSchema"].get("required", []):
+                if req_arg not in tool_args:
+                    return _error_response(
+                        req_id, -32602,
+                        f"Invalid params: missing required argument '{req_arg}' for tool '{tool_name}'.",
+                    )
         try:
             result = handler(tool_args)
             return {
@@ -149,14 +170,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 },
             }
         except Exception as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [{"type": "text", "text": str(e)}],
-                    "isError": True,
-                },
-            }
+            _log("error", f"Tool '{tool_name}' raised: {e}")
+            return _error_response(req_id, -32603, f"Internal error: {e}")
 
     if method == "notifications/initialized":
         return None

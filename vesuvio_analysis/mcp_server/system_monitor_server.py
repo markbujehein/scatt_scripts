@@ -65,7 +65,7 @@ _TOOLS = [
         "description": (
             "Get current system resource information (CPU, memory, disk usage)."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
         "name": "get_process_info",
@@ -80,7 +80,8 @@ _TOOLS = [
                     "description": "Process ID (optional, defaults to current process)"
                 }
             },
-            "required": []
+            "required": [],
+            "additionalProperties": False,
         },
     },
 ]
@@ -100,6 +101,11 @@ def _send(obj: dict[str, Any]) -> None:
 def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
+def _log(level: str, data: str) -> None:
+    """Send an MCP log notification to the client (notifications/message)."""
+    _send({"jsonrpc": "2.0", "method": "notifications/message",
+           "params": {"level": level, "logger": "vesuvio-system-monitor", "data": data}})
+
 def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     method = req.get("method", "")
     req_id = req.get("id")
@@ -110,8 +116,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "logging": {}},
                 "serverInfo": {
                     "name": "vesuvio-system-monitor",
                     "version": "0.1.0",
@@ -139,14 +145,8 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
                 },
             }
         except Exception as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [{"type": "text", "text": str(e)}],
-                    "isError": True,
-                },
-            }
+            _log("error", f"Tool '{tool_name}' raised: {e}")
+            return _error_response(req_id, -32603, f"Internal error: {e}")
 
     if method == "notifications/initialized":
         return None
