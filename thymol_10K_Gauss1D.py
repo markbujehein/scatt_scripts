@@ -424,12 +424,12 @@ class BootstrapAnalysis:
 
 
 # Initialize classes and run script below
-# Not for users
+# Not for useers
 
 start_time = time.time()
 
 wsBackIC = LoadVesuvioBackParameters
-wsFrontIC = LoadVesuvioFrontParameters
+wsFrontIC = LoadVesuvioFrontParameters  
 bckwdIC = BackwardInitialConditions
 fwdIC = ForwardInitialConditions
 yFitIC = YSpaceFitInitialConditions

@@ -1848,9 +1848,10 @@ def runGlobalFit(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Perform a simultaneous (global) fit across detector groups.
 
-    Groups detectors using k-means clustering in (L1, θ) space,
-    computes a summed ``cost.LeastSquares`` over all groups (with
-    shared line-shape parameters), and minimises with iMinuit.
+    Groups detectors using k-means clustering in (L, θ) space where
+    L = L0 + L1 is the total flight path, computes a summed
+    ``cost.LeastSquares`` over all groups (with shared line-shape
+    parameters), and minimises with iMinuit.
 
     Args:
         wsYSpace: Per-spectrum J(y) workspace.
@@ -2023,10 +2024,10 @@ def takeOutMaskedSpectra(
 # ------- Groupings 
 
 def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
-    """Group detectors using k-means clustering in (L1, θ) space.
+    """Group detectors using k-means clustering in (L, θ) space.
 
-    Normalises L1 and θ, applies k-means, and returns a list of index
-    groups.
+    Normalises the total flight path L = L0 + L1 and θ, applies k-means,
+    and returns a list of index groups.
 
     Args:
         ipData: Instrument parameters (unmasked), shape
@@ -2043,23 +2044,24 @@ def groupDetectors(ipData: np.ndarray, yFitIC: Any) -> List[List[int]]:
 
     print(f"\nNumber of groups: {yFitIC.nGlobalFitGroups}")
 
-    L1 = ipData[:, -1].copy()
+    # Total flight path L = L0 (moderator→sample, col 4) + L1 (sample→detector, col 5)
+    L_total = ipData[:, -2].copy() + ipData[:, -1].copy()
     theta = ipData[:, 2].copy()  
 
     # Normalize  ranges to similar values, needed for clustering
-    L1 /= np.sum(L1)       
+    L_total /= np.sum(L_total)       
     theta /= np.sum(theta)
 
-    L1 *= 2           # Bigger weight to L1
+    L_total *= 2           # Bigger weight to L
 
-    points = np.vstack((L1, theta)).T
-    assert points.shape == (len(L1), 2), "Wrong shape."
+    points = np.vstack((L_total, theta)).T
+    assert points.shape == (len(L_total), 2), "Wrong shape."
     # Initial centers of groups
     startingIdxs = np.linspace(0, len(points)-1, yFitIC.nGlobalFitGroups).astype(int)
     centers = points[startingIdxs, :]    # Centers of cluster groups, NOT fitting parameter
 
     if False:    # Set to True to investigate problems with groupings
-        plotDetsAndInitialCenters(L1, theta, centers)
+        plotDetsAndInitialCenters(L_total, theta, centers)
 
     clusters = kMeansClustering(points, centers)
     idxList = formIdxList(clusters)
@@ -2221,22 +2223,22 @@ def formIdxList(clusters: np.ndarray) -> List[List[int]]:
 
 
 def plotDetsAndInitialCenters(
-    L1: np.ndarray, theta: np.ndarray, centers: np.ndarray
+    L_total: np.ndarray, theta: np.ndarray, centers: np.ndarray
 ) -> None:
     """Debug plot of detector positions and initial k-means centroids.
 
     Args:
-        L1: Normalised L1 values.
+        L_total: Normalised total flight path L = L0 + L1 values.
         theta: Normalised theta values.
         centers: Initial centroids, shape ``(k, 2)``.
     """
     fig, ax = plt.subplots(tight_layout=True, subplot_kw={'projection':'mantid'})  
     fig.canvas.setWindowTitle("Starting centroids for groupings")
-    ax.scatter(L1, theta, alpha=0.3, color="r", label="Detectors")
+    ax.scatter(L_total, theta, alpha=0.3, color="r", label="Detectors")
     ax.scatter(centers[:, 0], centers[:, 1], color="k", label="Starting centroids")
     ax.axes.xaxis.set_ticks([])  # Numbers plotted do not correspond to real numbers, so hide them
     ax.axes.yaxis.set_ticks([]) 
-    ax.set_xlabel("L1")
+    ax.set_xlabel("L (L0+L1)")
     ax.set_ylabel("Theta")
     ax.legend()
     fig.show()
@@ -2252,15 +2254,15 @@ def plotFinalGroups(ax: Any, ipData: np.ndarray, idxList: List[List[int]]) -> No
     """
 
     for i, idxs in enumerate(idxList):
-        L1 = ipData[idxs, -1]
+        L_total = ipData[idxs, -2] + ipData[idxs, -1]
         theta = ipData[idxs, 2]
-        ax.scatter(L1, theta, label=f"Group {i}")
+        ax.scatter(L_total, theta, label=f"Group {i}")
 
         dets = ipData[idxs, 0]
-        for det, x, y in zip(dets, L1, theta):
+        for det, x, y in zip(dets, L_total, theta):
             ax.text(x, y, str(int(det)), fontsize=8)
 
-    ax.set_xlabel("L1")
+    ax.set_xlabel("L (L0+L1)")
     ax.set_ylabel("Theta")
     ax.legend()
     return
