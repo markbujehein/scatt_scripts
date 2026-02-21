@@ -164,16 +164,9 @@ def _extract_ws_data(
 
     return x, y_sum, e_sum
 
-# The _build_theoretical_style function creates a shallow copy of THEORETICAL_STYLE 
-# which could lead to unintended mutations if THEORETICAL_STYLE contains nested dictionaries. 
-# While the current implementation appears safe given the flat dictionary structure, 
-# consider using copy.deepcopy() or {**THEORETICAL_STYLE, 'linestyle': linestyle} 
-# for clarity and robustness.
 def _build_theoretical_style(linestyle: str) -> Dict[str, Any]:
     """Return theoretical style with an explicit linestyle override."""
-    style = dict(THEORETICAL_STYLE)
-    style["linestyle"] = linestyle
-    return style
+    return {**THEORETICAL_STYLE, "linestyle": linestyle}
 
 
 # ---------------------------------------------------------------------------

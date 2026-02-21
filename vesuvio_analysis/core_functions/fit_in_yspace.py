@@ -2569,13 +2569,8 @@ def plotGlobalFit(
         errors = mObj.errors[signature]
 
         # Evaluate on a dense grid so the model line is visually smooth even for coarse data.
-        x_dense = np.linspace(float(x.min()), float(x.max()), max(500, 5 * len(x)))
-        # The dense grid generation uses max(500, 5 * len(x)) points which could
-        # be excessive for large datasets. For example, if x has 1000 points, 
-        # this creates 5000 evaluation points. Consider capping the maximum number 
-        # of points to prevent unnecessary computation while maintaining visual smoothness:
-        # num_points = min(max(500, 5 * len(x)), 2000)
-        # x_dense = np.linspace(float(x.min()), float(x.max()), num_points)
+        # Cap at 2000 points to avoid excessive evaluation cost for large datasets.
+        x_dense = np.linspace(float(x.min()), float(x.max()), min(max(500, 5 * len(x)), 2000))
 
         yfit_smooth = costFun.model(x_dense, *values)
 
