@@ -368,8 +368,8 @@ class UserScriptControls:
     runningTest: bool = False
 
     # Phase 6 pre-fit statistical analysis toggles
-    runOutlierDetection: bool = False    # UMAP hardware-outlier detection (replaces PCA)
-    removeOutliers: bool = False         # Mask detected outliers from workspace
+    runOutlierDetection: bool = True    # UMAP hardware-outlier detection (replaces PCA)
+    removeOutliers: bool = True         # Mask detected outliers from workspace
     runPhysicsClustering: bool = True    # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
 
     # UMAP hyperparameters for outlier detection dimensionality reduction.

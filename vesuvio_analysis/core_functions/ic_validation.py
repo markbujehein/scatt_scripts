@@ -14,7 +14,12 @@ _VALID_FIT_MODELS = frozenset({
     "DOUBLE_WELL", "ANSIO_GAUSSIAN", "MULTIVARIATE_GAUSSIAN",
 })
 _VALID_MASK_TYPES = frozenset({"NCP", "NAN"})
-_VALID_BOOTSTRAP_TYPES = frozenset({"JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"})
+_VALID_BOOTSTRAP_TYPES = frozenset({
+    "JACKKNIFE",
+    "BOOT_RESIDUALS",
+    "BOOT_GAUSS_ERRS",
+    "BOOT_BAYESIAN",  # fast Dirichlet-weighted resampling (no refitting)
+})
 
 
 class _NcpICModel(BaseModel):
@@ -148,7 +153,9 @@ class BootstrapInitialConditionsModel(BaseModel):
 
     Validates ``procedure`` and ``fitInYSpace`` against the allowed
     scattering-direction strings, ``bootstrapType`` against known
-    resampling strategies, and ``nSamples`` as a positive integer.
+    resampling strategies ("JACKKNIFE", "BOOT_RESIDUALS",
+    "BOOT_GAUSS_ERRS", and the fast "BOOT_BAYESIAN" method), and
+    ``nSamples`` as a positive integer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

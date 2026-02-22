@@ -143,12 +143,24 @@ class TestShadowValidation(unittest.TestCase):
         self.assertGreaterEqual(len(caught), 1)
         self.assertIn("Pydantic shadow validation", str(caught[0].message))
 
+    def test_bootstrap_shadow_accepts_bayesian(self):
+        # the default bootstrapType in user scripts is BOOT_BAYESIAN; the
+        # shadow validator must not emit a warning for it.
+        ic = _BootICStub(bootstrapType="BOOT_BAYESIAN")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            shadow_validate_bootstrap_initial_conditions(ic)
+        # there should be no warnings at all because the data are valid
+        self.assertEqual(len(caught), 0)
+
 
 class TestForwardInitialConditionsModel(unittest.TestCase):
     def test_accepts_valid_forward_conditions(self):
+        # when hydrogen is present the HToMassIdxRatio field is required
         model = ForwardInitialConditionsModel(
             masses=np.array([1.0079, 16.0]),
             noOfMSIterations=0,
+            HToMassIdxRatio=0.1,
         )
         self.assertEqual(model.noOfMSIterations, 0)
 
@@ -238,6 +250,19 @@ class TestBootstrapInitialConditionsModel(unittest.TestCase):
             nSamples=100,
         )
         self.assertEqual(model.nSamples, 100)
+
+    def test_accepts_bayesian_bootstrap_type(self):
+        # This value is used as the default in several sample scripts and
+        # should be treated as valid by shadow validation.  Prior to
+        # https://github.com/GuiMacielPereira/scatt_scripts/pull/XXX this test
+        # failed because the allowed set omitted 'BOOT_BAYESIAN'.
+        model = BootstrapInitialConditionsModel(
+            procedure="BACKWARD",
+            fitInYSpace="FORWARD",
+            bootstrapType="BOOT_BAYESIAN",
+            nSamples=10,
+        )
+        self.assertEqual(model.bootstrapType, "BOOT_BAYESIAN")
 
     def test_accepts_none_procedure(self):
         model = BootstrapInitialConditionsModel(
