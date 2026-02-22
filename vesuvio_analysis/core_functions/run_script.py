@@ -1,5 +1,6 @@
 from typing import Any, List, Optional, Tuple
 import time
+import warnings
 
 import numpy as np
 from mantid.api import mtd
@@ -431,7 +432,6 @@ def _dispatchCorrectionPlots(
                 convert_to_yspace_fn=_convertToYSpaceSummed,
             )
         except Exception as exc:  # pragma: no cover
-            import warnings
             warnings.warn(
                 f"_dispatchCorrectionPlots: plotting failed for "
                 f"'{getattr(ic, 'name', '?')}': {exc}"
@@ -523,7 +523,6 @@ def _runStatisticalAnalysis(
                         save_path=fig_dir / "stats_outlier_scatter.pdf",
                     )
                 except Exception as exc:
-                    import warnings
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
         if getattr(userCtr, "runPhysicsClustering", False):
@@ -551,7 +550,6 @@ def _runStatisticalAnalysis(
                         save_path=fig_dir / "stats_cluster_ltheta.pdf",
                     )
                 except Exception as exc:
-                    import warnings
                     warnings.warn(f"Phase 6 cluster plot failed: {exc}")
 
         if getattr(userCtr, "runBayesianBootstrap", False):
