@@ -6,7 +6,7 @@ import warnings
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
-HYDROGEN_MASS_TOLERANCE = 0.1
+HYDROGEN_MASS_TOLERANCE = 0.5
 
 _VALID_PROCEDURES = frozenset({"BACKWARD", "FORWARD", "JOINT"})
 _VALID_FIT_MODELS = frozenset({
@@ -78,10 +78,23 @@ class BackwardInitialConditionsModel(_NcpICModel):
 class ForwardInitialConditionsModel(_NcpICModel):
     """Pydantic shadow model for forward initial conditions.
 
-    Validates the same physical constraints as backward scattering
-    (positive masses, non-negative MS iterations) but does not enforce
-    hydrogen-ratio dependency, since forward detectors see all masses.
+    Extends ``_NcpICModel`` with the hydrogen-ratio cross-field constraint.
+    Validates that when hydrogen is present in masses (forward detectors see all
+    species), the HToMassIdxRatio must be provided (not None).
     """
+
+    HToMassIdxRatio: float | None = None
+
+    @model_validator(mode="after")
+    def _validate_h_ratio_required_when_hydrogen_present(self) -> "ForwardInitialConditionsModel":
+        has_hydrogen = any(
+            abs(mass - 1.0) < HYDROGEN_MASS_TOLERANCE for mass in self.masses
+        )
+        if has_hydrogen and (self.HToMassIdxRatio is None):
+            raise ValueError(
+                "HToMassIdxRatio must be provided when hydrogen is present in masses."
+            )
+        return self
 
 
 class YSpaceFitInitialConditionsModel(BaseModel):
@@ -217,6 +230,7 @@ def shadow_validate_forward_initial_conditions(
         {
             "masses": getattr(IC, "masses", []),
             "noOfMSIterations": getattr(IC, "noOfMSIterations", 0),
+            "HToMassIdxRatio": getattr(IC, "HToMassIdxRatio", None),
         },
         stage,
     )

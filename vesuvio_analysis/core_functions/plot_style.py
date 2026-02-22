@@ -167,13 +167,11 @@ def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> 
         "figure.titlesize": 12,
 
         # --- Font family ---
-        # DejaVu Serif is always available; text.usetex enables full Computer
-        # Modern rendering when a LaTeX installation is present on the system.
-        # Falls back to Matplotlib's built-in mathtext on headless/CI systems.
+        # DejaVu Serif is always available; uses Matplotlib's built-in mathtext
+        # rendering (no dependency on local LaTeX installation).
         "font.family": "serif",
         "font.serif": ["DejaVu Serif", "Times New Roman", "serif"],
-        "text.usetex": _HAS_LATEX,
-        **( {"text.latex.preamble": r"\usepackage{amsmath}"} if _HAS_LATEX else {} ),
+        "text.usetex": False,
 
         # --- Lines & markers ---
         "lines.linewidth": 1.5,

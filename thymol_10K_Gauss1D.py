@@ -62,10 +62,16 @@ class GeneralInitialConditions:
         vertical_width: Vertical extent of the sample slab in metres.
         horizontal_width: Horizontal extent of the sample slab in metres.
         thickness: Thickness of the sample slab along the beam direction in metres.
+        preliminaryNoOfIterations: Number of iterations for automatic H-ratio
+            convergence when hydrogen is detected but HToMassIdxRatio is unknown.
+            Applied only in JOINT procedures.
     """
 
     # Sample slab parameters
     vertical_width, horizontal_width, thickness = 0.1, 0.1, 0.001  # Expressed in metres
+    
+    # Preliminary procedure configuration (used when H-ratio estimation is needed)
+    preliminaryNoOfIterations = 3  # Number of iterations for automatic H-ratio convergence when H is detected but HToMassIdxRatio is unknown
 
 
 class BackwardInitialConditions(GeneralInitialConditions):
@@ -118,7 +124,7 @@ class BackwardInitialConditions(GeneralInitialConditions):
 
     # C10H14O:  14*82: 10*5.71: 4.232
     # HToMassIdxRatio = 20.1050788
-    HToMassIdxRatio = 20.1  # Set to None either when H not present or ratio not known
+    HToMassIdxRatio = None  # Set to None either when H not present or ratio not known
     massIdx = 1  # Idx of mass to take the ratio with, idx is relative to backward scattering masses
 
     # Masses, instrument parameters and initial fitting parameters
@@ -155,7 +161,7 @@ class BackwardInitialConditions(GeneralInitialConditions):
     # constraints =  ({'type': 'eq', 'fun': lambda par:  4.232*par[0] - 57.1*par[3]})
     constraints = []
 
-    noOfMSIterations = 2  # Number of MS corrections, 0 is no correction
+    noOfMSIterations = 0  # Number of MS corrections, 0 is no correction
     firstSpec = 3  # 3
     lastSpec = 134  # 134
 
@@ -216,6 +222,7 @@ class ForwardInitialConditions(GeneralInitialConditions):
     subEmptyFromRaw = False
     scaleEmpty = 1
     scaleRaw = 1
+    HToMassIdxRatio = 20.1050788
 
     # Masses, instrument parameters and initial fitting parameters
     masses = np.array([1.0079, 12, 16, 27])
@@ -257,7 +264,7 @@ class ForwardInitialConditions(GeneralInitialConditions):
     # constraints = ({'type': 'eq', 'fun': lambda par:  par[0] - 20.1050788*par[3]},{'type': 'eq', 'fun': lambda par:  4.232*par[3] - 57.1*par[6]})
     constraints = []
 
-    noOfMSIterations = 2
+    noOfMSIterations = 0
     firstSpec = 135  # 144
     lastSpec = 182  # 182
 
@@ -273,7 +280,7 @@ class ForwardInitialConditions(GeneralInitialConditions):
     transmission_guess = 0.87  # Experimental value from VesuvioTransmission
     multiple_scattering_order, number_of_events = 2, 1.0e5  # Used in MS correction
 
-    runHistData = True
+    runHistData = False
 
 
 class YSpaceFitInitialConditions:
@@ -330,11 +337,14 @@ class UserScriptControls:
             bootstrap samples) for fast smoke-testing.  Propagated to all IC
             objects by run_script.runScript().
         runOutlierDetection: If True, runs PCA-based hardware-outlier detection
-            as part of the Phase 6 statistical analysis stage.
+            as part of the Phase 6 pre-fit statistical analysis stage.
+        removeOutliers: If True **and** ``runOutlierDetection`` is True,
+            dynamically masks the detected outlier spectra in the Mantid
+            workspace so they are excluded from clustering and the global fit.
         runPhysicsClustering: If True, runs DBSCAN physics-trend clustering
-            as part of the Phase 6 statistical analysis stage.
-        runBayesianBootstrap: If True, applies Dirichlet-weighted Bayesian
-            Bootstrap resampling in the Phase 6 statistical analysis stage.
+            as part of the Phase 6 pre-fit analysis.  When enabled, the
+            number of valid clusters dynamically overwrites
+            ``YSpaceFitInitialConditions.nGlobalFitGroups``.
         verbose: If True, print pipeline headers, footers, and the optimizer
             agreement summary.  If False, suppress all informational output
             (errors and warnings are always shown).
@@ -350,10 +360,10 @@ class UserScriptControls:
     # Fast-track flag: when True, truncates expensive operations for smoke testing
     runningTest: bool = False
 
-    # Phase 6 statistical analysis toggles
+    # Phase 6 pre-fit statistical analysis toggles
     runOutlierDetection: bool = False    # PCA hardware-outlier detection
-    runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering
-    runBayesianBootstrap: bool = False   # Bayesian Bootstrap (Dirichlet weights)
+    removeOutliers: bool = False         # Mask detected outliers from workspace
+    runPhysicsClustering: bool = True    # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
 
     # Output verbosity: True = headers, footers, agreement summary; False = silent
     verbose: bool = True
@@ -372,7 +382,11 @@ class BootstrapInitialConditions:
             bootstrap replica.
             Options: None, 'BACKWARD', 'FORWARD', 'JOINT'.
         bootstrapType: Resampling strategy to use.
-            Options: 'JACKKNIFE', 'BOOT_RESIDUALS', 'BOOT_GAUSS_ERRS'.
+            Options: 'JACKKNIFE', 'BOOT_RESIDUALS', 'BOOT_GAUSS_ERRS',
+            'BOOT_BAYESIAN'.  The first three perform iterative re-fitting
+            of bootstrap replicas.  'BOOT_BAYESIAN' uses fast
+            Dirichlet-weighted resampling of NCP residuals without
+            re-fitting.
         nSamples: Number of bootstrap replicas to generate.
         skipMSIterations: If True, each replica skips the multiple-scattering
             and gamma-background corrections to reduce computation time.
@@ -385,10 +399,10 @@ class BootstrapInitialConditions:
     runBootstrap = False
 
     procedure = "BACKWARD"
-    fitInYSpace = None  # "FORWARD"
+    fitInYSpace = "FORWARD"
 
     bootstrapType = (
-        "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"
+        "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
     )
     nSamples = 650  # Used if running Bootstrap, otherwise code ignores it
     skipMSIterations = False  # Each replica runs with no MS or Gamma corrections

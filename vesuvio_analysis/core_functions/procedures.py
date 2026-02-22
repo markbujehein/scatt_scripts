@@ -72,7 +72,7 @@ def runJointBackAndForwardProcedure(
 
 
 def runPreProcToEstHRatio(
-    bckwdIC: Any, fwdIC: Any
+    bckwdIC: Any, fwdIC: Any, nIter: int = 3
 ) -> Tuple[List[float], List[int]]:
     """Run a preliminary procedure to estimate the H-to-mass intensity ratio.
 
@@ -85,6 +85,8 @@ def runPreProcToEstHRatio(
         bckwdIC: Completed backward IC (mutated with the estimated
             H ratio).
         fwdIC: Completed forward IC.
+        nIter: Number of preliminary iterations for H-ratio convergence.
+            Defaults to 3 (a sensible convergence criterion).
 
     Returns:
         A 2-tuple ``(HRatios, massIdxs)`` — lists of H intensity
@@ -95,6 +97,11 @@ def runPreProcToEstHRatio(
     """
 
     assert bckwdIC.runningSampleWS == False, "Preliminary procedure not suitable for Bootstrap."
+    
+    # Log the automatic procedure start (no user input prompts)
+    print("\nH mass detected but HToMassIdxRatio was not provided.")
+    print(f"Automatically estimating HToMassIdxRatio using {nIter} iterations (no user interaction).\n")
+    
     fwdIC.runningPreliminary = True
 
     # Store original no of MS and set MS iterations to zero
@@ -103,8 +110,6 @@ def runPreProcToEstHRatio(
         oriMS.append(IC.noOfMSIterations)
         IC.noOfMSIterations = 0
 
-    nIter = askUserNoOfIterations()
- 
     HRatios = []   # List to store HRatios
     massIdxs = []
     # Run preliminary forward with a good guess for the widths of non-H masses
@@ -162,24 +167,6 @@ def createTableWSHRatios(HRatios: List[float], massIdxs: List[int]) -> None:
     return
 
 
-def askUserNoOfIterations() -> int:
-    """Prompt the user for the number of preliminary iterations.
-
-    Returns:
-        Number of iterations entered by the user.
-
-    Raises:
-        KeyboardInterrupt: If the user declines to run.
-    """
-    print("\nH was detected but HToMassIdxRatio was not provided.")
-    print("\nSugested preliminary procedure:\n\nrun_forward\nfor n:\n    estimate_HToMassIdxRatio\n    run_backward\n    run_forward")
-    userInput = input("\n\nDo you wish to run preliminary procedure to estimate HToMassIdxRatio? (y/n)") 
-    if not((userInput=="y") or (userInput=="Y")): raise KeyboardInterrupt("Preliminary procedure interrupted.")
-    
-    nIter = int(input("\nHow many iterations do you wish to run? n="))
-    return nIter
- 
-
 def calculateHToMassIdxRatio(fwdScatResults: Any) -> Tuple[int, float]:
     """Estimate the H intensity ratio from forward-scattering results.
 
@@ -224,6 +211,12 @@ def runJoint(
     Returns:
         A 3-tuple ``(wsFinal, bckwdScatResults, fwdScatResults)``.
     """
+    if isHPresent(fwdIC.masses):
+        assert bckwdIC.HToMassIdxRatio is not None, (
+            "Cannot run JOINT with hydrogen present unless HToMassIdxRatio is "
+            "provided or estimated first."
+        )
+
     wsFinal, bckwdScatResults = iterativeFitForDataReduction(bckwdIC)
     setInitFwdParsFromBackResults(bckwdScatResults, bckwdIC, fwdIC)
     wsFinal, fwdScatResults = iterativeFitForDataReduction(fwdIC)
@@ -254,9 +247,14 @@ def setInitFwdParsFromBackResults(
     if isHPresent(fwdIC.masses):
 
         assert len(backMeanWidths) == fwdIC.noOfMasses-1, "H Mass present, no of masses in front needs to be bigger than back by 1."
+        h_ratio = bckwdIC.HToMassIdxRatio
+        assert h_ratio is not None, (
+            "HToMassIdxRatio is None while H is present in forward masses. "
+            "Provide a ratio or run the preliminary estimation procedure."
+        )
 
         # Use H ratio to calculate intensity ratios 
-        HIntensity = bckwdIC.HToMassIdxRatio * backMeanIntensityRatios[bckwdIC.massIdx]
+        HIntensity = h_ratio * backMeanIntensityRatios[bckwdIC.massIdx]
         # Add H intensity in the first idx
         initialFwdIntensityRatios = np.append([HIntensity], backMeanIntensityRatios)
         # Normalize intensities

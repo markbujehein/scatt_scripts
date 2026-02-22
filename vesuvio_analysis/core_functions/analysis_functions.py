@@ -38,6 +38,9 @@ set_print_options()
 # ---------------------------------------------------------------------------
 _optimizer_check_log: list = []
 
+# Fit comparison data for visualization: stores (specNo, scipy_chi2, iminuit_chi2, scipy_pars, iminuit_pars)
+_fit_comparison_log: list = []
+
 _SEP_DOUBLE = "=" * 60
 _SEP_SINGLE = "-" * 60
 
@@ -70,6 +73,64 @@ def _print_optimizer_agreement_summary() -> None:
     )
     print(f"  Spectra checked: {n_total}, Failed: {n_fail}")
     print(_SEP_SINGLE)
+
+
+def _plot_optimizer_comparison(ic: Any) -> None:
+    """Plot iMinuit vs scipy chi-squared and parameter differences.
+
+    Creates a diagnostic figure showing:
+    1. Chi-squared comparison across spectra
+    2. Parameter-wise relative differences for worst-case spectra
+
+    Args:
+        ic: Initial-conditions object with figSavePath.
+    """
+    if not _fit_comparison_log or ic.runningSampleWS:
+        return
+
+    set_thesis_style()
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8))
+    
+    spec_nos = [d['specNo'] for d in _fit_comparison_log]
+    scipy_chi2s = [d['scipy_chi2'] for d in _fit_comparison_log]
+    iminuit_chi2s = [d['iminuit_chi2'] for d in _fit_comparison_log]
+    
+    # Plot 1: Chi-squared comparison
+    ax = axes[0]
+    ax.scatter(spec_nos, scipy_chi2s, label='SciPy', alpha=0.6, s=30)
+    ax.scatter(spec_nos, iminuit_chi2s, label='iMinuit', alpha=0.6, s=30)
+    ax.set_xlabel('Spectrum Number')
+    ax.set_ylabel('χ²')
+    ax.set_title('SciPy vs iMinuit: Chi-squared')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 2: Relative chi-squared difference
+    ax = axes[1]
+    chi2_rel_diffs = [
+        abs(s - m) / max(abs(s), 1e-10) if s != 0 else 0
+        for s, m in zip(scipy_chi2s, iminuit_chi2s)
+    ]
+    colors = ['red' if d > _AGREEMENT_THRESHOLD_ANALYSIS else 'green' for d in chi2_rel_diffs]
+    ax.bar(range(len(chi2_rel_diffs)), [d*100 for d in chi2_rel_diffs], color=colors, alpha=0.7)
+    ax.axhline(_AGREEMENT_THRESHOLD_ANALYSIS * 100, color='black', linestyle='--', label='1% Threshold')
+    ax.set_xlabel('Spectrum Index')
+    ax.set_ylabel('Relative Difference (%)')
+    ax.set_title('Chi-squared Relative Difference (SciPy vs iMinuit)')
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    
+    try:
+        fileName = f"{ic.name}_Optimizer_Comparison.pdf"
+        savePath = ic.figSavePath / fileName
+        plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+        print(f"Saved: {fileName} to {ic.figSavePath}")
+    except Exception as e:
+        logger.warning(f"Failed to save optimizer comparison plot: {e}")
+    
+    plt.close(fig)
 
 
 def iterativeFitForDataReduction(
@@ -445,8 +506,10 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     print("\nFitting NCP:\n")
 
     _optimizer_check_log.clear()
+    _fit_comparison_log.clear()
     arrFitPars = fitNcpToArray(IC, dataY, dataE, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
     _print_optimizer_agreement_summary()
+    _plot_optimizer_comparison(IC)
     createTableWSForFitPars(ws.name(), IC.noOfMasses, arrFitPars)
     arrBestFitPars = arrFitPars[:, 1:-2]
     ncpForEachMass, ncpTotal = calculateNcpArr(IC, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
@@ -1257,28 +1320,53 @@ def fitNcpToSingleSpec(
         else:
             chi2_rel_diff = 0.0
 
-        # Parameter-vector comparison
+        # Parameter-vector comparison (hybrid: relative for large params, absolute for small)
         iminuit_pars = np.array(m.values)
         scipy_pars = fitPars
-        with np.errstate(divide="ignore", invalid="ignore"):
-            par_rel_diff = np.where(
-                np.abs(scipy_pars) > 1e-12,
-                np.abs(scipy_pars - iminuit_pars) / np.abs(scipy_pars),
-                0.0,
-            )
+        
+        # Use hybrid comparison: relative difference for parameters with |value| > threshold,
+        # absolute difference for very small parameters (e.g., centers near zero).
+        # This avoids spurious 4000% differences when centers differ by 1e-4.
+        _PARAM_SCALE_THRESHOLD = 0.01  # Use relative comparison only if |param| > 0.01
+        _PARAM_ABS_TOLERANCE = 1e-4    # Absolute tolerance for small parameters
+        
+        par_abs_diff = np.abs(scipy_pars - iminuit_pars)
+        par_rel_diff = np.zeros_like(scipy_pars)
+        
+        # For parameters larger than threshold, use relative difference
+        large_param_mask = np.abs(scipy_pars) > _PARAM_SCALE_THRESHOLD
+        par_rel_diff[large_param_mask] = (
+            par_abs_diff[large_param_mask] / np.abs(scipy_pars[large_param_mask])
+        )
+        
+        # For very small parameters, use absolute difference as a fraction of tolerance
+        small_param_mask = ~large_param_mask
+        par_rel_diff[small_param_mask] = (
+            par_abs_diff[small_param_mask] / _PARAM_ABS_TOLERANCE
+        )
+        
         max_par_diff = float(np.max(par_rel_diff))
         if max_par_diff > _AGREEMENT_THRESHOLD:
             worst_idx = int(np.argmax(par_rel_diff))
             logger.warning(
                 "OptimizerCheck Spec %.0f: parameter disagreement — "
-                "par[%d] scipy=%.4g vs iMinuit=%.4g (%.1f%%)",
+                "par[%d] scipy=%.4g vs iMinuit=%.4g (abs: %.4g, rel: %.1f%%)",
                 instrPars[0], worst_idx,
                 scipy_pars[worst_idx], iminuit_pars[worst_idx],
-                max_par_diff * 100,
+                par_abs_diff[worst_idx], max_par_diff * 100,
             )
 
         # Accumulate for the end-of-workspace summary
         _optimizer_check_log.append((chi2_rel_diff, max_par_diff))
+        
+        # Store data for fit comparison visualization
+        _fit_comparison_log.append({
+            'specNo': instrPars[0],
+            'scipy_chi2': scipy_chi2,
+            'iminuit_chi2': iminuit_chi2,
+            'scipy_pars': scipy_pars.copy(),
+            'iminuit_pars': iminuit_pars.copy(),
+        })
     except Exception:
         logger.debug(
             "iMinuit fit failed for spec %.0f, scipy result used.",

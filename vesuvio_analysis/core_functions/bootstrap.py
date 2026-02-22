@@ -27,8 +27,8 @@ def runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC):
 
 def checkValidInput(bootIC):
     boot = bootIC.bootstrapType
-    assert (boot=="JACKKNIFE") | (boot=="BOOT_GAUSS_ERRS") | (boot=="BOOT_RESIDUALS"), \
-        "bootstrapType not recognized. Options: 'JACKKNIFE', 'BOOT_GAUSS_ERRS', 'BOOT_RESIDUALS'"
+    assert (boot=="JACKKNIFE") | (boot=="BOOT_GAUSS_ERRS") | (boot=="BOOT_RESIDUALS") | (boot=="BOOT_BAYESIAN"), \
+        "bootstrapType not recognized. Options: 'JACKKNIFE', 'BOOT_GAUSS_ERRS', 'BOOT_RESIDUALS', 'BOOT_BAYESIAN'"
 
 
 def checkOutputDirExists(bckwdIC, fwdIC, bootIC):
@@ -190,7 +190,11 @@ def calcRunTime(IC, tNoMS, tPerMS, bootIC):
     if bootIC.skipMSIterations:
         timePerSample = tNoMS
     else:
-        timePerSample = tNoMS + (IC.noOfMSIterations) * (tNoMS+tPerMS)
+        # Ensure noOfMSIterations is a valid number (handle None, default to 0)
+        noMS = getattr(IC, 'noOfMSIterations', 0)
+        if noMS is None:
+            noMS = 0
+        timePerSample = tNoMS + noMS * (tNoMS+tPerMS)
 
     nSamples = bootIC.nSamples 
     if bootIC.bootstrapType=="JACKKNIFE":

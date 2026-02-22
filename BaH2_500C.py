@@ -290,9 +290,10 @@ class UserScriptControls:
             are capped at 3, and iMinuit uses a loose convergence
             tolerance.  Intended for smoke tests and CI validation.
         runOutlierDetection: Enable PCA hardware-outlier detection.
+        removeOutliers: When True and outliers are detected, mask them
+            from the workspace before clustering and global fit.
         runPhysicsClustering: Enable DBSCAN physics-trend clustering.
-        runBayesianBootstrap: Enable Bayesian Bootstrap with Dirichlet
-            weights.
+            Dynamically overwrites ``nGlobalFitGroups`` when enabled.
     """
 
     runRoutine: bool = False
@@ -305,10 +306,10 @@ class UserScriptControls:
     # Fast-track flag: when True, truncates expensive operations for smoke testing
     runningTest: bool = False
 
-    # Phase 6 statistical analysis toggles
+    # Phase 6 pre-fit statistical analysis toggles
     runOutlierDetection: bool = False    # PCA hardware-outlier detection
-    runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering
-    runBayesianBootstrap: bool = False   # Bayesian Bootstrap (Dirichlet weights)
+    removeOutliers: bool = False         # Mask detected outliers from workspace
+    runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
 
     # Output verbosity: True = headers, footers, agreement summary; False = silent
     verbose: bool = True
@@ -325,7 +326,10 @@ class BootstrapInitialConditions:
         procedure: Scattering direction for each bootstrap replica.
         fitInYSpace: Direction whose y-space fit is stored per replica.
         bootstrapType: Resampling strategy. Options:
-            ``"JACKKNIFE"``, ``"BOOT_RESIDUALS"``, ``"BOOT_GAUSS_ERRS"``.
+            ``"JACKKNIFE"``, ``"BOOT_RESIDUALS"``, ``"BOOT_GAUSS_ERRS"``,
+            ``"BOOT_BAYESIAN"``.  The first three perform iterative
+            re-fitting.  ``"BOOT_BAYESIAN"`` uses fast Dirichlet-weighted
+            resampling without re-fitting.
         nSamples: Number of bootstrap replicas to generate.
         skipMSIterations: Skip MS correction iterations inside each
             replica for speed.
@@ -340,7 +344,7 @@ class BootstrapInitialConditions:
     procedure: str = "FORWARD"
     fitInYSpace: str = "FORWARD"
 
-    bootstrapType: str = "BOOT_GAUSS_ERRS"    # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"
+    bootstrapType: str = "BOOT_GAUSS_ERRS"    # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
     nSamples: int = 1
     skipMSIterations: bool = False
     userConfirmation: bool = True

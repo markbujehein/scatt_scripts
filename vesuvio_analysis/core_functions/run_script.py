@@ -1,10 +1,17 @@
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import logging
 import time
 import warnings
 
 import numpy as np
 from mantid.api import mtd
-from mantid.simpleapi import ConvertToYSpace, DeleteWorkspaces, Rebin, SumSpectra
+from mantid.simpleapi import (
+    ConvertToYSpace,
+    DeleteWorkspaces,
+    MaskDetectors,
+    Rebin,
+    SumSpectra,
+)
 
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
 from vesuvio_analysis.core_functions.correction_plots import dispatch_correction_plots
@@ -23,6 +30,8 @@ from vesuvio_analysis.core_functions.procedures import (
     runJointBackAndForwardProcedure,
     runPreProcToEstHRatio,
 )
+
+logger = logging.getLogger(__name__)
 
 _SEP_DOUBLE = "=" * 60
 _SEP_SINGLE = "-" * 60
@@ -131,16 +140,16 @@ def runScript(
     else:
         import tempfile
         _log_output_dir = tempfile.mkdtemp()
-    logger = RunLogger(scriptName, direction, _log_output_dir)
-    logger.log_environment()
-    logger.log_ic("UserScriptControls", userCtr)
-    logger.log_ic("LoadVesuvioBackParameters", wsBackIC)
-    logger.log_ic("LoadVesuvioFrontParameters", wsFrontIC)
-    logger.log_ic("BackwardInitialConditions", bckwdIC)
-    logger.log_ic("ForwardInitialConditions", fwdIC)
-    logger.log_ic("YSpaceFitInitialConditions", yFitIC)
-    logger.log_ic("BootstrapInitialConditions", bootIC)
-    logger.log_flags(
+    run_logger = RunLogger(scriptName, direction, _log_output_dir)
+    run_logger.log_environment()
+    run_logger.log_ic("UserScriptControls", userCtr)
+    run_logger.log_ic("LoadVesuvioBackParameters", wsBackIC)
+    run_logger.log_ic("LoadVesuvioFrontParameters", wsFrontIC)
+    run_logger.log_ic("BackwardInitialConditions", bckwdIC)
+    run_logger.log_ic("ForwardInitialConditions", fwdIC)
+    run_logger.log_ic("YSpaceFitInitialConditions", yFitIC)
+    run_logger.log_ic("BootstrapInitialConditions", bootIC)
+    run_logger.log_flags(
         MSCorrectionFlag_bckwd=getattr(bckwdIC, "MSCorrectionFlag", None),
         GammaCorrectionFlag_bckwd=getattr(bckwdIC, "GammaCorrectionFlag", None),
         MSCorrectionFlag_fwd=getattr(fwdIC, "MSCorrectionFlag", None),
@@ -157,14 +166,23 @@ def runScript(
 
         ranPreliminary = False
         if (proc == "BACKWARD") | (proc == "JOINT"):
-            if isHPresent(fwdIC.masses) & (bckwdIC.HToMassIdxRatio == None):
-                HRatios, massIdxs = runPreProcToEstHRatio(
-                    bckwdIC, fwdIC
-                )  # Sets H ratio to bckwdIC automatically
-                ranPreliminary = True
-            assert isHPresent(fwdIC.masses) != (bckwdIC.HToMassIdxRatio == None), (
-                "When H is not present, HToMassIdxRatio has to be set to None"
-            )
+            h_present = isHPresent(fwdIC.masses)
+            if h_present:
+                # In JOINT mode the ratio is consumed from backward IC when
+                # projecting backward intensities into forward initial conditions.
+                # If user supplied it on forward IC, use that value as seed.
+                if (bckwdIC.HToMassIdxRatio is None) and (fwdIC.HToMassIdxRatio is not None):
+                    bckwdIC.HToMassIdxRatio = fwdIC.HToMassIdxRatio
+
+                if bckwdIC.HToMassIdxRatio is None:
+                    HRatios, massIdxs = runPreProcToEstHRatio(
+                        bckwdIC, fwdIC, nIter=fwdIC.preliminaryNoOfIterations
+                    )
+                    ranPreliminary = True
+
+                assert bckwdIC.HToMassIdxRatio is not None, (
+                    "HToMassIdxRatio is required for JOINT/BACKWARD when H is present."
+                )
 
         if proc == "BACKWARD":
             res = runIndependentIterativeProcedure(bckwdIC)
@@ -198,8 +216,18 @@ def runScript(
             print(f"  Bootstrap Procedure — {bootIC.procedure}")
             print(f"{_SEP_DOUBLE}\n")
         _t0 = time.time()
-        logger.write()
-        boot_result = runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
+        run_logger.write()
+
+        # Bayesian Bootstrap: fast Dirichlet-weighted resampling on NCP
+        # residuals.  Runs the parent NCP fit first, then generates
+        # weighted residual profiles — no iterative re-fitting.
+        if getattr(bootIC, "bootstrapType", "") == "BOOT_BAYESIAN":
+            boot_result = _runBayesianBootstrapProcedure(
+                bckwdIC, fwdIC, bootIC, yFitIC,
+            )
+        else:
+            boot_result = runBootstrap(bckwdIC, fwdIC, bootIC, yFitIC)
+
         if _verbose:
             _elapsed = time.time() - _t0
             _m, _s = divmod(_elapsed, 60)
@@ -223,7 +251,7 @@ def runScript(
         ):  # When wsName is empty list, loop doesn't run
             for wsName, IC in zip(wsNames, ICs):
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
-            logger.write()
+            run_logger.write()
             if _verbose:
                 _elapsed = time.time() - _t0
                 _m, _s = divmod(_elapsed, 60)
@@ -239,26 +267,33 @@ def runScript(
         res = None
         resYFit = None
         try:
-            logger.log_timestamp("ncp_start")
+            run_logger.log_timestamp("ncp_start")
             res = runProcedure()
-            logger.log_timestamp("ncp_end")
-            logger.log_final_results(res[1] if res is not None and len(res) >= 2 else None)
+            run_logger.log_timestamp("ncp_end")
+            run_logger.log_final_results(res[1] if res is not None and len(res) >= 2 else None)
 
             # --- Correction Dashboard Plots ---
             _dispatchCorrectionPlots(userCtr, bckwdIC, fwdIC)
 
-            logger.log_timestamp("yspace_start")
+            # --- Phase 6a: Pre-fit statistical analysis ---
+            # Outlier detection and DBSCAN clustering run BEFORE the
+            # y-space global fit so their results can configure
+            # nGlobalFitGroups and exclude broken detectors.
+            run_logger.log_timestamp("phase6_prefit_start")
+            _runPreFitStatistics(
+                userCtr, res, bckwdIC, fwdIC, yFitIC,
+            )
+            run_logger.log_timestamp("phase6_prefit_end")
+
+            run_logger.log_timestamp("yspace_start")
             for wsName, IC in zip(wsNames, ICs):
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
-            logger.log_timestamp("yspace_end")
+            run_logger.log_timestamp("yspace_end")
 
         except Exception as exc:
-            logger.log_error(exc)
-            logger.write()
+            run_logger.log_error(exc)
+            run_logger.write()
             raise
-
-        # --- Phase 6: Statistical Analysis (post-fit) ---
-        _runStatisticalAnalysis(userCtr, res, bckwdIC, fwdIC)
 
         if _verbose:
             _elapsed = time.time() - _t0
@@ -267,7 +302,7 @@ def runScript(
             print(f"  Analysis complete — {_elapsed:.2f}s ({int(_m)}m {int(_s)}s)")
             print(f"{_SEP_SINGLE}\n")
 
-        logger.write()
+        run_logger.write()
         return res, resYFit  # Return results used only in tests
 
 
@@ -438,32 +473,46 @@ def _dispatchCorrectionPlots(
             )
 
 
-def _runStatisticalAnalysis(
-    userCtr: Any, res: Any, bckwdIC: Any, fwdIC: Any,
-) -> None:
-    """Runs Phase 6 statistical analysis steps when their flags are set.
+def _runPreFitStatistics(
+    userCtr: Any,
+    res: Any,
+    bckwdIC: Any,
+    fwdIC: Any,
+    yFitIC: Any,
+) -> Dict[str, Any]:
+    """Phase 6a: outlier detection and DBSCAN clustering (pre-fit).
 
-    Called after the main NCP fitting and y-space fitting have completed.
-    Each step is gated by its own boolean flag on ``userCtr`` and runs
-    only when the flag is ``True``.
+    Runs **before** the y-space global fit so that its results can
+    dynamically configure ``yFitIC.nGlobalFitGroups`` and optionally
+    exclude broken detectors from subsequent fitting.
 
-    The pipeline extracts per-spectrum fitted NCP profiles from ``res``
-    (the last iteration) and uses them for outlier detection and
-    bootstrap resampling.  Instrument parameters (L, theta) are loaded
-    from the IC objects for physics-trend clustering.
+    Outlier removal:
+        When ``userCtr.removeOutliers`` is ``True`` **and** outliers
+        are detected, the corresponding spectra are masked in the
+        Mantid workspace via ``MaskDetectors`` and the outlier indices
+        are recorded.  The global fit's ``takeOutMaskedSpectra`` step
+        will then automatically drop these fully-zeroed rows.
+
+    DBSCAN grouping:
+        When ``userCtr.runPhysicsClustering`` is ``True``, the number
+        of valid (non-noise) clusters found by DBSCAN dynamically
+        overwrites ``yFitIC.nGlobalFitGroups``.  Noise points
+        (label ``-1``) are excluded from all groups and left for the
+        existing ``takeOutMaskedSpectra`` logic to handle.
 
     Args:
-        userCtr: ``UserScriptControls`` class with
-            ``runOutlierDetection``, ``runPhysicsClustering``, and
-            ``runBayesianBootstrap`` flags.
+        userCtr: ``UserScriptControls`` with detection/clustering flags.
         res: Result tuple from the iterative NCP fit (may be ``None``).
-            For BACKWARD/FORWARD: ``(wsFinal, resultsObject)``.
-            For JOINT: ``(wsFinal, bckwdResults, fwdResults)``.
         bckwdIC: Completed backward initial-conditions object.
         fwdIC: Completed forward initial-conditions object.
+        yFitIC: ``YSpaceFitInitialConditions`` — ``nGlobalFitGroups``
+            may be mutated by DBSCAN.
+
+    Returns:
+        A dict with diagnostic info (outlier indices, cluster labels,
+        etc.) or an empty dict if nothing ran.
     """
     from vesuvio_analysis.core_functions.statistical_plugins import (
-        BayesianBootstrap,
         HardwareOutlierDetector,
         PhysicsTrendClusterer,
         plot_cluster_ltheta,
@@ -473,18 +522,16 @@ def _runStatisticalAnalysis(
         loadInstrParsFileIntoArray,
     )
 
+    diagnostics: Dict[str, Any] = {}
+
     any_enabled = (
         getattr(userCtr, "runOutlierDetection", False)
         or getattr(userCtr, "runPhysicsClustering", False)
-        or getattr(userCtr, "runBayesianBootstrap", False)
     )
     if not any_enabled or res is None:
-        return
+        return diagnostics
 
-    # Extract the resultsObject(s) and their corresponding IC from the
-    # procedure return value.
-    # BACKWARD/FORWARD: (wsFinal, resultsObject)
-    # JOINT: (wsFinal, bckwdResults, fwdResults)
+    # ---- Extract resultsObject(s) and their corresponding ICs ----
     if len(res) == 3:
         results_and_ics = [(res[1], bckwdIC), (res[2], fwdIC)]
     else:
@@ -493,28 +540,75 @@ def _runStatisticalAnalysis(
         results_and_ics = [(res[1], ic)]
 
     for results, ic in results_and_ics:
-        # Last-iteration spectra: shape (n_spectra, n_bins)
         spectra = results.all_fit_workspaces[-1]
         ncp_total = results.all_tot_ncp[-1]
 
-        # When runHistData=True the fitted workspace stores N histogram bins
-        # while the NCP profile is computed on N-1 point-data bins.  Trim
-        # the trailing column of spectra so both arrays are in point-data
-        # representation before any arithmetic or outlier analysis.
+        # Align shapes when runHistData=True
         if spectra.shape[1] == ncp_total.shape[1] + 1:
             spectra = spectra[:, :-1].copy()
 
+        n_total = spectra.shape[0]
+        outlier_mask: Optional[np.ndarray] = None
+
+        # ---- Outlier Detection ----
         if getattr(userCtr, "runOutlierDetection", False):
             detector = HardwareOutlierDetector(
                 n_components=5, contamination=0.1,
             )
             labels = detector.fit_predict(spectra)
-            n_outliers = int(np.sum(labels == -1))
             outlier_idx = np.where(labels == -1)[0]
+            n_outliers = len(outlier_idx)
+            pct_remaining = 100.0 * (n_total - n_outliers) / n_total
+
             print(
-                f"[Phase 6] Outlier detection: {n_outliers} outlier(s) "
-                f"found at indices {outlier_idx.tolist()}"
+                f"[Phase 6] Outlier detection: {n_outliers}/{n_total} "
+                f"outlier(s) at indices {outlier_idx.tolist()}  "
+                f"({pct_remaining:.1f}% remaining)"
             )
+            logger.info(
+                "Phase 6 outlier detection: %d/%d outliers at %s (%.1f%% remaining)",
+                n_outliers, n_total, outlier_idx.tolist(), pct_remaining,
+            )
+
+            diagnostics["outlier_indices"] = outlier_idx
+            diagnostics["outlier_labels"] = labels
+
+            # --- Outlier removal via workspace masking ---
+            if getattr(userCtr, "removeOutliers", False) and n_outliers > 0:
+                # Convert row indices to absolute spectrum numbers for
+                # MaskDetectors.  The IC stores the first spectrum index;
+                # row 0 corresponds to ic.firstSpec.
+                abs_spec_numbers = (outlier_idx + ic.firstSpec).tolist()
+                # MaskDetectors zeroes out the counts/errors for the
+                # specified spectra.  The downstream
+                # takeOutMaskedSpectra() in runGlobalFit will then
+                # automatically exclude these fully-zero rows.
+                try:
+                    ws_name = results.name if hasattr(results, "name") else None
+                    if ws_name and ws_name in mtd:
+                        MaskDetectors(
+                            Workspace=ws_name,
+                            SpectraList=abs_spec_numbers,
+                        )
+                        print(
+                            f"[Phase 6] Removed {n_outliers} outlier spectra "
+                            f"from workspace '{ws_name}': {abs_spec_numbers}"
+                        )
+                    else:
+                        # Fallback: record for manual exclusion; the
+                        # workspace may not be accessible by name.
+                        print(
+                            f"[Phase 6] Workspace not accessible for masking. "
+                            f"Outlier indices recorded but not masked."
+                        )
+                except Exception as exc:
+                    warnings.warn(
+                        f"Phase 6 outlier masking failed: {exc}. "
+                        f"Outlier indices recorded but not removed."
+                    )
+
+                outlier_mask = labels == -1
+
             fig_dir = getattr(ic, "figSavePath", None)
             if fig_dir is not None:
                 try:
@@ -525,45 +619,167 @@ def _runStatisticalAnalysis(
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
+        # ---- Physics Clustering (DBSCAN) ----
         if getattr(userCtr, "runPhysicsClustering", False):
             instrPars = loadInstrParsFileIntoArray(
                 ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
             )
-            # instrPars columns: [spec, det, angle, T0, L0, L1]
-            # Total flight path L = L0 (moderator→sample) + L1 (sample→detector)
             L_total = instrPars[:, 4] + instrPars[:, 5]
             theta = instrPars[:, 2]
             features = np.column_stack([L_total, theta])
+
+            # If outliers were removed, exclude them from clustering
+            if outlier_mask is not None:
+                features_clean = features[~outlier_mask]
+            else:
+                features_clean = features
+
             clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
-            labels = clusterer.fit_predict(features)
+            labels = clusterer.fit_predict(features_clean)
             groups = clusterer.get_cluster_groups(labels)
             n_noise = int(np.sum(labels == -1))
+            n_clusters = len(groups)
+
             print(
-                f"[Phase 6] Physics clustering: {len(groups)} cluster(s) "
+                f"[Phase 6] Physics clustering: {n_clusters} cluster(s) "
                 f"found, {n_noise} noise point(s) excluded"
             )
+            logger.info(
+                "Phase 6 DBSCAN: %d clusters, %d noise points",
+                n_clusters, n_noise,
+            )
+
+            diagnostics["cluster_labels"] = labels
+            diagnostics["cluster_groups"] = groups
+            diagnostics["n_noise"] = n_noise
+
+            # --- Dynamic overwrite of nGlobalFitGroups ---
+            # Noise points (label -1) are excluded from groups and will
+            # be handled by takeOutMaskedSpectra if they were masked
+            # above, or treated as additional unassigned detectors.
+            if n_clusters > 0:
+                old_n = yFitIC.nGlobalFitGroups
+                yFitIC.nGlobalFitGroups = n_clusters
+                print(
+                    f"[Phase 6] nGlobalFitGroups updated: "
+                    f"{old_n} → {n_clusters} (from DBSCAN)"
+                )
+                logger.info(
+                    "nGlobalFitGroups updated: %s → %d (DBSCAN)",
+                    old_n, n_clusters,
+                )
+            else:
+                print(
+                    "[Phase 6] DBSCAN found 0 clusters; "
+                    "nGlobalFitGroups left unchanged."
+                )
+
             fig_dir = getattr(ic, "figSavePath", None)
             if fig_dir is not None:
                 try:
                     plot_cluster_ltheta(
-                        features, labels,
+                        features_clean, labels,
                         save_path=fig_dir / "stats_cluster_ltheta.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 cluster plot failed: {exc}")
 
-        if getattr(userCtr, "runBayesianBootstrap", False):
-            residuals = spectra - ncp_total
-            bootstrap = BayesianBootstrap(n_samples=1000, seed=42)
-            weighted = bootstrap.compute_weighted_residuals(residuals)
-            boot_mean = float(np.mean(weighted))
-            boot_std = float(np.std(weighted))
-            print(
-                f"[Phase 6] Bayesian bootstrap: generated "
-                f"{weighted.shape[0]} weighted residual profiles, "
-                f"shape {weighted.shape}"
-            )
-            print(
-                f"[Phase 6] Bootstrap summary: "
-                f"mean = {boot_mean:.4f}, std = {boot_std:.4f}"
-            )
+    return diagnostics
+
+
+def _runBayesianBootstrapProcedure(
+    bckwdIC: Any,
+    fwdIC: Any,
+    bootIC: Any,
+    yFitIC: Any,
+) -> Dict[str, Any]:
+    """Run the Bayesian Bootstrap as a standalone bootstrap procedure.
+
+    This is invoked when ``bootIC.bootstrapType == "BOOT_BAYESIAN"``
+    and ``bootIC.runBootstrap == True``.  It first runs the parent NCP
+    fit (via the same path as the standard bootstrap's
+    ``runOriginalBeforeBootstrap``), then applies Dirichlet-weighted
+    resampling to the NCP residuals.
+
+    Unlike the frequentist bootstrap methods (JACKKNIFE,
+    BOOT_RESIDUALS, BOOT_GAUSS_ERRS), this does **not** re-fit each
+    replica — it produces weighted residual profiles in a single
+    matrix multiplication.
+
+    Args:
+        bckwdIC: Completed backward initial-conditions object.
+        fwdIC: Completed forward initial-conditions object.
+        bootIC: ``BootstrapInitialConditions`` with ``nSamples``,
+            ``procedure``, and ``bootstrapType == "BOOT_BAYESIAN"``.
+        yFitIC: ``YSpaceFitInitialConditions`` for y-space fitting.
+
+    Returns:
+        Dict with keys ``weighted_residuals``, ``boot_mean``,
+        ``boot_std``, and ``n_samples``.
+    """
+    from vesuvio_analysis.core_functions.statistical_plugins import (
+        BayesianBootstrap,
+    )
+    from vesuvio_analysis.core_functions.procedures import (
+        runIndependentIterativeProcedure,
+        runJointBackAndForwardProcedure,
+    )
+    from vesuvio_analysis.core_functions.fit_in_yspace import (
+        fitInYSpaceProcedure,
+    )
+    from vesuvio_analysis.core_functions.ICHelpers import buildFinalWSName
+
+    print("[Phase 6] Running Bayesian Bootstrap (BOOT_BAYESIAN) ...")
+
+    # Run the parent NCP fit to obtain residuals
+    proc = bootIC.procedure
+    if proc == "BACKWARD":
+        res = runIndependentIterativeProcedure(bckwdIC)
+    elif proc == "FORWARD":
+        res = runIndependentIterativeProcedure(fwdIC)
+    elif proc == "JOINT":
+        res = runJointBackAndForwardProcedure(bckwdIC, fwdIC)
+    else:
+        raise ValueError(f"Invalid bootstrap procedure: {proc}")
+
+    # Extract NCP results
+    if len(res) == 3:
+        results_list = [(res[1], bckwdIC), (res[2], fwdIC)]
+    else:
+        ic = bckwdIC if proc == "BACKWARD" else fwdIC
+        results_list = [(res[1], ic)]
+
+    all_results: Dict[str, Any] = {}
+    n_samples = getattr(bootIC, "nSamples", 1000)
+
+    for results, ic in results_list:
+        spectra = results.all_fit_workspaces[-1]
+        ncp_total = results.all_tot_ncp[-1]
+
+        if spectra.shape[1] == ncp_total.shape[1] + 1:
+            spectra = spectra[:, :-1].copy()
+
+        residuals = spectra - ncp_total
+        bootstrap = BayesianBootstrap(n_samples=n_samples, seed=42)
+        weighted = bootstrap.compute_weighted_residuals(residuals)
+        boot_mean = float(np.mean(weighted))
+        boot_std = float(np.std(weighted))
+
+        direction = getattr(ic, "modeRunning", "UNKNOWN")
+        print(
+            f"[Phase 6] Bayesian Bootstrap ({direction}): "
+            f"{weighted.shape[0]} replicas, shape {weighted.shape}"
+        )
+        print(
+            f"[Phase 6] Bootstrap summary ({direction}): "
+            f"mean = {boot_mean:.4f}, std = {boot_std:.4f}"
+        )
+
+        all_results[direction] = {
+            "weighted_residuals": weighted,
+            "boot_mean": boot_mean,
+            "boot_std": boot_std,
+            "n_samples": n_samples,
+        }
+
+    return all_results
