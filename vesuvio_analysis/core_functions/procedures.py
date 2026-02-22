@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,8 @@ from vesuvio_analysis.core_functions.analysis_functions import iterativeFitForDa
 from mantid.api import AnalysisDataService, mtd
 from mantid.simpleapi import CreateEmptyTableWorkspace
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def runIndependentIterativeProcedure(
@@ -103,7 +106,7 @@ def runPreProcToEstHRatio(
         oriMS.append(IC.noOfMSIterations)
         IC.noOfMSIterations = 0
 
-    nIter = askUserNoOfIterations()
+    nIter = _autoSelectPreliminaryIterations(bckwdIC)
  
     HRatios = []   # List to store HRatios
     massIdxs = []
@@ -162,8 +165,41 @@ def createTableWSHRatios(HRatios: List[float], massIdxs: List[int]) -> None:
     return
 
 
+def _autoSelectPreliminaryIterations(bckwdIC: Any) -> int:
+    """Return the number of H-ratio estimation iterations from the IC, without prompting.
+
+    Reads ``bckwdIC.nSamples`` (the canonical config attribute).  Raises
+    ``ValueError`` if the attribute is absent or ``None``.
+
+    Args:
+        bckwdIC: Backward initial-conditions object that must carry a
+            positive integer ``nSamples`` attribute.
+
+    Returns:
+        Number of preliminary iterations to execute.
+
+    Raises:
+        ValueError: If ``nSamples`` is missing or ``None``.
+    """
+    nSamples = getattr(bckwdIC, "nSamples", None)
+    if nSamples is None:
+        raise ValueError(
+            "bckwdIC.nSamples is missing or None. "
+            "Set a positive integer nSamples on BackwardInitialConditions "
+            "to specify the number of preliminary H-ratio estimation iterations."
+        )
+    return int(nSamples)
+
+
 def askUserNoOfIterations() -> int:
     """Prompt the user for the number of preliminary iterations.
+
+    .. deprecated::
+        This function is kept for backwards compatibility only.
+        Use :func:`_autoSelectPreliminaryIterations` instead.
+        All interactive ``input()`` calls have been removed; the function
+        now logs a warning and returns ``bckwdIC.nSamples`` via the
+        non-interactive path.
 
     Returns:
         Number of iterations entered by the user.
@@ -171,13 +207,14 @@ def askUserNoOfIterations() -> int:
     Raises:
         KeyboardInterrupt: If the user declines to run.
     """
-    print("\nH was detected but HToMassIdxRatio was not provided.")
-    print("\nSugested preliminary procedure:\n\nrun_forward\nfor n:\n    estimate_HToMassIdxRatio\n    run_backward\n    run_forward")
-    userInput = input("\n\nDo you wish to run preliminary procedure to estimate HToMassIdxRatio? (y/n)") 
-    if not((userInput=="y") or (userInput=="Y")): raise KeyboardInterrupt("Preliminary procedure interrupted.")
-    
-    nIter = int(input("\nHow many iterations do you wish to run? n="))
-    return nIter
+    logger.warning(
+        "askUserNoOfIterations() is deprecated and no longer interactive. "
+        "Set nSamples on BackwardInitialConditions to control iteration count."
+    )
+    raise NotImplementedError(
+        "askUserNoOfIterations() has been removed. "
+        "Use _autoSelectPreliminaryIterations(bckwdIC) instead."
+    )
  
 
 def calculateHToMassIdxRatio(fwdScatResults: Any) -> Tuple[int, float]:

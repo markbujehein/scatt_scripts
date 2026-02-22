@@ -1,4 +1,5 @@
 from typing import Any, List, Optional, Tuple
+import logging
 import time
 
 import numpy as np
@@ -23,6 +24,7 @@ from vesuvio_analysis.core_functions.procedures import (
     runPreProcToEstHRatio,
 )
 
+_logger = logging.getLogger(__name__)
 _SEP_DOUBLE = "=" * 60
 _SEP_SINGLE = "-" * 60
 
@@ -156,12 +158,19 @@ def runScript(
 
         ranPreliminary = False
         if (proc == "BACKWARD") | (proc == "JOINT"):
-            if isHPresent(fwdIC.masses) & (bckwdIC.HToMassIdxRatio == None):
+            _h_ratio = bckwdIC.HToMassIdxRatio
+            _need_estimation = (_h_ratio is None) or (_h_ratio == 1.0)
+            if isHPresent(fwdIC.masses) and _need_estimation:
+                _logger.warning(
+                    "HToMassIdxRatio is %s (missing or default=1.0). "
+                    "Running automatic preliminary estimation procedure.",
+                    _h_ratio,
+                )
                 HRatios, massIdxs = runPreProcToEstHRatio(
                     bckwdIC, fwdIC
                 )  # Sets H ratio to bckwdIC automatically
                 ranPreliminary = True
-            assert isHPresent(fwdIC.masses) != (bckwdIC.HToMassIdxRatio == None), (
+            assert isHPresent(fwdIC.masses) != (bckwdIC.HToMassIdxRatio is None), (
                 "When H is not present, HToMassIdxRatio has to be set to None"
             )
 

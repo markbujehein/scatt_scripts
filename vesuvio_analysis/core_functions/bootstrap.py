@@ -222,9 +222,20 @@ def chooseNSamples(bootIC, parentWSnNCPs: dict):
     """
     Returns number of samples to run.
     If Jackknife is running, no of samples is the number of bins in the workspace.
-    When runningTest is True, samples are capped at 3 for fast execution."""
+    When runningTest is True, samples are capped at 3 for fast execution.
 
-    nSamples = bootIC.nSamples
+    Raises:
+        ValueError: If ``bootIC.nSamples`` is ``None`` or not set and
+            bootstrapType is not ``"JACKKNIFE"``.
+    """
+
+    nSamples = getattr(bootIC, "nSamples", None)
+    if bootIC.bootstrapType != "JACKKNIFE" and nSamples is None:
+        raise ValueError(
+            "bootIC.nSamples is missing or None. "
+            "Set a positive integer nSamples on BootstrapInitialConditions "
+            "to specify the number of bootstrap replicas."
+        )
     if bootIC.bootstrapType=="JACKKNIFE":
         assert len(parentWSnNCPs) == 2, "Running Jackknife, supports only one IC at a time."
         if bootIC.procedure=="FORWARD": key = "fwdNCP"
