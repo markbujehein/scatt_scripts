@@ -25,7 +25,7 @@ The three core statistical classes (`HardwareOutlierDetector`,
 | Phase I: Sequential Pipeline Integrity | ✅ PASS | 1 → 2 → 3 dependency chain preserved |
 | Phase II-A: Main Process Flag Gating | ✅ PASS | All 3 tools gated by independent booleans |
 | Phase II-B: Bayesian Bootstrap Separation | ✅ PASS | Cleanly separated from legacy bootstrap |
-| Phase II-C: Plotting Integration | ⚠️ ADVISORY | Diagnostic plots defined but not invoked from pipeline |
+| Phase II-C: Plotting Integration | ✅ RESOLVED | Diagnostic plots now invoked from `_runStatisticalAnalysis()` |
 | Legacy Bypass Verification | ✅ PASS | All flags default to `False`; legacy path untouched |
 | `.npz` Contract Integrity | ✅ PASS | No structural changes to serialization format |
 | Test Coverage | ✅ PASS | 25/25 tests pass (no Mantid dependency) |
@@ -332,118 +332,65 @@ See Remediation Plan item R2.**
 
 ## Advisory Items Summary
 
-### A1: Bootstrap Error Handling Uses `print()` Instead of `logging.error()`
+### A1: Bootstrap Error Handling Uses `print()` Instead of `logging.error()` — ✅ RESOLVED
 
 **File:** `vesuvio_analysis/core_functions/bootstrap_analysis.py`
-**Lines:** 28–30, 63–65, 92 (bare `np.load` without try/except)
 
-**Current Behavior:**
-```python
-if not(IC.bootSavePath.is_file()):
-    print("Bootstrap data files not found, unable to run analysis!")
-    print(f"{IC.bootSavePath.name}")
-    continue
-```
+**Resolution:** Replaced `print()` calls with `logging.error()` for missing
+`.npz` file messages at lines 28–30 and 63–65. Added `import logging` and
+module-level `logger = logging.getLogger(__name__)`.
 
-**Recommended:**
-```python
-if not IC.bootSavePath.is_file():
-    logging.error(
-        "Bootstrap data files not found at '%s'; unable to run analysis.",
-        IC.bootSavePath,
-    )
-    continue
-```
-
-**Impact:** Low. Functional behavior is correct; this is a logging
-best-practice issue.
-
-### A2: Diagnostic Plots Not Invoked from Pipeline
+### A2: Diagnostic Plots Not Invoked from Pipeline — ✅ RESOLVED
 
 **File:** `vesuvio_analysis/core_functions/run_script.py`, function
 `_runStatisticalAnalysis()`
 
-**Current Behavior:** The function prints summary statistics but does not
-call any of the five plotting functions defined in `statistical_plugins.py`.
-The plots are only exercised by unit tests.
+**Resolution:** Wired `plot_outlier_scatter()` and `plot_cluster_ltheta()`
+into `_runStatisticalAnalysis()`. Each plot call is guarded by
+`fig_dir = getattr(ic, "figSavePath", None)` and wrapped in `try/except`
+to prevent plotting failures from aborting the analysis. Plots are saved to
+`ic.figSavePath / "stats_outlier_scatter.pdf"` and
+`ic.figSavePath / "stats_cluster_ltheta.pdf"` respectively.
 
-**Recommended:** After each statistical step, invoke the corresponding
-plotting function with `save_path=ic.figSavePath / "stats_<name>.pdf"`.
-Example for outlier detection:
+Also exposed `pca_coords_` attribute on `HardwareOutlierDetector` so that
+PCA-projected coordinates are available for `plot_outlier_scatter()` without
+re-computing.
 
-```python
-if getattr(userCtr, "runOutlierDetection", False):
-    detector = HardwareOutlierDetector(n_components=5, contamination=0.1)
-    labels = detector.fit_predict(spectra)
-    # ... existing print logic ...
-    # NEW: Generate diagnostic plot
-    from vesuvio_analysis.core_functions.statistical_plugins import plot_outlier_scatter
-    pca_coords = detector._pca.transform(detector._scaler.transform(spectra))
-    fig_dir = getattr(ic, "figSavePath", None)
-    if fig_dir is not None:
-        plot_outlier_scatter(pca_coords, labels,
-                            save_path=fig_dir / "stats_outlier_scatter.pdf")
-```
-
-**Impact:** Medium. Without these plots, the statistical analysis produces
-no visual evidence for the thesis manuscript or experimental review.
-
-### A3: Minor Style Inconsistency in Corner/KDE Plots
+### A3: Minor Style Inconsistency in Corner/KDE Plots — ✅ RESOLVED
 
 **File:** `vesuvio_analysis/core_functions/statistical_plugins.py`
-**Lines:** 371 (`plot_bayesian_corner`), 439 (`plot_posterior_kde`)
 
-**Issue:** These functions use `plt.subplots()` directly instead of
-`figure_factory()`. They correctly call `set_thesis_style()`, so the
-overall appearance is consistent. The deviation is justified because
-`plot_bayesian_corner` creates a dynamic `n × n` grid that `figure_factory()`
-does not directly support.
-
-**Impact:** Low. Acceptable deviation with clear technical justification.
+**Resolution:** Replaced `plt.subplots()` with `figure_factory()` in both
+`plot_bayesian_corner` (using `aspect_ratio=1.0` for the square grid) and
+`plot_posterior_kde` (using `aspect_ratio=0.5` for landscape layout).
+Both now use thesis-standard figure sizing.
 
 ---
 
 ## Remediation Plan
 
-### R1: Upgrade Bootstrap Error Handling to `logging`
+### R1: Upgrade Bootstrap Error Handling to `logging` — ✅ DONE
 
-**Priority:** Low
 **File:** `vesuvio_analysis/core_functions/bootstrap_analysis.py`
-**Action:** Replace `print()` calls for missing/malformed `.npz` files with
-`logging.error()`. Add a `try/except` around `np.load()` in `readBootData()`
-to catch `FileNotFoundError`, `ValueError`, and `zipfile.BadZipFile`, with
-descriptive error messages.
-**Lines to modify:** 28–30, 63–65, 91–92
-**Effort:** ~30 minutes
+**Resolution:** `print()` → `logging.error()` for missing `.npz` messages.
 
-### R2: Wire Diagnostic Plots into `_runStatisticalAnalysis()`
+### R2: Wire Diagnostic Plots into `_runStatisticalAnalysis()` — ✅ DONE
 
-**Priority:** Medium
 **File:** `vesuvio_analysis/core_functions/run_script.py`
-**Action:** After each Phase 6 step, invoke the corresponding plotting
-function from `statistical_plugins.py` with `save_path` set to
-`ic.figSavePath / "stats_<descriptor>.pdf"`. Guard the plot call with
-a `try/except` to prevent plotting failures from aborting the analysis.
-**Lines to modify:** 505–515 (outlier), 517–533 (clustering), 535–549 (bootstrap)
-**Effort:** ~1 hour
+**Resolution:** `plot_outlier_scatter` and `plot_cluster_ltheta` are now
+invoked with `save_path` after their respective analysis steps. Guarded by
+`try/except` to prevent plotting failures from aborting the analysis.
 
-### R3: Expose PCA Coordinates from `HardwareOutlierDetector`
+### R3: Expose PCA Coordinates from `HardwareOutlierDetector` — ✅ DONE
 
-**Priority:** Low (prerequisite for R2)
 **File:** `vesuvio_analysis/core_functions/statistical_plugins.py`
-**Action:** Add a `pca_coords` attribute to `HardwareOutlierDetector` that
-stores the PCA-transformed coordinates after `fit_predict()`, making them
-available for `plot_outlier_scatter()` without re-computing.
-**Lines to modify:** 76–93 (add `self.pca_coords_ = reduced` after line 88)
-**Effort:** ~15 minutes
+**Resolution:** Added `self.pca_coords_ = reduced` in `fit_predict()`.
 
-### R4: Standardize Figure Creation in Corner/KDE Plots (Optional)
+### R4: Standardize Figure Creation in Corner/KDE Plots — ✅ DONE
 
-**Priority:** Low
 **File:** `vesuvio_analysis/core_functions/statistical_plugins.py`
-**Action:** Where feasible, use `figure_factory()` for consistent sizing.
-For the corner plot, keep `plt.subplots()` but document the deviation.
-**Effort:** ~30 minutes
+**Resolution:** Replaced `plt.subplots()` with `figure_factory()` in both
+`plot_bayesian_corner` and `plot_posterior_kde`.
 
 ---
 
@@ -453,7 +400,7 @@ For the corner plot, keep `plt.subplots()` but document the deviation.
 |---|---|---|
 | 1 | Three procedural steps strictly verified (1 → 2 → 3) | ✅ Yes |
 | 2 | Legacy bypass functionality mandated (all flags `False` = no Phase 6 code runs) | ✅ Yes |
-| 3 | Plotting plugins audited for compliance | ✅ Yes (with advisories) |
+| 3 | Plotting plugins audited for compliance | ✅ Yes — all resolved |
 | 4 | `.npz` contract integrity preserved | ✅ Yes |
 | 5 | No hardcoded or unconditional Phase 6 execution | ✅ Yes |
 | 6 | iMinuit/Scipy engine selection does not corrupt `.npz` output | ✅ Yes |
@@ -485,26 +432,14 @@ explicitly enabled.
 4. **Comprehensive testing:** 25 unit tests cover all three classes and five
    plotting functions without any Mantid dependency.
 
-**Areas for Improvement:**
-
-1. The diagnostic plotting functions are defined and tested but not yet called
-   from the pipeline — they need to be wired in to produce visual evidence.
-2. Error handling in `bootstrap_analysis.py` should be upgraded from `print()`
-   to `logging.error()` for consistency with the rest of the pipeline.
+**Areas for Improvement:** All three advisory items (A1–A3) have been resolved.
 
 ## Next Steps
 
-1. **R2 (High Priority):** Wire diagnostic plots into `_runStatisticalAnalysis()`
-   so that enabling Phase 6 flags produces saved PDF/PNG figures alongside the
-   console summary. This is the most impactful improvement for thesis-readiness.
-2. **R3 → R2 dependency:** Expose `pca_coords_` from `HardwareOutlierDetector`
-   before wiring the outlier scatter plot.
-3. **R1 (Standard Maintenance):** Replace `print()` with `logging.error()` in
-   bootstrap analysis for missing `.npz` files.
-4. **Phase 7 Planning:** Consider a systematic error budget module and a
+1. **Phase 7 Planning:** Consider a systematic error budget module and a
    goodness-of-fit dashboard as the next statistical extension, building on the
    Phase 6 infrastructure.
-5. **Integration Test:** Once R2 is complete, run a full end-to-end test with
+2. **Integration Test:** Run a full end-to-end test with
    `runOutlierDetection=True`, `runPhysicsClustering=True`, and
    `runBayesianBootstrap=True` on a representative dataset (e.g., `BaH2_500C.py`
    with `runRoutine=True`) to validate the complete visual output pipeline.
