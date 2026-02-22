@@ -1283,10 +1283,19 @@ def fitNcpToSingleSpec(
     (MIGRAD + Hesse, optionally Minos) for cross-validation and
     rigorous error estimation.
 
+    *Sanitisation:*  All inputs are checked for ``NaN``/``Inf`` values.
+    Non-finite entries in the y-space/NCP arrays are replaced with
+    zero and the corresponding error bars inflated to ``1e10`` so that
+    the bad bins are effectively ignored by the χ² cost.
+
     **Boundary synchronisation:** Both optimisers receive identical
     parameter bounds derived from ``ic.bounds``.  ``np.nan`` entries
     are mapped to ``None`` (unbounded) for iMinuit and ``±np.inf``
     for SciPy, ensuring the same feasible region.
+
+    **Boundary buffer:** When a parameter has an infinite bound (e.g.
+    ``[0, inf]``) the initial guess is nudged by
+    ``max(1e-4, |init_par| * 1e-4)`` to avoid SLSQP ruts.
 
     **iMinuit step sizes:** Initial errors (step sizes) are set to
     physically reasonable fractions of the initial parameter guesses
@@ -1302,7 +1311,9 @@ def fitNcpToSingleSpec(
     **Fail-safe:** When the 1% tolerance is exceeded, the divergent
     parameters are identified by physical name (``I_m`` = intensity,
     ``σ_m`` = width, ``C_m`` = centre for mass *m*) and their
-    individual values are logged to diagnose local-minimum traps.
+    individual values are logged to diagnose local-minimum traps.  A
+    *high‑divergence warning* (>100%) also prints summary statistics of
+    the raw data to help spot unphysical spikes.
 
     Args:
         dataY: Observed counts for one spectrum, shape ``(n_bins,)``.
@@ -1322,7 +1333,26 @@ def fitNcpToSingleSpec(
         the spectrum was masked.  The primary result comes from
         SciPy; iMinuit results are logged for comparison.
     """
+    # sanitize NCP / y-space inputs
+    if not np.all(np.isfinite(ySpacesForEachMass)):
+        mask = ~np.isfinite(ySpacesForEachMass)
+        ySpacesForEachMass = ySpacesForEachMass.copy()
+        ySpacesForEachMass[mask] = 0.0
+        # inflate error bars for any affected bin
+        dataE = dataE.copy()
+        bad_bins = np.any(mask, axis=0)
+        dataE[bad_bins] = 1e10
 
+    if np.all(dataY == 0):
+        return np.zeros(len(ic.initPars) + 3)
+
+    # --- Strict boundary synchronisation ---
+    # Normalise ic.bounds: replace np.nan with np.inf/-np.inf for SciPy
+    scipy_bounds = []
+    for lo, hi in ic.bounds:
+        lo_val = -np.inf if np.isnan(lo) else float(lo)
+        hi_val = np.inf if np.isnan(hi) else float(hi)
+        scipy_bounds.append((lo_val, hi_val))
     if np.all(dataY == 0):
         return np.zeros(len(ic.initPars) + 3)
 
@@ -1347,7 +1377,7 @@ def fitNcpToSingleSpec(
             nudge = max(abs(span) * _BOUNDARY_BUFFER_FRAC, _BOUNDARY_BUFFER_ABS)
         else:
             # Infinite span: fallback nudge relative to initial guess
-            nudge = abs(init_pars[k]) * _BOUNDARY_BUFFER_FRAC
+            nudge = max(abs(init_pars[k]) * _BOUNDARY_BUFFER_FRAC, _BOUNDARY_BUFFER_ABS)
         if np.isfinite(lo) and init_pars[k] <= lo + nudge:
             init_pars[k] = lo + nudge
         if np.isfinite(hi) and init_pars[k] >= hi - nudge:
@@ -1478,6 +1508,17 @@ def fitNcpToSingleSpec(
 
         max_par_diff = float(np.max(par_rel_diff))
 
+        # high‑divergence warning (>100%) prints raw data stats
+        if (chi2_rel_diff > 1.0) or (max_par_diff > 1.0):
+            stats_mean = float(np.mean(dataY))
+            stats_max = float(np.max(dataY))
+            stats_min = float(np.min(dataY))
+            logger.warning(
+                "OptimizerCheck Spec %.0f: high divergence (>100%%) detected; "
+                "dataY mean=%.3g max=%.3g min=%.3g",
+                instrPars[0], stats_mean, stats_max, stats_min,
+            )
+
         # --- Fail-safe: per-parameter divergence diagnostics ---
         if max_par_diff > _AGREEMENT_THRESHOLD:
             # Log ALL divergent parameters with their physical names
@@ -1525,6 +1566,14 @@ def errorFunction(
     kinematicArrays: np.ndarray,
     ic: Any,
 ) -> float:
+    # sanitize NCP arrays that occasionally contain nan/inf
+    if not np.all(np.isfinite(ySpacesForEachMass)):
+        mask = ~np.isfinite(ySpacesForEachMass)
+        ySpacesForEachMass = np.array(ySpacesForEachMass)
+        ySpacesForEachMass[mask] = 0.0
+        dataE = np.array(dataE)
+        bad_bins = np.any(mask, axis=0)
+        dataE[bad_bins] = 1e10
     """Compute the chi-squared cost for the NCP model on a single spectrum.
 
     Called by ``scipy.optimize.minimize`` at every iteration.  Masked

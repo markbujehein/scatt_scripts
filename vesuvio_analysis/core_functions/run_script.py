@@ -125,9 +125,8 @@ def runScript(
 
     checkInputs(userCtr)
     checkInputs(bootIC)
-    assert not (userCtr.runRoutine & bootIC.runBootstrap), (
-        "Main routine and bootstrap both set to run!"
-    )
+    if userCtr.runRoutine and bootIC.runBootstrap:
+        raise ValueError("Main routine and bootstrap both set to run!")
 
     # --- Logging setup ---
     direction = getattr(userCtr, "procedure", None) or "NONE"
@@ -196,13 +195,15 @@ def runScript(
             createTableWSHRatios(HRatios, massIdxs)
         return res
 
-    # Names of workspaces to be fitted in y space
-    wsNames = []
-    ICs = []
+    # Names of workspaces to be fitted in y space (bank-aware)
+    wsNames: List[str] = []
+    ICs: List[Any] = []
+    wsModes: List[str] = []
     for mode, IC in zip(["BACKWARD", "FORWARD"], [bckwdIC, fwdIC]):
         if (userCtr.fitInYSpace == mode) | (userCtr.fitInYSpace == "JOINT"):
             wsNames.append(buildFinalWSName(scriptName, mode, IC))
             ICs.append(IC)
+            wsModes.append(mode)
 
     # If bootstrap is not None, run bootstrap procedure and finish
     if bootIC.runBootstrap:
@@ -246,17 +247,21 @@ def runScript(
 
         # Check if final ws are loaded:
         wsInMtd = [ws in mtd for ws in wsNames]  # Bool list
-        if (len(wsInMtd) > 0) and all(
-            wsInMtd
-        ):  # When wsName is empty list, loop doesn't run
-            for wsName, IC in zip(wsNames, ICs):
+        if (len(wsInMtd) > 0) and all(wsInMtd):  # When wsName is empty list, loop doesn't run
+            for wsName, IC, mode in zip(wsNames, ICs, wsModes):
+                # bank-aware validation before performing the fit
+                checkInputs(userCtr, bank=mode)
                 if wsName not in mtd:
                     logging.warning(
                         f"Workspace '{wsName}' not found in Mantid Analysis Data Service. "
-                        f"Skipping Y-Space fit for {IC.modeRunning} bank."
+                        f"Skipping Y-Space fit for {mode} bank."
                     )
                     continue
+                # temporarily align fitInYSpace for diagnostics/logging
+                prev_fit = userCtr.fitInYSpace
+                userCtr.fitInYSpace = mode
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+                userCtr.fitInYSpace = prev_fit
             run_logger.write()
             if _verbose:
                 _elapsed = time.time() - _t0
@@ -292,14 +297,18 @@ def runScript(
             run_logger.log_timestamp("phase6_prefit_end")
 
             run_logger.log_timestamp("yspace_start")
-            for wsName, IC in zip(wsNames, ICs):
+            for wsName, IC, mode in zip(wsNames, ICs, wsModes):
+                checkInputs(userCtr, bank=mode)
                 if wsName not in mtd:
                     logging.warning(
                         f"Workspace '{wsName}' not found in Mantid Analysis Data Service. "
-                        f"Skipping Y-Space fit for {IC.modeRunning} bank."
+                        f"Skipping Y-Space fit for {mode} bank."
                     )
                     continue
+                prev_fit = userCtr.fitInYSpace
+                userCtr.fitInYSpace = mode
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
+                userCtr.fitInYSpace = prev_fit
             run_logger.log_timestamp("yspace_end")
 
         except Exception as exc:
@@ -340,22 +349,34 @@ def checkUserClearWS() -> None:
     return
 
 
-def checkInputs(crtIC: Any) -> None:
+def checkInputs(crtIC: Any, bank: str | None = None) -> None:
     """Validate procedure and fitInYSpace flags on a control class.
 
-    Checks that ``crtIC.procedure`` and ``crtIC.fitInYSpace`` are among
-    the accepted values (``"BACKWARD"``, ``"FORWARD"``, ``"JOINT"``, or
-    ``None``) and that they are consistent with each other.  Silently
-    returns when the corresponding run flag is ``False``.
+    This function is used in two contexts:
+
+    * **Global validation** (called with ``bank=None``).  Only the flag
+      values themselves are checked; no cross‑comparison is performed.
+      This is appropriate for ``UserScriptControls`` objects where the
+      bank being processed is not yet known.
+    * **Bank-aware validation** (``bank`` set to "BACKWARD" or
+      "FORWARD").  In non‑joint execution the pipeline may run the
+      two banks sequentially, so we must not raise an error simply because
+      ``procedure`` and ``fitInYSpace`` refer to different banks.  The
+      check below only complains if the *same* bank appears in both
+      fields and the names disagree, or if a flag is outright invalid
+      for the given bank.
 
     Args:
         crtIC: A ``UserScriptControls`` or ``BootstrapInitialConditions``
             class whose ``procedure`` and ``fitInYSpace`` attributes are
             validated.
+        bank: Optional bank name used for bank‑specific checks.  If
+            ``None`` the routine performs only value validity checking.
 
     Raises:
-        ValueError: If any flag value is invalid or if ``procedure``
-            and ``fitInYSpace`` are inconsistent.
+        ValueError: If any flag value is invalid, or if both flags are
+            set to the *same* bank but disagree, or if a flag is
+            incompatible with the supplied ``bank`` argument.
     """
 
     try:
@@ -365,24 +386,36 @@ def checkInputs(crtIC: Any) -> None:
         if not crtIC.runBootstrap:
             return
 
+    # --- basic legality check ---
     for flag in [crtIC.procedure, crtIC.fitInYSpace]:
         if not (
             (flag == "BACKWARD")
             | (flag == "FORWARD")
             | (flag == "JOINT")
-            | (flag == None)
+            | (flag is None)
         ):
-            raise ValueError(f"Invalid option '{flag}' not recognized. "
-                             "Must be 'BACKWARD', 'FORWARD', 'JOINT', or None.")
-
-    if (crtIC.procedure != "JOINT") & (crtIC.fitInYSpace != None):
-        if crtIC.procedure != crtIC.fitInYSpace:
             raise ValueError(
-                f"Inconsistent procedure and fitInYSpace settings:\n"
-                f"  procedure = '{crtIC.procedure}'\n"
-                f"  fitInYSpace = '{crtIC.fitInYSpace}'\n"
-                f"Check your wsBackIC or wsFrontIC definitions."
+                f"Invalid option '{flag}' not recognized. "
+                "Must be 'BACKWARD', 'FORWARD', 'JOINT', or None."
             )
+
+    if bank is not None:
+        # Bank‑specific consistency: the flag must either be unset, JOINT,
+        # or match the bank being processed.
+        for name, flag in ("procedure", crtIC.procedure), ("fitInYSpace", crtIC.fitInYSpace):
+            if flag not in (None, "JOINT", bank):
+                raise ValueError(
+                    f"{name}='{flag}' is incompatible with bank '{bank}'."
+                )
+        # if both flags mention this same bank but disagree, that's wrong
+        if (crtIC.procedure == bank) and (crtIC.fitInYSpace == bank) and (
+            crtIC.procedure != crtIC.fitInYSpace
+        ):
+            raise ValueError(
+                f"procedure and fitInYSpace both refer to '{bank}' but differ: "
+                f"{crtIC.procedure} vs {crtIC.fitInYSpace}."
+            )
+    # else: when bank is None we skip any cross comparison
 
 
 def _convertToYSpaceSummed(
@@ -609,6 +642,24 @@ def _runPreFitStatistics(
                 f"outlier(s) at indices {outlier_idx.tolist()}  "
                 f"({pct_remaining:.1f}% of detector bank remaining)"
             )
+
+            # generate masking summary plot (spectrum index vs counts)
+            fig_dir = getattr(ic, "figSavePath", None)
+            if n_outliers > 0 and fig_dir is not None:
+                try:
+                    total_counts = np.sum(spectra, axis=1)
+                    fig, ax = plt.subplots()
+                    idxs = np.arange(n_total)
+                    ax.plot(idxs, total_counts, '.', color='blue', label='counts')
+                    ax.plot(idxs[outlier_idx], total_counts[outlier_idx], 'ro', label='masked')
+                    ax.set_xlabel('Spectrum Index')
+                    ax.set_ylabel('Total Counts')
+                    ax.set_title(f"Masking summary — {ws_name}")
+                    ax.legend()
+                    fig.savefig(fig_dir / f"{ws_name}_masking_summary.pdf")
+                    plt.close(fig)
+                except Exception as exc:  # pragma: no cover
+                    warnings.warn(f"Masking summary plot failed: {exc}")
             logger.info(
                 "Phase 6 outlier detection: %d/%d outliers at %s (%.1f%% remaining)",
                 n_outliers, n_total, outlier_idx.tolist(), pct_remaining,

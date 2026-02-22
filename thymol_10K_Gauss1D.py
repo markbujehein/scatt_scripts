@@ -384,9 +384,9 @@ class UserScriptControls:
     verbose: bool = True
 
     # Choose main procedure to run
-    procedure = "BACKWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    procedure = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
-    fitInYSpace = "BACKWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    fitInYSpace = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
 
 
 class BootstrapInitialConditions:
