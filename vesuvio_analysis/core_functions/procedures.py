@@ -168,27 +168,17 @@ def createTableWSHRatios(HRatios: List[float], massIdxs: List[int]) -> None:
 def _autoSelectPreliminaryIterations(bckwdIC: Any) -> int:
     """Return the number of H-ratio estimation iterations from the IC, without prompting.
 
-    Reads ``bckwdIC.nSamples`` (the canonical config attribute).  Raises
-    ``ValueError`` if the attribute is absent or ``None``.
+    Reads ``bckwdIC.nPreliminaryIterations`` if set; falls back to the
+    default of 4 iterations.
 
     Args:
-        bckwdIC: Backward initial-conditions object that must carry a
-            positive integer ``nSamples`` attribute.
+        bckwdIC: Backward initial-conditions object.  May carry a positive
+            integer ``nPreliminaryIterations`` attribute to override the default.
 
     Returns:
-        Number of preliminary iterations to execute.
-
-    Raises:
-        ValueError: If ``nSamples`` is missing or ``None``.
+        Number of preliminary iterations to execute (default: 4).
     """
-    nSamples = getattr(bckwdIC, "nSamples", None)
-    if nSamples is None:
-        raise ValueError(
-            "bckwdIC.nSamples is missing or None. "
-            "Set a positive integer nSamples on BackwardInitialConditions "
-            "to specify the number of preliminary H-ratio estimation iterations."
-        )
-    return int(nSamples)
+    return int(getattr(bckwdIC, "nPreliminaryIterations", 4))
 
 
 def askUserNoOfIterations() -> int:
@@ -196,24 +186,21 @@ def askUserNoOfIterations() -> int:
 
     .. deprecated::
         This function is kept for backwards compatibility only.
-        Use :func:`_autoSelectPreliminaryIterations` instead.
-        All interactive ``input()`` calls have been removed; the function
-        now logs a warning and returns ``bckwdIC.nSamples`` via the
-        non-interactive path.
-
-    Returns:
-        Number of iterations entered by the user.
+        Use :func:`_autoSelectPreliminaryIterations` instead, which reads
+        ``bckwdIC.nPreliminaryIterations`` (default: 4) without prompting.
 
     Raises:
-        KeyboardInterrupt: If the user declines to run.
+        NotImplementedError: Always — interactive prompts have been removed.
     """
     logger.warning(
         "askUserNoOfIterations() is deprecated and no longer interactive. "
-        "Set nSamples on BackwardInitialConditions to control iteration count."
+        "Set nPreliminaryIterations on BackwardInitialConditions to control "
+        "the number of H-ratio estimation iterations (default: 4)."
     )
     raise NotImplementedError(
         "askUserNoOfIterations() has been removed. "
-        "Use _autoSelectPreliminaryIterations(bckwdIC) instead."
+        "Use _autoSelectPreliminaryIterations(bckwdIC) or set "
+        "nPreliminaryIterations on BackwardInitialConditions instead."
     )
  
 

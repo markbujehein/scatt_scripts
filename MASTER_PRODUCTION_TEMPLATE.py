@@ -26,10 +26,10 @@ Design Principles
   on ``BootstrapInitialConditions`` disables the bootstrap runtime estimator
   prompt.  The H-ratio estimation procedure runs automatically when needed.
 
-* **Explicit nSamples on BackwardInitialConditions** — required by
-  ``_autoSelectPreliminaryIterations()`` if the preliminary H-ratio
-  estimation is triggered (i.e. when ``HToMassIdxRatio`` is ``None`` or
-  ``1.0``).
+* **Explicit nPreliminaryIterations on BackwardInitialConditions** — used by
+  ``_autoSelectPreliminaryIterations()`` when the preliminary H-ratio
+  estimation is triggered (i.e. when ``HToMassIdxRatio`` is ``None``).
+  Defaults to 4 if not set.
 
 * **Single configuration block** — all physics constants, detector ranges,
   and control flags live in the IC classes at the top of this file.  Change
@@ -53,11 +53,17 @@ Adapting for a new experiment
    ``BackwardInitialConditions`` and ``ForwardInitialConditions``.
 4. Set ``HToMassIdxRatio`` on ``BackwardInitialConditions``:
    * Known value  → enter it directly (e.g. ``20.1``).
-   * Unknown / H absent → set to ``None`` or ``1.0`` and the pipeline will
-     estimate it automatically using ``nSamples`` preliminary iterations.
+   * Unknown / H absent in backward bank → set to ``None`` and the pipeline
+     will estimate it automatically using ``nPreliminaryIterations`` iterations.
+   * Note: hydrogen is only present in FORWARD spectra; in BACKWARD-only runs
+     ``HToMassIdxRatio`` should be ``None`` (no H present in backward bank).
 5. Set ``nSamples`` on ``BootstrapInitialConditions`` to the desired number
    of bootstrap replicas.
-6. Run: ``pixi run python my_sample_300K.py``
+6. Optionally enable the Bayesian Bootstrap (Phase 6 sieve) via
+   ``UserScriptControls.runBayesianBootstrap = True`` — this runs
+   Dirichlet-weighted resampling on J(y) parameters, separate from the
+   NCP-level bootstrap in ``BootstrapInitialConditions``.
+7. Run: ``pixi run python my_sample_300K.py``
 """
 
 from __future__ import annotations
@@ -150,17 +156,21 @@ class BackwardInitialConditions(GeneralInitialConditions):
 
     Hydrogen is resolved in the forward bank.  ``HToMassIdxRatio`` encodes
     the H peak intensity relative to the Oxygen peak.  When set to ``None``
-    or ``1.0``, the pipeline runs an automatic preliminary estimation using
-    ``nSamples`` iterations before the main fit.
+    the pipeline runs an automatic preliminary estimation using
+    ``nPreliminaryIterations`` iterations before the main fit.
+
+    Note: Hydrogen is only detected in FORWARD spectra.  In BACKWARD-only
+    mode, ``HToMassIdxRatio`` should be set to ``None`` (no hydrogen resolved).
+    In JOINT mode, the forward H peaks calibrate both banks via AUC normalisation.
 
     Attributes:
         HToMassIdxRatio: H / reference-mass intensity ratio.  Known value
-            for Thymol 10 K is 20.1.  Set to ``None`` or ``1.0`` to trigger
-            automatic estimation (requires ``nSamples`` to be set).
+            for Thymol 10 K is 20.1.  Set to ``None`` to trigger automatic
+            estimation via ``nPreliminaryIterations`` iterations.
         massIdx: Index of the reference mass (Oxygen, index 1 in this bank).
-        nSamples: Number of preliminary iterations for H-ratio estimation.
-            Only used when automatic estimation is triggered.  Must not be
-            ``None`` in that case (raises ``ValueError`` otherwise).
+        nPreliminaryIterations: Number of H-ratio estimation iterations run
+            automatically when ``HToMassIdxRatio`` is ``None`` (default: 4
+            if not set).
         masses: Nuclear masses in a.m.u., shape ``(n_masses,)``.
         initPars: Flat array ``[intensity, width, centre] * n_masses``.
         bounds: Optimiser bounds per parameter, shape ``(3*n_masses, 2)``.
@@ -181,12 +191,12 @@ class BackwardInitialConditions(GeneralInitialConditions):
     scaleRaw = 1
 
     # C10H14O: H/O ratio ≈ 20.1 (14 H atoms, σ_H ≈ 82 barn vs σ_O ≈ 4.2 barn)
-    HToMassIdxRatio = 20.1   # Set to None or 1.0 to trigger auto-estimation
+    HToMassIdxRatio = 20.1   # Set to None to trigger automatic estimation
     massIdx = 1              # Reference mass index: Oxygen (index 1 in bckwd masses)
 
-    # Preliminary H-ratio estimation iterations.
-    # Required (must not be None) when HToMassIdxRatio is None or 1.0.
-    nSamples: int = 4
+    # Number of H-ratio estimation iterations when auto-estimation is triggered
+    # (i.e. when HToMassIdxRatio is None). Overrides the default of 4.
+    nPreliminaryIterations: int = 4
 
     masses = np.array([12, 16, 27])   # Carbon, Oxygen, Aluminium
 
@@ -337,12 +347,18 @@ class UserScriptControls:
         runRoutine: Execute the full NCP + y-space fitting pipeline.
         procedure: Scattering direction(s) for the NCP routine.
             Options: ``None``, ``'BACKWARD'``, ``'FORWARD'``, ``'JOINT'``.
+            Note: hydrogen recoil peaks are only present in FORWARD spectra.
+            In JOINT mode, forward H peaks calibrate both banks via AUC.
         fitInYSpace: Which final workspace is passed to the y-space fit.
             Options: ``None``, ``'BACKWARD'``, ``'FORWARD'``, ``'JOINT'``.
         runningTest: Fast-track flag; set to ``True`` only for CI smoke tests.
-        runOutlierDetection: PCA hardware-outlier detection (Phase 6).
-        runPhysicsClustering: DBSCAN physics-trend clustering (Phase 6).
-        runBayesianBootstrap: Bayesian Bootstrap resampling (Phase 6).
+        runOutlierDetection: PCA hardware-outlier detection (Phase 6 sieve).
+        runPhysicsClustering: DBSCAN physics-trend clustering (Phase 6 sieve).
+        runBayesianBootstrap: Rubin-style Weighted Bayesian Bootstrap applied
+            as a Phase 6 statistical sieve.  This is distinct from the
+            residual / Gaussian-error bootstrap in ``BootstrapInitialConditions``
+            (``bootstrapType``); it operates on already-reduced J(y) parameters
+            using Dirichlet-weighted resampling.
         verbose: Print pipeline headers, footers, and optimizer agreement.
     """
 
@@ -355,7 +371,7 @@ class UserScriptControls:
 
     runOutlierDetection: bool = False
     runPhysicsClustering: bool = False
-    runBayesianBootstrap: bool = False
+    runBayesianBootstrap: bool = False  # Phase 6 Dirichlet-weighted Bayesian Bootstrap
 
     verbose: bool = True
 
@@ -367,16 +383,26 @@ class UserScriptControls:
 class BootstrapInitialConditions:
     """Bootstrap / jackknife resampling configuration.
 
+    This controls the residual- or Gaussian-error bootstrap over the NCP fit
+    (Stage 2).  It is distinct from the Bayesian Bootstrap (Phase 6 sieve)
+    configured via ``UserScriptControls.runBayesianBootstrap``, which applies
+    Dirichlet-weighted resampling to already-reduced J(y) parameters.
+
+    Bootstrapping can be run in FORWARD, BACKWARD, or JOINT mode
+    independently of the Stage 1 ``procedure`` setting.
+
     Attributes:
         runBootstrap: Redirect execution to the bootstrap procedure.
             Mutually exclusive with ``UserScriptControls.runRoutine``.
         procedure: Scattering direction for each bootstrap replica.
+            Options: ``'BACKWARD'``, ``'FORWARD'``, ``'JOINT'``.
+            JOINT runs the Jackknife procedure separately for each bank.
         fitInYSpace: Workspace fitted in y-space per replica.
         bootstrapType: Resampling strategy.
             Options: ``'JACKKNIFE'``, ``'BOOT_RESIDUALS'``,
             ``'BOOT_GAUSS_ERRS'``.
         nSamples: Number of bootstrap replicas.  Must not be ``None``
-            (raises ``ValueError`` if missing).
+            (raises ``ValueError`` via ``bootstrap.chooseNSamples()``).
         skipMSIterations: Each replica skips MS / GC corrections.
         userConfirmation: Prompt before starting the bootstrap loop.
             Set to ``False`` for non-interactive production runs.
@@ -388,7 +414,7 @@ class BootstrapInitialConditions:
     procedure = "BACKWARD"
     fitInYSpace = None
 
-    bootstrapType = "BOOT_RESIDUALS"
+    bootstrapType = "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS"
     nSamples = 650          # Must not be None — validated by bootstrap.chooseNSamples()
     skipMSIterations = False
     userConfirmation = False  # Non-interactive: no runtime-estimator prompt

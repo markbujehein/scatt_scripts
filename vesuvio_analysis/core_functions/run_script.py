@@ -158,13 +158,10 @@ def runScript(
 
         ranPreliminary = False
         if (proc == "BACKWARD") | (proc == "JOINT"):
-            _h_ratio = bckwdIC.HToMassIdxRatio
-            _need_estimation = (_h_ratio is None) or (_h_ratio == 1.0)
-            if isHPresent(fwdIC.masses) and _need_estimation:
+            if isHPresent(fwdIC.masses) and bckwdIC.HToMassIdxRatio is None:
                 _logger.warning(
-                    "HToMassIdxRatio is %s (missing or default=1.0). "
-                    "Running automatic preliminary estimation procedure.",
-                    _h_ratio,
+                    "HToMassIdxRatio is None. "
+                    "Running automatic preliminary estimation procedure."
                 )
                 HRatios, massIdxs = runPreProcToEstHRatio(
                     bckwdIC, fwdIC
