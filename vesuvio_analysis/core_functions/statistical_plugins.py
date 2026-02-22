@@ -345,6 +345,78 @@ def plot_outlier_scatter(
     return fig
 
 
+def plot_outlier_before_after(
+    embedding_before: NDArray[np.floating],
+    labels_before: NDArray[np.intp],
+    embedding_after: NDArray[np.floating],
+    labels_after: NDArray[np.intp],
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Side-by-side UMAP scatter: before and after outlier removal.
+
+    Left panel shows the original UMAP embedding with outliers
+    highlighted.  Right panel shows the re-embedded clean spectra
+    after masking.
+
+    Args:
+        embedding_before: UMAP projections before masking, shape
+            ``(n_spectra, >=2)``.
+        labels_before: Outlier labels before masking (``-1`` = outlier).
+        embedding_after: UMAP projections after masking, shape
+            ``(n_clean, >=2)``.
+        labels_after: Outlier labels after masking.
+        save_path: Optional file path for saving.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig, (ax_l, ax_r) = figure_factory(ncols=2, aspect_ratio=0.5)
+
+    # --- Left panel: before ---
+    inlier_b = labels_before == 0
+    outlier_b = labels_before == -1
+    ax_l.scatter(
+        embedding_before[inlier_b, 0], embedding_before[inlier_b, 1],
+        color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
+    )
+    ax_l.scatter(
+        embedding_before[outlier_b, 0], embedding_before[outlier_b, 1],
+        color="#D62728", marker="x", s=60, linewidths=1.5,
+        label=f"Outlier (n={int(outlier_b.sum())})",
+    )
+    ax_l.set_xlabel("UMAP 1")
+    ax_l.set_ylabel("UMAP 2")
+    ax_l.set_title("Before Outlier Removal")
+    ax_l.legend(fontsize=7)
+
+    # --- Right panel: after ---
+    inlier_a = labels_after == 0
+    outlier_a = labels_after == -1
+    ax_r.scatter(
+        embedding_after[inlier_a, 0], embedding_after[inlier_a, 1],
+        color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
+    )
+    if outlier_a.any():
+        ax_r.scatter(
+            embedding_after[outlier_a, 0], embedding_after[outlier_a, 1],
+            color="#D62728", marker="x", s=60, linewidths=1.5,
+            label=f"Outlier (n={int(outlier_a.sum())})",
+        )
+    ax_r.set_xlabel("UMAP 1")
+    ax_r.set_ylabel("")
+    ax_r.set_title("After Outlier Removal")
+    ax_r.legend(fontsize=7)
+
+    fig.suptitle("UMAP Hardware Outlier Detection", fontsize=11)
+    plt.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
 def plot_cluster_ltheta(
     features: NDArray[np.floating],
     labels: NDArray[np.intp],
@@ -563,6 +635,81 @@ def plot_optimizer_residuals(
         f"Optimizer Cross-Check — Residuals  (max rel. diff = {rel_diff_pct:.2f} %)"
     )
 
+    plt.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_bootstrap_convergence(
+    weighted_residuals: NDArray[np.floating],
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Bootstrap convergence diagnostic: histogram + KDE of replica means.
+
+    Computes the mean of each bootstrap replica's weighted-residual
+    profile, then overlays a normalised histogram with a Gaussian KDE
+    to assess distributional convergence.  The bootstrap mean and
+    standard deviation are annotated.
+
+    Args:
+        weighted_residuals: Weighted residual profiles from
+            :meth:`BayesianBootstrap.compute_weighted_residuals`,
+            shape ``(n_samples, n_bins)``.
+        save_path: Optional file path for saving.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig, ax = figure_factory()
+
+    replica_means = np.mean(weighted_residuals, axis=1)
+
+    # NaN-safety: drop non-finite values before histogram/KDE
+    finite_mask = np.isfinite(replica_means)
+    n_dropped = int(np.sum(~finite_mask))
+    if n_dropped > 0:
+        logger.warning(
+            "plot_bootstrap_convergence: dropped %d non-finite replica means",
+            n_dropped,
+        )
+    replica_means = replica_means[finite_mask]
+
+    if len(replica_means) < 2:
+        ax.text(0.5, 0.5, "Insufficient finite replicas",
+                ha="center", va="center", transform=ax.transAxes)
+        if save_path is not None:
+            fig.savefig(save_path)
+            plt.close(fig)
+        return fig
+
+    n_samples = len(replica_means)
+    mu = float(np.mean(replica_means))
+    sigma = float(np.std(replica_means))
+
+    ax.hist(
+        replica_means, bins=min(50, max(10, n_samples // 20)),
+        density=True, color=COLORBLIND_PALETTE[0], alpha=0.6,
+        edgecolor="white", linewidth=0.5, label="Histogram",
+    )
+
+    kde = stats.gaussian_kde(replica_means)
+    x_grid = np.linspace(replica_means.min(), replica_means.max(), 300)
+    ax.plot(x_grid, kde(x_grid), color=COLORBLIND_PALETTE[3],
+            linewidth=1.8, label="KDE")
+
+    ax.axvline(mu, color="#D62728", linestyle="--", linewidth=1.2,
+               label=rf"$\mu = {mu:.4g}$")
+    ax.axvspan(mu - sigma, mu + sigma, alpha=0.10, color=COLORBLIND_PALETTE[1],
+               label=rf"$\pm 1\sigma = {sigma:.4g}$")
+
+    ax.set_xlabel("Bootstrap replica mean residual")
+    ax.set_ylabel("Density")
+    ax.set_title(f"Bayesian Bootstrap Convergence  ($n = {n_samples}$)")
+    ax.legend(fontsize=7)
     plt.tight_layout()
 
     if save_path is not None:

@@ -71,7 +71,13 @@ class GeneralInitialConditions:
     vertical_width, horizontal_width, thickness = 0.1, 0.1, 0.001  # Expressed in metres
     
     # Preliminary procedure configuration (used when H-ratio estimation is needed)
-    preliminaryNoOfIterations = 3  # Number of iterations for automatic H-ratio convergence when H is detected but HToMassIdxRatio is unknown
+    preliminaryNoOfIterations = 10  # Number of iterations for automatic H-ratio convergence when H is detected but HToMassIdxRatio is unknown
+
+    maskedSpecAllNo = np.array([18, 34, 45, 52, 62, 173, 174, 178])
+
+    subEmptyFromRaw = True
+    scaleEmpty = 1
+    scaleRaw = 1
 
 
 class BackwardInitialConditions(GeneralInitialConditions):
@@ -118,9 +124,9 @@ class BackwardInitialConditions(GeneralInitialConditions):
         number_of_events: Number of Monte Carlo events for the MS correction.
     """
 
-    subEmptyFromRaw = True
-    scaleEmpty = 1
-    scaleRaw = 1
+    # subEmptyFromRaw = True
+    # scaleEmpty = 1
+    # scaleRaw = 1
 
     # C10H14O:  14*82: 10*5.71: 4.232
     # HToMassIdxRatio = 20.1050788
@@ -162,10 +168,10 @@ class BackwardInitialConditions(GeneralInitialConditions):
     constraints = []
 
     noOfMSIterations = 0  # Number of MS corrections, 0 is no correction
-    firstSpec = 3  # 3
-    lastSpec = 134  # 134
+    firstSpec = 3  
+    lastSpec = 134 
 
-    maskedSpecAllNo = np.array([18, 34, 45, 52, 62])
+    # maskedSpecAllNo = np.array([18, 34, 45, 52, 62])
 
     # Boolean Flags to control script
     MSCorrectionFlag = True
@@ -219,9 +225,9 @@ class ForwardInitialConditions(GeneralInitialConditions):
         number_of_events: Number of Monte Carlo events for the MS correction.
     """
 
-    subEmptyFromRaw = False
-    scaleEmpty = 1
-    scaleRaw = 1
+    # subEmptyFromRaw = False
+    # scaleEmpty = 1
+    # scaleRaw = 1
     HToMassIdxRatio = 20.1050788
 
     # Masses, instrument parameters and initial fitting parameters
@@ -265,14 +271,14 @@ class ForwardInitialConditions(GeneralInitialConditions):
     constraints = []
 
     noOfMSIterations = 0
-    firstSpec = 135  # 144
-    lastSpec = 182  # 182
+    firstSpec = 135 
+    lastSpec = 182  
 
     # Boolean Flags to control script
     MSCorrectionFlag = True
     GammaCorrectionFlag = True
 
-    maskedSpecAllNo = np.array([173, 174, 178])
+    # maskedSpecAllNo = np.array([173, 174, 178])
 
     tofBinning = "110,1,430"
     maskTOFRange = None  # TOF Range for the resonance peak
@@ -359,11 +365,6 @@ class UserScriptControls:
 
     runRoutine = True
 
-    # Choose main procedure to run
-    procedure = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
-    # Choose on which ws to perform the fit in y space
-    fitInYSpace = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
-
     # Fast-track flag: when True, truncates expensive operations for smoke testing
     runningTest: bool = False
 
@@ -381,6 +382,11 @@ class UserScriptControls:
 
     # Output verbosity: True = headers, footers, agreement summary; False = silent
     verbose: bool = True
+
+    # Choose main procedure to run
+    procedure = "BACKWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    # Choose on which ws to perform the fit in y space
+    fitInYSpace = "BACKWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
 
 
 class BootstrapInitialConditions:
@@ -412,8 +418,8 @@ class BootstrapInitialConditions:
 
     runBootstrap = False
 
-    procedure = "BACKWARD"
-    fitInYSpace = "FORWARD"
+    procedure = "JOINT"
+    fitInYSpace = "JOINT"
 
     bootstrapType: str = "BOOT_BAYESIAN"    # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
     nSamples = 100  # Used if running Bootstrap, otherwise code ignores it. 500-1000 is a reasonable number for production runs

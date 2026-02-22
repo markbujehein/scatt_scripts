@@ -250,6 +250,12 @@ def runScript(
             wsInMtd
         ):  # When wsName is empty list, loop doesn't run
             for wsName, IC in zip(wsNames, ICs):
+                if wsName not in mtd:
+                    logging.warning(
+                        f"Workspace '{wsName}' not found in Mantid Analysis Data Service. "
+                        f"Skipping Y-Space fit for {IC.modeRunning} bank."
+                    )
+                    continue
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
             run_logger.write()
             if _verbose:
@@ -287,6 +293,12 @@ def runScript(
 
             run_logger.log_timestamp("yspace_start")
             for wsName, IC in zip(wsNames, ICs):
+                if wsName not in mtd:
+                    logging.warning(
+                        f"Workspace '{wsName}' not found in Mantid Analysis Data Service. "
+                        f"Skipping Y-Space fit for {IC.modeRunning} bank."
+                    )
+                    continue
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
             run_logger.log_timestamp("yspace_end")
 
@@ -342,27 +354,35 @@ def checkInputs(crtIC: Any) -> None:
             validated.
 
     Raises:
-        AssertionError: If any flag value is invalid or if ``procedure``
+        ValueError: If any flag value is invalid or if ``procedure``
             and ``fitInYSpace`` are inconsistent.
     """
 
     try:
-        if ~crtIC.runRoutine:
+        if not crtIC.runRoutine:
             return
     except AttributeError:
-        if ~crtIC.runBootstrap:
+        if not crtIC.runBootstrap:
             return
 
     for flag in [crtIC.procedure, crtIC.fitInYSpace]:
-        assert (
+        if not (
             (flag == "BACKWARD")
             | (flag == "FORWARD")
             | (flag == "JOINT")
             | (flag == None)
-        ), "Option not recognized."
+        ):
+            raise ValueError(f"Invalid option '{flag}' not recognized. "
+                             "Must be 'BACKWARD', 'FORWARD', 'JOINT', or None.")
 
     if (crtIC.procedure != "JOINT") & (crtIC.fitInYSpace != None):
-        assert crtIC.procedure == crtIC.fitInYSpace
+        if crtIC.procedure != crtIC.fitInYSpace:
+            raise ValueError(
+                f"Inconsistent procedure and fitInYSpace settings:\n"
+                f"  procedure = '{crtIC.procedure}'\n"
+                f"  fitInYSpace = '{crtIC.fitInYSpace}'\n"
+                f"Check your wsBackIC or wsFrontIC definitions."
+            )
 
 
 def _convertToYSpaceSummed(
@@ -523,6 +543,7 @@ def _runPreFitStatistics(
         HardwareOutlierDetector,
         PhysicsTrendClusterer,
         plot_cluster_ltheta,
+        plot_outlier_before_after,
         plot_outlier_scatter,
     )
     from vesuvio_analysis.core_functions.analysis_functions import (
@@ -561,6 +582,9 @@ def _runPreFitStatistics(
         # Resolve the Mantid workspace name: ic.name = "{script}_{DIR}_"
         # Final iteration workspace = ic.name + str(ic.noOfMSIterations)
         ws_name = ic.name + str(ic.noOfMSIterations)
+        print(
+            f"[Phase 6] Entering pre-fit statistics for workspace: {ws_name}"
+        )
 
         # ---- Outlier Detection (UMAP + EllipticEnvelope) ----
         if getattr(userCtr, "runOutlierDetection", False):
@@ -593,6 +617,10 @@ def _runPreFitStatistics(
             diagnostics["outlier_indices"] = outlier_idx
             diagnostics["outlier_labels"] = labels
 
+            # Store pass-1 embedding for before/after visualisation
+            embedding_before = detector.embedding_coords_.copy()
+            labels_before = labels.copy()
+
             # --- Masking: Map array indices → Mantid WorkspaceIndices ---
             if getattr(userCtr, "removeOutliers", False) and n_outliers > 0:
                 # WorkspaceIndex is the 0-based row index within the
@@ -624,23 +652,53 @@ def _runPreFitStatistics(
                     if spectra.shape[1] == ncp_total.shape[1] + 1:
                         spectra = spectra[:, :-1].copy()
                     print(
-                        f"[Phase 6] Pass 2: re-extracted clean NCP profiles "
-                        f"from masked workspace '{ws_name}'"
+                        f"[Phase 6] Entering Pass 2 for Workspace: {ws_name}"
                     )
+                    print(
+                        f"[Phase 6] Pass 2: Confirming mask on {len(outlier_idx)} spectra for {ws_name}."
+                    )
+
+                    # --- Pass 2: Re-embed clean spectra for after plot ---
+                    clean_mask = ~(labels_before == -1)
+                    spectra_clean = spectra[clean_mask]
+                    if spectra_clean.shape[0] >= 4:
+                        detector_pass2 = HardwareOutlierDetector(
+                            n_components=n_components,
+                            n_neighbors=min(n_neighbors, spectra_clean.shape[0] - 1),
+                            min_dist=min_dist,
+                            contamination=0.1,
+                        )
+                        labels_after = detector_pass2.fit_predict(spectra_clean)
+                        embedding_after = detector_pass2.embedding_coords_
+                    else:
+                        embedding_after = embedding_before[clean_mask]
+                        labels_after = np.zeros(clean_mask.sum(), dtype=np.intp)
                 else:
                     print(
                         f"[Phase 6] Workspace '{ws_name}' not in ADS. "
                         f"Outlier indices recorded but not masked."
                     )
+                    embedding_after = embedding_before
+                    labels_after = labels_before
 
                 outlier_mask = labels == -1
+            else:
+                embedding_after = embedding_before
+                labels_after = labels_before
 
             fig_dir = getattr(ic, "figSavePath", None)
             if fig_dir is not None:
                 try:
+                    # Before/after side-by-side subplot
+                    plot_outlier_before_after(
+                        embedding_before, labels_before,
+                        embedding_after, labels_after,
+                        save_path=fig_dir / f"{ws_name}_umap_before_after.pdf",
+                    )
+                    # Also save the standalone before-only scatter
                     plot_outlier_scatter(
-                        detector.embedding_coords_, labels,
-                        save_path=fig_dir / "stats_outlier_scatter.pdf",
+                        embedding_before, labels_before,
+                        save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
@@ -705,7 +763,7 @@ def _runPreFitStatistics(
                 try:
                     plot_cluster_ltheta(
                         features_clean, labels,
-                        save_path=fig_dir / "stats_cluster_ltheta.pdf",
+                        save_path=fig_dir / f"{ws_name}_cluster_ltheta.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 cluster plot failed: {exc}")
@@ -745,6 +803,7 @@ def _runBayesianBootstrapProcedure(
     """
     from vesuvio_analysis.core_functions.statistical_plugins import (
         BayesianBootstrap,
+        plot_bootstrap_convergence,
     )
     from vesuvio_analysis.core_functions.procedures import (
         runIndependentIterativeProcedure,
@@ -800,6 +859,17 @@ def _runBayesianBootstrapProcedure(
             f"[Phase 6] Bootstrap summary ({direction}): "
             f"mean = {boot_mean:.4f}, std = {boot_std:.4f}"
         )
+
+        # --- Bootstrap convergence diagnostic plot ---
+        fig_dir = getattr(ic, "figSavePath", None)
+        if fig_dir is not None:
+            try:
+                plot_bootstrap_convergence(
+                    weighted,
+                    save_path=fig_dir / f"stats_bootstrap_convergence_{direction}.pdf",
+                )
+            except Exception as exc:
+                warnings.warn(f"Phase 6 bootstrap convergence plot failed: {exc}")
 
         all_results[direction] = {
             "weighted_residuals": weighted,

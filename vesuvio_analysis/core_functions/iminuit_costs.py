@@ -108,13 +108,14 @@ class NCPCostFunction:
             self._kinematicArrays,
         )
 
-        # Mask zeros (same logic as errorFunction).
-        zerosMask = self._dataY == 0
-        ncpFilt = ncpTotal[~zerosMask]
-        dataYFilt = self._dataY[~zerosMask]
-        dataEFilt = self._dataE[~zerosMask]
+        # Mask zeros: exclude bins where dataY==0 OR dataE==0
+        # to prevent division-by-zero (same logic as errorFunction).
+        validMask = (self._dataY != 0) & (self._dataE != 0)
+        ncpFilt = ncpTotal[validMask]
+        dataYFilt = self._dataY[validMask]
+        dataEFilt = self._dataE[validMask]
 
-        if np.all(self._dataE == 0):
+        if len(dataYFilt) == 0 or np.all(dataEFilt == 0):
             return float(np.sum((ncpFilt - dataYFilt) ** 2))
 
         return float(np.sum((ncpFilt - dataYFilt) ** 2 / dataEFilt ** 2))

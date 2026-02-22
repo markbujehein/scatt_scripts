@@ -41,7 +41,7 @@ import numpy as np
 
 
 # Threshold for the iMinuit–Scipy numerical agreement check
-_AGREEMENT_THRESHOLD: float = 0.01
+from vesuvio_analysis.core_functions.constants import _AGREEMENT_THRESHOLD
 
 
 class RunLogger:

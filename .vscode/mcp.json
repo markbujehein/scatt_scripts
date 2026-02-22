@@ -1,64 +1,64 @@
-{
-  "servers": {
-    "vesuvio-environment": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.environment_server"
-      ]
-    },
-    "vesuvio-ads": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.mantid_ads_server"
-      ]
-    },
-    "vesuvio-log": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.log_inspector_server"
-      ]
-    },
-    "vesuvio-playwright": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.playwright_researcher_server"
-      ]
-    },
-    "vesuvio-monitor": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.system_monitor_server"
-      ]
-    },
-    "vesuvio-files": {
-      "type": "stdio",
-      "command": "pixi",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "vesuvio_analysis.mcp_server.thesis_files_server"
-      ]
-    }
-  }
-}
+// {
+//   "servers": {
+//     "vesuvio-environment": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.environment_server"
+//       ]
+//     },
+//     "vesuvio-ads": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.mantid_ads_server"
+//       ]
+//     },
+//     "vesuvio-log": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.log_inspector_server"
+//       ]
+//     },
+//     "vesuvio-playwright": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.playwright_researcher_server"
+//       ]
+//     },
+//     "vesuvio-monitor": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.system_monitor_server"
+//       ]
+//     },
+//     "vesuvio-files": {
+//       "type": "stdio",
+//       "command": "pixi",
+//       "args": [
+//         "run",
+//         "python",
+//         "-m",
+//         "vesuvio_analysis.mcp_server.thesis_files_server"
+//       ]
+//     }
+//   }
+// }

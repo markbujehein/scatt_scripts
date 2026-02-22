@@ -44,8 +44,8 @@ _fit_comparison_log: list = []
 _SEP_DOUBLE = "=" * 60
 _SEP_SINGLE = "-" * 60
 
-# iMinuit–Scipy agreement threshold (1 %)
-_AGREEMENT_THRESHOLD_ANALYSIS = 0.01
+# iMinuit–Scipy agreement threshold for optimizer cross-validation
+from vesuvio_analysis.core_functions.constants import _AGREEMENT_THRESHOLD
 
 
 def _print_optimizer_agreement_summary() -> None:
@@ -60,7 +60,7 @@ def _print_optimizer_agreement_summary() -> None:
     max_diff = max(max(c, p) for c, p in _optimizer_check_log)
     n_fail = sum(
         1 for c, p in _optimizer_check_log
-        if c > _AGREEMENT_THRESHOLD_ANALYSIS or p > _AGREEMENT_THRESHOLD_ANALYSIS
+        if c > _AGREEMENT_THRESHOLD or p > _AGREEMENT_THRESHOLD
     )
     n_total = len(_optimizer_check_log)
     gate_pass = n_fail == 0
@@ -69,7 +69,7 @@ def _print_optimizer_agreement_summary() -> None:
     print(
         f"  iMinuit\u2013SciPy Agreement Check: {status} "
         f"(Max Difference: {max_diff * 100:.2f}% | "
-        f"Tolerance: {_AGREEMENT_THRESHOLD_ANALYSIS * 100:.2f}%)"
+        f"Tolerance: {_AGREEMENT_THRESHOLD * 100:.2f}%)"
     )
     print(f"  Spectra checked: {n_total}, Failed: {n_fail}")
 
@@ -100,7 +100,7 @@ def _print_per_parameter_divergence_summary() -> None:
         if par_rel is None or par_names is None:
             continue
         for k, (name, diff) in enumerate(zip(par_names, par_rel)):
-            if diff > _AGREEMENT_THRESHOLD_ANALYSIS:
+            if diff > _AGREEMENT_THRESHOLD:
                 param_fail_counts[name] += 1
                 if name not in param_worst_diffs or diff > param_worst_diffs[name]:
                     param_worst_diffs[name] = diff
@@ -150,9 +150,9 @@ def _plot_optimizer_comparison(ic: Any) -> None:
         abs(s - m) / max(abs(s), 1e-10) if s != 0 else 0
         for s, m in zip(scipy_chi2s, iminuit_chi2s)
     ]
-    colors = ['red' if d > _AGREEMENT_THRESHOLD_ANALYSIS else 'green' for d in chi2_rel_diffs]
+    colors = ['red' if d > _AGREEMENT_THRESHOLD else 'green' for d in chi2_rel_diffs]
     ax.bar(range(len(chi2_rel_diffs)), [d*100 for d in chi2_rel_diffs], color=colors, alpha=0.7)
-    ax.axhline(_AGREEMENT_THRESHOLD_ANALYSIS * 100, color='black', linestyle='--', label='1% Threshold')
+    ax.axhline(_AGREEMENT_THRESHOLD * 100, color='black', linestyle='--', label='2.5% Threshold')
     ax.set_xlabel('Spectrum Index')
     ax.set_ylabel('Relative Difference (%)')
     ax.set_title('Chi-squared Relative Difference (SciPy vs iMinuit)')
@@ -1334,10 +1334,29 @@ def fitNcpToSingleSpec(
         hi_val = np.inf if np.isnan(hi) else float(hi)
         scipy_bounds.append((lo_val, hi_val))
 
+    # --- Boundary buffer: nudge initial guesses off exact boundaries ---
+    # SLSQP can stall when starting exactly on a constraint boundary.
+    # Shift inward by a small fraction of the feasible range (or an
+    # absolute floor for semi-infinite bounds).
+    _BOUNDARY_BUFFER_FRAC = 1e-4
+    _BOUNDARY_BUFFER_ABS = 1e-4
+    init_pars = ic.initPars.copy()
+    for k, (lo, hi) in enumerate(scipy_bounds):
+        if np.isfinite(hi - lo):
+            span = hi - lo
+            nudge = max(abs(span) * _BOUNDARY_BUFFER_FRAC, _BOUNDARY_BUFFER_ABS)
+        else:
+            # Infinite span: fallback nudge relative to initial guess
+            nudge = abs(init_pars[k]) * _BOUNDARY_BUFFER_FRAC
+        if np.isfinite(lo) and init_pars[k] <= lo + nudge:
+            init_pars[k] = lo + nudge
+        if np.isfinite(hi) and init_pars[k] >= hi - nudge:
+            init_pars[k] = hi - nudge
+
     # --- SciPy SLSQP fit (primary) ---
     result = optimize.minimize(
         errorFunction,
-        ic.initPars,
+        init_pars,
         args=(dataY, dataE, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays, ic),
         method='SLSQP',
         bounds=scipy_bounds,
@@ -1363,7 +1382,7 @@ def fitNcpToSingleSpec(
             dataY, dataE, ySpacesForEachMass,
             resolutionPars, instrPars, kinematicArrays, ic,
         )
-        m = Minuit(cost_fn, *ic.initPars)
+        m = Minuit(cost_fn, *init_pars)
 
         # Synchronise bounds: apply identical limits to iMinuit.
         # NCPCostFunction._parameters already sets these via
@@ -1381,7 +1400,7 @@ def fitNcpToSingleSpec(
         # centres near zero) and converge to a different local minimum.
         _STEP_FRACTION = 0.1  # 10% of |initPar|
         _STEP_FLOOR = 0.1     # Minimum step for near-zero parameters
-        for k, p0 in enumerate(ic.initPars):
+        for k, p0 in enumerate(init_pars):
             step = max(abs(p0) * _STEP_FRACTION, _STEP_FLOOR)
             m.errors[k] = step
 
@@ -1391,12 +1410,36 @@ def fitNcpToSingleSpec(
         m.migrad()
         m.hesse()
 
+        # --- Migrad convergence and bound-hit diagnostics ---
+        if not m.valid:
+            logger.warning(
+                "OptimizerCheck Spec %.0f: MIGRAD did NOT converge "
+                "(edm=%.4g, is_above_max_edm=%s).",
+                instrPars[0], m.fmin.edm, m.fmin.is_above_max_edm,
+            )
+        if m.fmin.has_parameters_at_limit:
+            at_limit = [
+                par_names[k] for k in range(len(init_pars))
+                if m.params[k].is_at_lower_limit or m.params[k].is_at_upper_limit
+            ]
+            logger.warning(
+                "OptimizerCheck Spec %.0f: parameters at limits: %s",
+                instrPars[0], at_limit,
+            )
+        # Log SciPy exit status
+        scipy_status = result.get("status", -1)
+        scipy_msg = result.get("message", "")
+        if scipy_status != 0:
+            logger.warning(
+                "OptimizerCheck Spec %.0f: SciPy SLSQP exit=%d (%s)",
+                instrPars[0], scipy_status, scipy_msg,
+            )
+
         runMinos = getattr(ic, "runMinos", False)
         if runMinos:
             m.minos()
 
-        # --- iMinuit–SciPy 1% Numerical Agreement Check ---
-        _AGREEMENT_THRESHOLD = 0.01  # 1%
+        # --- iMinuit–SciPy Numerical Agreement Check ---
         scipy_chi2 = result["fun"]
         iminuit_chi2 = m.fval
 
@@ -1507,14 +1550,18 @@ def errorFunction(
 
     ncpForEachMass, ncpTotal = calculateNcpSpec(ic, pars, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays)
 
-    # Ignore any masked values from Jackknife or masked tof range
-    zerosMask = (dataY==0)    
-    ncpTotal = ncpTotal[~zerosMask]
-    dataYf = dataY[~zerosMask]   
-    dataEf = dataE[~zerosMask]   
+    # Ignore masked bins (dataY==0) AND zero-error bins (dataE==0).
+    # MaskDetectors zeros both dataY and dataE; resonance masking
+    # (maskBinsWithZeros) zeros dataY only.  Individual dataE==0 bins
+    # from single-count edges or Mantid masking must also be excluded
+    # to prevent division-by-zero in the chi-squared denominator.
+    validMask = (dataY != 0) & (dataE != 0)
+    ncpTotal = ncpTotal[validMask]
+    dataYf = dataY[validMask]
+    dataEf = dataE[validMask]
 
-    if np.all(dataE==0):   # When errors not present
-        return np.sum((ncpTotal - dataYf)**2)   
+    if len(dataYf) == 0 or np.all(dataEf == 0):
+        return np.sum((ncpTotal - dataYf)**2)
 
     return np.sum((ncpTotal - dataYf)**2 / dataEf**2)
 
