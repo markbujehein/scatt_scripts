@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,8 @@ from vesuvio_analysis.core_functions.analysis_functions import iterativeFitForDa
 from mantid.api import AnalysisDataService, mtd
 from mantid.simpleapi import CreateEmptyTableWorkspace
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def runIndependentIterativeProcedure(
@@ -103,7 +106,7 @@ def runPreProcToEstHRatio(
         oriMS.append(IC.noOfMSIterations)
         IC.noOfMSIterations = 0
 
-    nIter = askUserNoOfIterations()
+    nIter = _autoSelectPreliminaryIterations(bckwdIC)
  
     HRatios = []   # List to store HRatios
     massIdxs = []
@@ -162,22 +165,43 @@ def createTableWSHRatios(HRatios: List[float], massIdxs: List[int]) -> None:
     return
 
 
+def _autoSelectPreliminaryIterations(bckwdIC: Any) -> int:
+    """Return the number of H-ratio estimation iterations from the IC, without prompting.
+
+    Reads ``bckwdIC.nPreliminaryIterations`` if set; falls back to the
+    default of 4 iterations.
+
+    Args:
+        bckwdIC: Backward initial-conditions object.  May carry a positive
+            integer ``nPreliminaryIterations`` attribute to override the default.
+
+    Returns:
+        Number of preliminary iterations to execute (default: 4).
+    """
+    return int(getattr(bckwdIC, "nPreliminaryIterations", 4))
+
+
 def askUserNoOfIterations() -> int:
     """Prompt the user for the number of preliminary iterations.
 
-    Returns:
-        Number of iterations entered by the user.
+    .. deprecated::
+        This function is kept for backwards compatibility only.
+        Use :func:`_autoSelectPreliminaryIterations` instead, which reads
+        ``bckwdIC.nPreliminaryIterations`` (default: 4) without prompting.
 
     Raises:
-        KeyboardInterrupt: If the user declines to run.
+        NotImplementedError: Always — interactive prompts have been removed.
     """
-    print("\nH was detected but HToMassIdxRatio was not provided.")
-    print("\nSugested preliminary procedure:\n\nrun_forward\nfor n:\n    estimate_HToMassIdxRatio\n    run_backward\n    run_forward")
-    userInput = input("\n\nDo you wish to run preliminary procedure to estimate HToMassIdxRatio? (y/n)") 
-    if not((userInput=="y") or (userInput=="Y")): raise KeyboardInterrupt("Preliminary procedure interrupted.")
-    
-    nIter = int(input("\nHow many iterations do you wish to run? n="))
-    return nIter
+    logger.warning(
+        "askUserNoOfIterations() is deprecated and no longer interactive. "
+        "Set nPreliminaryIterations on BackwardInitialConditions to control "
+        "the number of H-ratio estimation iterations (default: 4)."
+    )
+    raise NotImplementedError(
+        "askUserNoOfIterations() has been removed. "
+        "Use _autoSelectPreliminaryIterations(bckwdIC) or set "
+        "nPreliminaryIterations on BackwardInitialConditions instead."
+    )
  
 
 def calculateHToMassIdxRatio(fwdScatResults: Any) -> Tuple[int, float]:
