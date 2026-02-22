@@ -336,8 +336,10 @@ class UserScriptControls:
         runningTest: If True, truncates expensive operations (iterations,
             bootstrap samples) for fast smoke-testing.  Propagated to all IC
             objects by run_script.runScript().
-        runOutlierDetection: If True, runs PCA-based hardware-outlier detection
-            as part of the Phase 6 pre-fit statistical analysis stage.
+        runOutlierDetection: If True, runs UMAP-based hardware-outlier
+            detection as part of the Phase 6 pre-fit statistical analysis
+            stage.  UMAP preserves the non-linear manifold structure of
+            TOF spectroscopic data (McInnes et al., 2018).
         removeOutliers: If True **and** ``runOutlierDetection`` is True,
             dynamically masks the detected outlier spectra in the Mantid
             workspace so they are excluded from clustering and the global fit.
@@ -345,6 +347,11 @@ class UserScriptControls:
             as part of the Phase 6 pre-fit analysis.  When enabled, the
             number of valid clusters dynamically overwrites
             ``YSpaceFitInitialConditions.nGlobalFitGroups``.
+        umapNNeighbors: UMAP neighbourhood size — controls local vs global
+            structure preservation.  Default: 15.
+        umapMinDist: UMAP minimum embedding distance — controls cluster
+            compactness.  Default: 0.1.
+        umapNComponents: UMAP embedding dimensionality.  Default: 2.
         verbose: If True, print pipeline headers, footers, and the optimizer
             agreement summary.  If False, suppress all informational output
             (errors and warnings are always shown).
@@ -361,9 +368,16 @@ class UserScriptControls:
     runningTest: bool = False
 
     # Phase 6 pre-fit statistical analysis toggles
-    runOutlierDetection: bool = False    # PCA hardware-outlier detection
+    runOutlierDetection: bool = False    # UMAP hardware-outlier detection (replaces PCA)
     removeOutliers: bool = False         # Mask detected outliers from workspace
     runPhysicsClustering: bool = True    # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
+
+    # UMAP hyperparameters for outlier detection dimensionality reduction.
+    # UMAP preserves local topological structure of spectroscopic data
+    # (McInnes, Healy & Melville, 2018, arXiv:1802.03426).
+    umapNNeighbors: int = 15    # Neighbourhood size — balances local vs global structure
+    umapMinDist: float = 0.1    # Minimum embedding distance — controls cluster compactness
+    umapNComponents: int = 2    # Embedding dimensionality
 
     # Output verbosity: True = headers, footers, agreement summary; False = silent
     verbose: bool = True
@@ -401,10 +415,8 @@ class BootstrapInitialConditions:
     procedure = "BACKWARD"
     fitInYSpace = "FORWARD"
 
-    bootstrapType = (
-        "BOOT_RESIDUALS"  # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
-    )
-    nSamples = 650  # Used if running Bootstrap, otherwise code ignores it
+    bootstrapType: str = "BOOT_BAYESIAN"    # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
+    nSamples = 100  # Used if running Bootstrap, otherwise code ignores it. 500-1000 is a reasonable number for production runs
     skipMSIterations = False  # Each replica runs with no MS or Gamma corrections
     userConfirmation = (
         False  # Asks user to confirm procedure, will probably be deleted in the future

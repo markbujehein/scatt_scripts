@@ -307,9 +307,16 @@ class UserScriptControls:
     runningTest: bool = False
 
     # Phase 6 pre-fit statistical analysis toggles
-    runOutlierDetection: bool = False    # PCA hardware-outlier detection
+    runOutlierDetection: bool = False    # UMAP hardware-outlier detection (replaces PCA)
     removeOutliers: bool = False         # Mask detected outliers from workspace
     runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
+
+    # UMAP hyperparameters for outlier detection dimensionality reduction.
+    # UMAP preserves local topological structure of spectroscopic data
+    # (McInnes, Healy & Melville, 2018, arXiv:1802.03426).
+    umapNNeighbors: int = 15    # Neighbourhood size — balances local vs global structure
+    umapMinDist: float = 0.1    # Minimum embedding distance — controls cluster compactness
+    umapNComponents: int = 2    # Embedding dimensionality
 
     # Output verbosity: True = headers, footers, agreement summary; False = silent
     verbose: bool = True

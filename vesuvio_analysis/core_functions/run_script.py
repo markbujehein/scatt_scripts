@@ -480,28 +480,35 @@ def _runPreFitStatistics(
     fwdIC: Any,
     yFitIC: Any,
 ) -> Dict[str, Any]:
-    """Phase 6a: outlier detection and DBSCAN clustering (pre-fit).
+    """Phase 6a: two-pass outlier masking and DBSCAN clustering (pre-fit).
 
     Runs **before** the y-space global fit so that its results can
-    dynamically configure ``yFitIC.nGlobalFitGroups`` and optionally
-    exclude broken detectors from subsequent fitting.
+    dynamically configure ``yFitIC.nGlobalFitGroups`` and exclude
+    broken detectors from subsequent fitting.
 
-    Outlier removal:
-        When ``userCtr.removeOutliers`` is ``True`` **and** outliers
-        are detected, the corresponding spectra are masked in the
-        Mantid workspace via ``MaskDetectors`` and the outlier indices
-        are recorded.  The global fit's ``takeOutMaskedSpectra`` step
-        will then automatically drop these fully-zeroed rows.
+    Two-pass outlier removal workflow:
+        **Pass 1** — Extract NCP profiles from the final-iteration
+        workspace.  Run UMAP + ``EllipticEnvelope`` outlier detection
+        on the raw NCP array.  Map the Python array indices of the
+        anomalous spectra to Mantid workspace indices and mask them
+        via ``MaskDetectors(Workspace=ws, WorkspaceIndexList=[…])``.
+
+        **Pass 2** — Re-extract the (now clean) NCP profiles from the
+        masked workspace.  Counts and errors for masked spectra are
+        strictly zeroed by Mantid, so the downstream
+        ``takeOutMaskedSpectra`` in ``runGlobalFit`` will
+        automatically exclude them.
 
     DBSCAN grouping:
-        When ``userCtr.runPhysicsClustering`` is ``True``, the number
-        of valid (non-noise) clusters found by DBSCAN dynamically
-        overwrites ``yFitIC.nGlobalFitGroups``.  Noise points
-        (label ``-1``) are excluded from all groups and left for the
-        existing ``takeOutMaskedSpectra`` logic to handle.
+        When ``userCtr.runPhysicsClustering`` is ``True``, DBSCAN
+        clusters the cleaned (outlier-free) NCP profiles in
+        (L, θ) space.  The number of valid (non-noise) clusters
+        dynamically overwrites ``yFitIC.nGlobalFitGroups``.  Noise
+        points (label ``-1``) are excluded from all groups.
 
     Args:
-        userCtr: ``UserScriptControls`` with detection/clustering flags.
+        userCtr: ``UserScriptControls`` with detection/clustering flags
+            and UMAP hyperparameters.
         res: Result tuple from the iterative NCP fit (may be ``None``).
         bckwdIC: Completed backward initial-conditions object.
         fwdIC: Completed forward initial-conditions object.
@@ -540,6 +547,7 @@ def _runPreFitStatistics(
         results_and_ics = [(res[1], ic)]
 
     for results, ic in results_and_ics:
+        # --- Pass 1: Extract NCP profiles for outlier identification ---
         spectra = results.all_fit_workspaces[-1]
         ncp_total = results.all_tot_ncp[-1]
 
@@ -550,10 +558,22 @@ def _runPreFitStatistics(
         n_total = spectra.shape[0]
         outlier_mask: Optional[np.ndarray] = None
 
-        # ---- Outlier Detection ----
+        # Resolve the Mantid workspace name: ic.name = "{script}_{DIR}_"
+        # Final iteration workspace = ic.name + str(ic.noOfMSIterations)
+        ws_name = ic.name + str(ic.noOfMSIterations)
+
+        # ---- Outlier Detection (UMAP + EllipticEnvelope) ----
         if getattr(userCtr, "runOutlierDetection", False):
+            # UMAP hyperparameters from user config
+            n_neighbors = getattr(userCtr, "umapNNeighbors", 15)
+            min_dist = getattr(userCtr, "umapMinDist", 0.1)
+            n_components = getattr(userCtr, "umapNComponents", 2)
+
             detector = HardwareOutlierDetector(
-                n_components=5, contamination=0.1,
+                n_components=n_components,
+                n_neighbors=n_neighbors,
+                min_dist=min_dist,
+                contamination=0.1,
             )
             labels = detector.fit_predict(spectra)
             outlier_idx = np.where(labels == -1)[0]
@@ -561,9 +581,9 @@ def _runPreFitStatistics(
             pct_remaining = 100.0 * (n_total - n_outliers) / n_total
 
             print(
-                f"[Phase 6] Outlier detection: {n_outliers}/{n_total} "
+                f"[Phase 6] Outlier detection (UMAP): {n_outliers}/{n_total} "
                 f"outlier(s) at indices {outlier_idx.tolist()}  "
-                f"({pct_remaining:.1f}% remaining)"
+                f"({pct_remaining:.1f}% of detector bank remaining)"
             )
             logger.info(
                 "Phase 6 outlier detection: %d/%d outliers at %s (%.1f%% remaining)",
@@ -573,38 +593,44 @@ def _runPreFitStatistics(
             diagnostics["outlier_indices"] = outlier_idx
             diagnostics["outlier_labels"] = labels
 
-            # --- Outlier removal via workspace masking ---
+            # --- Masking: Map array indices → Mantid WorkspaceIndices ---
             if getattr(userCtr, "removeOutliers", False) and n_outliers > 0:
-                # Convert row indices to absolute spectrum numbers for
-                # MaskDetectors.  The IC stores the first spectrum index;
-                # row 0 corresponds to ic.firstSpec.
-                abs_spec_numbers = (outlier_idx + ic.firstSpec).tolist()
-                # MaskDetectors zeroes out the counts/errors for the
-                # specified spectra.  The downstream
-                # takeOutMaskedSpectra() in runGlobalFit will then
-                # automatically exclude these fully-zero rows.
-                try:
-                    ws_name = results.name if hasattr(results, "name") else None
-                    if ws_name and ws_name in mtd:
-                        MaskDetectors(
-                            Workspace=ws_name,
-                            SpectraList=abs_spec_numbers,
-                        )
-                        print(
-                            f"[Phase 6] Removed {n_outliers} outlier spectra "
-                            f"from workspace '{ws_name}': {abs_spec_numbers}"
-                        )
-                    else:
-                        # Fallback: record for manual exclusion; the
-                        # workspace may not be accessible by name.
-                        print(
-                            f"[Phase 6] Workspace not accessible for masking. "
-                            f"Outlier indices recorded but not masked."
-                        )
-                except Exception as exc:
-                    warnings.warn(
-                        f"Phase 6 outlier masking failed: {exc}. "
-                        f"Outlier indices recorded but not removed."
+                # WorkspaceIndex is the 0-based row index within the
+                # cropped workspace.  The NCP array rows correspond
+                # directly to workspace indices 0 … n_total-1.
+                ws_indices_to_mask = outlier_idx.tolist()
+
+                if ws_name in mtd:
+                    MaskDetectors(
+                        Workspace=ws_name,
+                        WorkspaceIndexList=ws_indices_to_mask,
+                    )
+                    print(
+                        f"[Phase 6] Masked {n_outliers} outlier spectra "
+                        f"in workspace '{ws_name}' — "
+                        f"WorkspaceIndexList: {ws_indices_to_mask}"
+                    )
+                    logger.info(
+                        "Phase 6 masked %d spectra in '%s': %s",
+                        n_outliers, ws_name, ws_indices_to_mask,
+                    )
+
+                    # --- Pass 2: Re-extract clean NCP from masked ws ---
+                    # MaskDetectors zeroes out dataY and dataE for the
+                    # masked rows.  Re-read to get the clean arrays that
+                    # downstream DBSCAN and groupDetectors will consume.
+                    ws_masked = mtd[ws_name]
+                    spectra = ws_masked.extractY()
+                    if spectra.shape[1] == ncp_total.shape[1] + 1:
+                        spectra = spectra[:, :-1].copy()
+                    print(
+                        f"[Phase 6] Pass 2: re-extracted clean NCP profiles "
+                        f"from masked workspace '{ws_name}'"
+                    )
+                else:
+                    print(
+                        f"[Phase 6] Workspace '{ws_name}' not in ADS. "
+                        f"Outlier indices recorded but not masked."
                     )
 
                 outlier_mask = labels == -1
@@ -613,13 +639,13 @@ def _runPreFitStatistics(
             if fig_dir is not None:
                 try:
                     plot_outlier_scatter(
-                        detector.pca_coords_, labels,
+                        detector.embedding_coords_, labels,
                         save_path=fig_dir / "stats_outlier_scatter.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
-        # ---- Physics Clustering (DBSCAN) ----
+        # ---- Physics Clustering (DBSCAN) — pre-Global Fit ----
         if getattr(userCtr, "runPhysicsClustering", False):
             instrPars = loadInstrParsFileIntoArray(
                 ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
@@ -641,7 +667,7 @@ def _runPreFitStatistics(
             n_clusters = len(groups)
 
             print(
-                f"[Phase 6] Physics clustering: {n_clusters} cluster(s) "
+                f"[Phase 6] DBSCAN clustering: {n_clusters} cluster(s) "
                 f"found, {n_noise} noise point(s) excluded"
             )
             logger.info(
@@ -654,9 +680,9 @@ def _runPreFitStatistics(
             diagnostics["n_noise"] = n_noise
 
             # --- Dynamic overwrite of nGlobalFitGroups ---
-            # Noise points (label -1) are excluded from groups and will
-            # be handled by takeOutMaskedSpectra if they were masked
-            # above, or treated as additional unassigned detectors.
+            # This executes *before* the global fit so that
+            # groupDetectors() uses the DBSCAN count instead of the
+            # legacy k-means default.
             if n_clusters > 0:
                 old_n = yFitIC.nGlobalFitGroups
                 yFitIC.nGlobalFitGroups = n_clusters

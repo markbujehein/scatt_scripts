@@ -60,6 +60,7 @@ dependencies = [
     "numba",
     "scikit-learn",
     "pydantic>=2.0",
+    "umap-learn",
 ]
 
 [project.optional-dependencies]

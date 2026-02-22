@@ -5,8 +5,8 @@ hardware outlier identification, density-based detector clustering, and
 probabilistic uncertainty quantification via Bayesian Bootstrap.
 
 Classes:
-    HardwareOutlierDetector: PCA-based anomaly detection for broken
-        detectors.
+    HardwareOutlierDetector: UMAP + robust-covariance anomaly detection
+        for broken detectors.
     PhysicsTrendClusterer: DBSCAN clustering of detector features
         (L, theta).
     BayesianBootstrap: Rubin-style Weighted Bayesian Bootstrap with
@@ -15,8 +15,12 @@ Classes:
 Notes:
     - scikit-learn DBSCAN labels noise points as -1; these are explicitly
       excluded from physics-trend groups.
-    - PCA requires standardised (zero-mean, unit-variance) input; this is
-      handled internally by ``HardwareOutlierDetector``.
+    - UMAP preserves local topological structure via a fuzzy simplicial
+      set construction (McInnes, Healy & Melville, 2018,
+      arXiv:1802.03426).  This is critical for spectroscopic data where
+      non-linear variance arises from kinematic TOF broadening and
+      $J(y)$ scaling — linear PCA cannot capture these manifold
+      curvatures.
     - Dirichlet(1, 1, ..., 1) produces the uniform prior over the simplex
       (Rubin, 1981).  Each weight vector sums to 1.0 (up to
       floating-point rounding).
@@ -24,6 +28,7 @@ Notes:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -33,10 +38,11 @@ from numpy.typing import NDArray
 from scipy import stats
 from sklearn.cluster import DBSCAN
 from sklearn.covariance import EllipticEnvelope
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -44,49 +50,94 @@ from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figur
 # ---------------------------------------------------------------------------
 
 class HardwareOutlierDetector:
-    """Identifies broken detectors via PCA + robust covariance scoring.
+    """Identifies broken detectors via UMAP + robust covariance scoring.
 
     Each row of the input matrix is a detector spectrum.  The spectra
-    are standardised and projected onto ``n_components`` principal
-    components.  Outliers are detected in the reduced space using a
-    robust covariance estimator (``EllipticEnvelope``).
+    are standardised, then projected onto a low-dimensional manifold
+    using UMAP (Uniform Manifold Approximation and Projection).
+    Outliers are detected in the reduced space using a robust
+    covariance estimator (``EllipticEnvelope``).
+
+    UMAP is preferred over linear PCA because TOF spectroscopic data
+    exhibit non-linear variance from kinematic broadening and the
+    $J(y)$ scaling relation.  UMAP preserves local topological
+    structure via a fuzzy simplicial set construction, faithfully
+    representing the detector manifold curvature that PCA collapses
+    (McInnes, Healy & Melville, 2018, arXiv:1802.03426).
 
     Attributes:
-        n_components: Number of PCA components to retain.
+        n_components: Number of UMAP embedding dimensions.
+        n_neighbors: Size of the local neighbourhood used by UMAP
+            for manifold approximation.  Controls the balance between
+            local and global structure preservation.
+        min_dist: Minimum distance between embedded points in UMAP.
+            Smaller values produce tighter clusters.
         contamination: Expected fraction of outlier spectra
             (0 < contamination < 0.5).
 
     Example::
 
-        detector = HardwareOutlierDetector(n_components=5, contamination=0.1)
+        detector = HardwareOutlierDetector(
+            n_components=2, n_neighbors=15, min_dist=0.1,
+        )
         labels = detector.fit_predict(spectra_matrix)
         outlier_indices = np.where(labels == -1)[0]
     """
 
-    def __init__(self, n_components: int = 5,
-                 contamination: float = 0.1) -> None:
+    def __init__(
+        self,
+        n_components: int = 2,
+        n_neighbors: int = 15,
+        min_dist: float = 0.1,
+        contamination: float = 0.1,
+    ) -> None:
         self.n_components = n_components
+        self.n_neighbors = n_neighbors
+        self.min_dist = min_dist
         self.contamination = contamination
         self._scaler = StandardScaler()
-        self._pca = PCA(n_components=n_components)
         self._detector = EllipticEnvelope(
             contamination=contamination, random_state=0,
         )
 
     def fit_predict(self, spectra: NDArray[np.floating]) -> NDArray[np.intp]:
-        """Fits the detector and returns outlier labels.
+        """Fit the detector and return outlier labels.
+
+        Applies UMAP dimensionality reduction followed by
+        ``EllipticEnvelope`` robust covariance outlier detection.
 
         Args:
-            spectra: Raw detector spectra, shape (n_spectra, n_bins).
+            spectra: Raw detector spectra, shape ``(n_spectra, n_bins)``.
 
         Returns:
-            Labels array, shape (n_spectra,). ``-1`` for outlier, ``0``
-            for inlier (mapped from EllipticEnvelope's +1 to align with
-            DBSCAN convention).
+            Labels array, shape ``(n_spectra,)``. ``-1`` for outlier,
+            ``0`` for inlier (mapped from EllipticEnvelope's +1 to
+            align with DBSCAN convention).
         """
+        try:
+            from umap import UMAP
+        except ImportError as exc:
+            raise ImportError(
+                "umap-learn is required for UMAP-based outlier detection.  "
+                "Install with: pip install umap-learn"
+            ) from exc
+
         scaled = self._scaler.fit_transform(spectra)
-        reduced = self._pca.fit_transform(scaled)
-        self.pca_coords_ = reduced
+
+        # UMAP preserves local topological structure of the spectral
+        # manifold (McInnes et al., 2018).  n_neighbors controls the
+        # trade-off between local vs global structure; min_dist controls
+        # cluster compactness in the embedding.
+        reducer = UMAP(
+            n_components=self.n_components,
+            n_neighbors=min(self.n_neighbors, spectra.shape[0] - 1),
+            min_dist=self.min_dist,
+            random_state=0,
+            n_jobs=1,
+        )
+        reduced = reducer.fit_transform(scaled)
+        self.embedding_coords_ = reduced
+
         raw_labels = self._detector.fit_predict(reduced)
         # EllipticEnvelope: -1 = outlier, +1 = inlier
         # Map +1 -> 0 (normal) to align with DBSCAN convention
@@ -244,18 +295,18 @@ class BayesianBootstrap:
 
 
 def plot_outlier_scatter(
-    pca_coords: NDArray[np.floating],
+    embedding_coords: NDArray[np.floating],
     labels: NDArray[np.intp],
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
-    """Scatter plot in PCA space highlighting outlier detectors in red.
+    """Scatter plot in UMAP embedding space highlighting outlier detectors.
 
-    Renders the first two principal components.  Inlier detectors are
-    drawn in the first colour of the COLORBLIND_PALETTE; outliers
+    Renders the first two UMAP embedding dimensions.  Inlier detectors
+    are drawn in the first colour of the COLORBLIND_PALETTE; outliers
     (``label == -1``) are drawn in red.
 
     Args:
-        pca_coords: 2-D array of PCA projections, shape
+        embedding_coords: 2-D array of UMAP projections, shape
             ``(n_spectra, n_components)``.  At least 2 columns are
             required.
         labels: Outlier labels produced by
@@ -274,17 +325,17 @@ def plot_outlier_scatter(
     outlier_mask = labels == -1
 
     ax.scatter(
-        pca_coords[inlier_mask, 0], pca_coords[inlier_mask, 1],
+        embedding_coords[inlier_mask, 0], embedding_coords[inlier_mask, 1],
         color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
     )
     ax.scatter(
-        pca_coords[outlier_mask, 0], pca_coords[outlier_mask, 1],
+        embedding_coords[outlier_mask, 0], embedding_coords[outlier_mask, 1],
         color="#D62728", marker="x", s=60, linewidths=1.5,
         label=f"Outlier (n={int(outlier_mask.sum())})",
     )
-    ax.set_xlabel("PC 1")
-    ax.set_ylabel("PC 2")
-    ax.set_title("Hardware Outlier Detection — PCA Space")
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    ax.set_title("Hardware Outlier Detection — UMAP Embedding")
     ax.legend()
     plt.tight_layout()
 

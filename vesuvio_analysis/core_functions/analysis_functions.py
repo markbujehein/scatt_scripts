@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import logging
 import os
 
@@ -67,12 +67,51 @@ def _print_optimizer_agreement_summary() -> None:
     status = "PASS" if gate_pass else "FAIL"
     print(f"\n{_SEP_SINGLE}")
     print(
-        f"  iMinuit\u2013Scipy Agreement Check: {status} "
+        f"  iMinuit\u2013SciPy Agreement Check: {status} "
         f"(Max Difference: {max_diff * 100:.2f}% | "
         f"Tolerance: {_AGREEMENT_THRESHOLD_ANALYSIS * 100:.2f}%)"
     )
     print(f"  Spectra checked: {n_total}, Failed: {n_fail}")
+
+    # Fail-safe: identify which physical parameters are causing
+    # systematic divergence across multiple spectra.
+    if not gate_pass and _fit_comparison_log:
+        _print_per_parameter_divergence_summary()
+
     print(_SEP_SINGLE)
+
+
+def _print_per_parameter_divergence_summary() -> None:
+    """Print a breakdown of which physical parameters diverge most often.
+
+    Analyses ``_fit_comparison_log`` entries that contain per-parameter
+    relative differences, counts how often each named parameter exceeds
+    the 1% threshold, and reports the top offenders.  This helps
+    diagnose whether the local-minimum trap is caused by a specific
+    physical quantity (e.g. $\\sigma$ vs $A$).
+    """
+    from collections import Counter
+    param_fail_counts: Counter = Counter()
+    param_worst_diffs: Dict[str, float] = {}
+
+    for entry in _fit_comparison_log:
+        par_rel = entry.get("par_rel_diff")
+        par_names = entry.get("par_names")
+        if par_rel is None or par_names is None:
+            continue
+        for k, (name, diff) in enumerate(zip(par_names, par_rel)):
+            if diff > _AGREEMENT_THRESHOLD_ANALYSIS:
+                param_fail_counts[name] += 1
+                if name not in param_worst_diffs or diff > param_worst_diffs[name]:
+                    param_worst_diffs[name] = diff
+
+    if param_fail_counts:
+        print("  Per-parameter divergence summary (top offenders):")
+        for name, count in param_fail_counts.most_common(6):
+            worst = param_worst_diffs[name]
+            print(f"    {name}: failed in {count} spectra (worst: {worst * 100:.1f}%)")
+    else:
+        print("  (No per-parameter breakdown available.)")
 
 
 def _plot_optimizer_comparison(ic: Any) -> None:
@@ -1237,17 +1276,33 @@ def fitNcpToSingleSpec(
     kinematicArrays: np.ndarray,
     ic: Any,
 ) -> np.ndarray:
-    """Fit the NCP model to a single spectrum using scipy SLSQP and iMinuit.
+    """Fit the NCP model to a single spectrum using SciPy SLSQP and iMinuit.
 
     Minimises ``errorFunction`` with ``scipy.optimize.minimize``
     (method ``'SLSQP'``), then runs a parallel iMinuit fit
     (MIGRAD + Hesse, optionally Minos) for cross-validation and
     rigorous error estimation.
 
-    **iMinuit–Scipy 1% Numerical Agreement Check:** After both fits
-    complete, the chi-squared values *and* parameter vectors are
-    compared.  A warning is logged for any spectrum where the
-    relative difference exceeds 1 %.
+    **Boundary synchronisation:** Both optimisers receive identical
+    parameter bounds derived from ``ic.bounds``.  ``np.nan`` entries
+    are mapped to ``None`` (unbounded) for iMinuit and ``±np.inf``
+    for SciPy, ensuring the same feasible region.
+
+    **iMinuit step sizes:** Initial errors (step sizes) are set to
+    physically reasonable fractions of the initial parameter guesses
+    (10% of ``|initPar|`` or 0.1 for near-zero parameters).  This
+    prevents MIGRAD from taking oversized steps that traverse
+    different cost-function basins.
+
+    **Cost function alignment:** Both optimisers evaluate the
+    identical chi-squared definition:
+    ``χ² = Σ (NCP_model - data)² / σ²``.  iMinuit's ``errordef``
+    is explicitly set to ``Minuit.LEAST_SQUARES`` (= 1.0).
+
+    **Fail-safe:** When the 1% tolerance is exceeded, the divergent
+    parameters are identified by physical name (``I_m`` = intensity,
+    ``σ_m`` = width, ``C_m`` = centre for mass *m*) and their
+    individual values are logged to diagnose local-minimum traps.
 
     Args:
         dataY: Observed counts for one spectrum, shape ``(n_bins,)``.
@@ -1259,42 +1314,80 @@ def fitNcpToSingleSpec(
         kinematicArrays: Kinematics ``[v0, E0, deltaE, deltaQ]``,
             shape ``(4, n_bins)``.
         ic: Completed initial-conditions object with ``initPars``,
-            ``bounds``, and ``constraints``.
+            ``bounds``, ``constraints``, and ``masses``.
 
     Returns:
         Array of shape ``(3 * n_masses + 3,)`` containing
         ``[specNo, *fitPars, normChi2, nIter]``, or all zeros if
         the spectrum was masked.  The primary result comes from
-        scipy; iMinuit results are logged for comparison.
+        SciPy; iMinuit results are logged for comparison.
     """
 
-    if np.all(dataY == 0) : 
-        return np.zeros(len(ic.initPars)+3)  
+    if np.all(dataY == 0):
+        return np.zeros(len(ic.initPars) + 3)
 
-    # --- Scipy SLSQP fit (primary) ---
+    # --- Strict boundary synchronisation ---
+    # Normalise ic.bounds: replace np.nan with np.inf/-np.inf for SciPy
+    scipy_bounds = []
+    for lo, hi in ic.bounds:
+        lo_val = -np.inf if np.isnan(lo) else float(lo)
+        hi_val = np.inf if np.isnan(hi) else float(hi)
+        scipy_bounds.append((lo_val, hi_val))
+
+    # --- SciPy SLSQP fit (primary) ---
     result = optimize.minimize(
-        errorFunction, 
-        ic.initPars, 
+        errorFunction,
+        ic.initPars,
         args=(dataY, dataE, ySpacesForEachMass, resolutionPars, instrPars, kinematicArrays, ic),
-        method='SLSQP', 
-        bounds = ic.bounds, 
-        constraints=ic.constraints
-        )
+        method='SLSQP',
+        bounds=scipy_bounds,
+        constraints=ic.constraints,
+    )
 
     fitPars = result["x"]
 
     noDegreesOfFreedom = len(dataY) - len(fitPars)
     specFitPars = np.append(instrPars[0], fitPars)
 
+    # --- Build physical parameter names for diagnostics ---
+    # Parameters are ordered [I0, W0, C0, I1, W1, C1, ...] for n_masses.
+    n_masses = len(ic.masses)
+    _param_labels = ("I", "σ", "C")  # intensity, width, centre
+    par_names = [
+        f"{_param_labels[j % 3]}_{j // 3}" for j in range(len(ic.initPars))
+    ]
+
     # --- iMinuit MIGRAD + Hesse fit (parallel cross-validation) ---
     try:
-        cost = NCPCostFunction(
+        cost_fn = NCPCostFunction(
             dataY, dataE, ySpacesForEachMass,
             resolutionPars, instrPars, kinematicArrays, ic,
         )
-        m = Minuit(cost, *ic.initPars)
+        m = Minuit(cost_fn, *ic.initPars)
+
+        # Synchronise bounds: apply identical limits to iMinuit.
+        # NCPCostFunction._parameters already sets these via
+        # _build_parameters_dict, but we enforce them explicitly here
+        # to guarantee strict equivalence with the SciPy bounds.
+        for k, (lo, hi) in enumerate(scipy_bounds):
+            lo_m = None if lo == -np.inf else lo
+            hi_m = None if hi == np.inf else hi
+            m.limits[k] = (lo_m, hi_m)
+
+        # Set initial step sizes (errors) to physically reasonable
+        # fractions of the initial guesses.  MIGRAD uses these as the
+        # starting step size for gradient estimation.  Without this,
+        # MIGRAD may take steps that are too large (especially for
+        # centres near zero) and converge to a different local minimum.
+        _STEP_FRACTION = 0.1  # 10% of |initPar|
+        _STEP_FLOOR = 0.1     # Minimum step for near-zero parameters
+        for k, p0 in enumerate(ic.initPars):
+            step = max(abs(p0) * _STEP_FRACTION, _STEP_FLOOR)
+            m.errors[k] = step
+
         if getattr(ic, "runningTest", False):
             m.tol = 1.0  # Loose EDM tolerance for fast smoke-test convergence
+
         m.migrad()
         m.hesse()
 
@@ -1302,63 +1395,64 @@ def fitNcpToSingleSpec(
         if runMinos:
             m.minos()
 
-        # --- iMinuit–Scipy 1% Numerical Agreement Check ---
-        _AGREEMENT_THRESHOLD = 0.01  # 1 %
+        # --- iMinuit–SciPy 1% Numerical Agreement Check ---
+        _AGREEMENT_THRESHOLD = 0.01  # 1%
         scipy_chi2 = result["fun"]
         iminuit_chi2 = m.fval
 
-        # Chi-squared comparison
+        # χ² comparison
         if scipy_chi2 > 0:
             chi2_rel_diff = abs(scipy_chi2 - iminuit_chi2) / scipy_chi2
             if chi2_rel_diff > _AGREEMENT_THRESHOLD:
                 logger.warning(
-                    "OptimizerCheck Spec %.0f: χ² disagreement — scipy=%.4f "
-                    "vs iMinuit=%.4f (%.1f%%)",
+                    "OptimizerCheck Spec %.0f: χ² disagreement — "
+                    "SciPy=%.6g vs iMinuit=%.6g (%.2f%%)",
                     instrPars[0], scipy_chi2, iminuit_chi2,
                     chi2_rel_diff * 100,
                 )
         else:
             chi2_rel_diff = 0.0
 
-        # Parameter-vector comparison (hybrid: relative for large params, absolute for small)
+        # Parameter-vector comparison (hybrid metric)
         iminuit_pars = np.array(m.values)
         scipy_pars = fitPars
-        
-        # Use hybrid comparison: relative difference for parameters with |value| > threshold,
-        # absolute difference for very small parameters (e.g., centers near zero).
-        # This avoids spurious 4000% differences when centers differ by 1e-4.
-        _PARAM_SCALE_THRESHOLD = 0.01  # Use relative comparison only if |param| > 0.01
-        _PARAM_ABS_TOLERANCE = 1e-4    # Absolute tolerance for small parameters
-        
+
+        _PARAM_SCALE_THRESHOLD = 0.01
+        _PARAM_ABS_TOLERANCE = 1e-4
+
         par_abs_diff = np.abs(scipy_pars - iminuit_pars)
         par_rel_diff = np.zeros_like(scipy_pars)
-        
-        # For parameters larger than threshold, use relative difference
+
         large_param_mask = np.abs(scipy_pars) > _PARAM_SCALE_THRESHOLD
         par_rel_diff[large_param_mask] = (
             par_abs_diff[large_param_mask] / np.abs(scipy_pars[large_param_mask])
         )
-        
-        # For very small parameters, use absolute difference as a fraction of tolerance
+
         small_param_mask = ~large_param_mask
         par_rel_diff[small_param_mask] = (
             par_abs_diff[small_param_mask] / _PARAM_ABS_TOLERANCE
         )
-        
+
         max_par_diff = float(np.max(par_rel_diff))
+
+        # --- Fail-safe: per-parameter divergence diagnostics ---
         if max_par_diff > _AGREEMENT_THRESHOLD:
-            worst_idx = int(np.argmax(par_rel_diff))
-            logger.warning(
-                "OptimizerCheck Spec %.0f: parameter disagreement — "
-                "par[%d] scipy=%.4g vs iMinuit=%.4g (abs: %.4g, rel: %.1f%%)",
-                instrPars[0], worst_idx,
-                scipy_pars[worst_idx], iminuit_pars[worst_idx],
-                par_abs_diff[worst_idx], max_par_diff * 100,
-            )
+            # Log ALL divergent parameters with their physical names
+            divergent_params = np.where(par_rel_diff > _AGREEMENT_THRESHOLD)[0]
+            for pidx in divergent_params:
+                pname = par_names[pidx] if pidx < len(par_names) else f"p{pidx}"
+                logger.warning(
+                    "OptimizerCheck Spec %.0f: %s diverged — "
+                    "SciPy=%.6g, iMinuit=%.6g "
+                    "(abs: %.4g, rel: %.2f%%)",
+                    instrPars[0], pname,
+                    scipy_pars[pidx], iminuit_pars[pidx],
+                    par_abs_diff[pidx], par_rel_diff[pidx] * 100,
+                )
 
         # Accumulate for the end-of-workspace summary
         _optimizer_check_log.append((chi2_rel_diff, max_par_diff))
-        
+
         # Store data for fit comparison visualization
         _fit_comparison_log.append({
             'specNo': instrPars[0],
@@ -1366,10 +1460,12 @@ def fitNcpToSingleSpec(
             'iminuit_chi2': iminuit_chi2,
             'scipy_pars': scipy_pars.copy(),
             'iminuit_pars': iminuit_pars.copy(),
+            'par_names': par_names,
+            'par_rel_diff': par_rel_diff.copy(),
         })
     except Exception:
         logger.debug(
-            "iMinuit fit failed for spec %.0f, scipy result used.",
+            "iMinuit fit failed for spec %.0f, SciPy result used.",
             instrPars[0], exc_info=True,
         )
 
