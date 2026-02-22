@@ -1,4 +1,5 @@
 
+import logging
 from os import execv
 from xml.dom import NotFoundErr
 from vesuvio_analysis.core_functions.analysis_functions import calculateMeansAndStds, filterWidthsAndIntensities
@@ -9,6 +10,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy import stats
 from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory
+
+logger = logging.getLogger(__name__)
 
 currentPath = Path(__file__).parent.absolute() 
 experimentsPath = currentPath / ".." / ".. " / "experiments"
@@ -25,8 +28,10 @@ def runAnalysisOfStoredBootstrap(bckwdIC, fwdIC, yFitIC, bootIC, analysisIC, use
     for IC in [bckwdIC, fwdIC]:
 
         if not(IC.bootSavePath.is_file()):
-            print("Bootstrap data files not found, unable to run analysis!")
-            print(f"{IC.bootSavePath.name}")
+            logger.error(
+                "Bootstrap data files not found at '%s'; unable to run analysis.",
+                IC.bootSavePath,
+            )
             continue    # If main results are not present, assume ysapce results are also missing
         
         checkLogMatch(IC, isYFitFile=False)
@@ -60,8 +65,10 @@ def runAnalysisOfStoredBootstrap(bckwdIC, fwdIC, yFitIC, bootIC, analysisIC, use
 
 
         if not(IC.bootYFitSavePath.is_file()):
-            print("Bootstrap data file for y-space fit not found, unable to run analysis!")
-            print(f"{IC.bootYFitSavePath.name}")
+            logger.error(
+                "Bootstrap y-space fit data not found at '%s'; unable to run analysis.",
+                IC.bootYFitSavePath,
+            )
             continue
 
         checkLogMatch(IC, isYFitFile=True)

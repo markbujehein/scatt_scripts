@@ -1,5 +1,6 @@
 from typing import Any, List, Optional, Tuple
 import time
+import warnings
 
 import numpy as np
 from mantid.api import mtd
@@ -431,7 +432,6 @@ def _dispatchCorrectionPlots(
                 convert_to_yspace_fn=_convertToYSpaceSummed,
             )
         except Exception as exc:  # pragma: no cover
-            import warnings
             warnings.warn(
                 f"_dispatchCorrectionPlots: plotting failed for "
                 f"'{getattr(ic, 'name', '?')}': {exc}"
@@ -466,6 +466,8 @@ def _runStatisticalAnalysis(
         BayesianBootstrap,
         HardwareOutlierDetector,
         PhysicsTrendClusterer,
+        plot_cluster_ltheta,
+        plot_outlier_scatter,
     )
     from vesuvio_analysis.core_functions.analysis_functions import (
         loadInstrParsFileIntoArray,
@@ -513,6 +515,15 @@ def _runStatisticalAnalysis(
                 f"[Phase 6] Outlier detection: {n_outliers} outlier(s) "
                 f"found at indices {outlier_idx.tolist()}"
             )
+            fig_dir = getattr(ic, "figSavePath", None)
+            if fig_dir is not None:
+                try:
+                    plot_outlier_scatter(
+                        detector.pca_coords_, labels,
+                        save_path=fig_dir / "stats_outlier_scatter.pdf",
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
         if getattr(userCtr, "runPhysicsClustering", False):
             instrPars = loadInstrParsFileIntoArray(
@@ -531,6 +542,15 @@ def _runStatisticalAnalysis(
                 f"[Phase 6] Physics clustering: {len(groups)} cluster(s) "
                 f"found, {n_noise} noise point(s) excluded"
             )
+            fig_dir = getattr(ic, "figSavePath", None)
+            if fig_dir is not None:
+                try:
+                    plot_cluster_ltheta(
+                        features, labels,
+                        save_path=fig_dir / "stats_cluster_ltheta.pdf",
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Phase 6 cluster plot failed: {exc}")
 
         if getattr(userCtr, "runBayesianBootstrap", False):
             residuals = spectra - ncp_total

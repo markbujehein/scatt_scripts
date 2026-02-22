@@ -86,6 +86,7 @@ class HardwareOutlierDetector:
         """
         scaled = self._scaler.fit_transform(spectra)
         reduced = self._pca.fit_transform(scaled)
+        self.pca_coords_ = reduced
         raw_labels = self._detector.fit_predict(reduced)
         # EllipticEnvelope: -1 = outlier, +1 = inlier
         # Map +1 -> 0 (normal) to align with DBSCAN convention
@@ -368,12 +369,9 @@ def plot_bayesian_corner(
     """
     n_params = samples.shape[1]
     set_thesis_style()
-    fig, axes = plt.subplots(
-        n_params, n_params,
-        figsize=(
-            n_params * 2.5,
-            n_params * 2.5,
-        ),
+    fig, axes = figure_factory(
+        aspect_ratio=1.0,
+        nrows=n_params, ncols=n_params,
     )
     # Ensure axes is always 2-D
     if n_params == 1:
@@ -436,9 +434,9 @@ def plot_posterior_kde(
     """
     n_params = samples.shape[1]
     set_thesis_style()
-    fig, axes = plt.subplots(
-        1, n_params,
-        figsize=(max(6.0, n_params * 2.5), 3.5),
+    fig, axes = figure_factory(
+        aspect_ratio=0.5,
+        ncols=n_params,
     )
     if n_params == 1:
         axes = [axes]
