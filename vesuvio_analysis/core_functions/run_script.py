@@ -697,7 +697,7 @@ def _runPreFitStatistics(
 
                 detector = HardwareOutlierDetector(
                     n_components=n_components,
-                    n_neighbors=min(n_neighbors, spectra_working.shape[0] - 1),
+                    n_neighbors=max(2, min(n_neighbors, spectra_working.shape[0] - 1)),
                     min_dist=min_dist,
                     contamination=0.1,
                 )
@@ -894,8 +894,10 @@ def _runPreFitStatistics(
                     fisher_features = np.column_stack(
                         [angles_arr, total_counts, spectral_width]
                     )
-                    # Replace NaN angles with column mean
+                    # Replace NaN angles with column mean; fall back to 0 if all NaN
                     col_mean = np.nanmean(fisher_features[:, 0])
+                    if not np.isfinite(col_mean):
+                        col_mean = 0.0
                     nan_mask = ~np.isfinite(fisher_features[:, 0])
                     fisher_features[nan_mask, 0] = col_mean
                     plot_fisher_discriminant(

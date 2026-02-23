@@ -819,7 +819,7 @@ def plot_fisher_discriminant(
     # Decision boundary: threshold maximising Youden J = TPR - FPR
     j_stat = tpr - fpr
     best_idx = int(np.argmax(j_stat))
-    boundary = float(thresholds[best_idx]) if len(thresholds) > best_idx else float(np.mean(scores))
+    boundary = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(np.mean(scores))
 
     inlier_scores = scores[y_binary == 1]
     outlier_scores = scores[y_binary == 0]
@@ -828,6 +828,7 @@ def plot_fisher_discriminant(
     fig, ax = figure_factory()
 
     # Histogram for each class
+    # Adaptive binning: 10-30 bins, approximately 3 samples per bin
     all_scores = np.concatenate([inlier_scores, outlier_scores])
     bins = np.linspace(all_scores.min(), all_scores.max(),
                        min(30, max(10, len(scores) // 3)))
