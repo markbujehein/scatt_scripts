@@ -363,7 +363,7 @@ class UserScriptControls:
             (errors and warnings are always shown).
     """
 
-    runRoutine = False
+    runRoutine = True
 
     # Fast-track flag: when True, truncates expensive operations for smoke testing
     runningTest: bool = False
@@ -416,7 +416,7 @@ class BootstrapInitialConditions:
             bootstrap procedure can be exercised inside unit tests.
     """
 
-    runBootstrap = True
+    runBootstrap = False
 
     procedure = "FORWARD"
     fitInYSpace = "FORWARD"

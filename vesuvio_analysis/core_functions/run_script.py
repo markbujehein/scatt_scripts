@@ -1100,7 +1100,39 @@ def _runBayesianBootstrapProcedure(
 
         residuals = spectra - ncp_total
         bootstrap = BayesianBootstrap(n_samples=n_samples, seed=42)
-        weighted = bootstrap.compute_weighted_residuals(residuals)
+
+        # Pre-sanitize residuals (mirrors BayesianBootstrap.compute_weighted_residuals)
+        bad_rows = ~np.any(np.isfinite(residuals), axis=1)
+        n_valid = int(np.sum(~bad_rows))
+        clean_res = residuals.copy()
+        clean_res[bad_rows, :] = 0.0
+        np.nan_to_num(clean_res, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+        print(
+            f"[Bootstrap] Valid spectra: {n_valid}/{residuals.shape[0]}  "
+            f"Residual range: [{np.nanmin(residuals):.4g}, {np.nanmax(residuals):.4g}]"
+        )
+
+        # Per-10th-replica diagnostic log: generate weights explicitly so we
+        # can inspect individual replicas without re-doing the full multiply.
+        weights_all = bootstrap.generate_weights(residuals.shape[0])   # (n_samples, n_spectra)
+        if bad_rows.any():
+            weights_all[:, bad_rows] = 0.0
+            _rs = weights_all.sum(axis=1, keepdims=True)
+            weights_all = weights_all / np.where(_rs > 0.0, _rs, 1.0)
+
+        weighted = weights_all @ clean_res   # (n_samples, n_bins)
+
+        for _i in range(0, n_samples, max(1, n_samples // 10)):
+            _rep = weighted[_i]
+            _mean_r = float(np.mean(_rep))
+            _valid_bins = int(np.sum(np.isfinite(_rep)))
+            print(
+                f"[Bootstrap] Replica {_i:>4d}: "
+                f"mean residual = {_mean_r:+.4g}, "
+                f"valid bins = {_valid_bins}/{len(_rep)}"
+            )
+
         boot_mean = float(np.mean(weighted))
         boot_std = float(np.std(weighted))
 

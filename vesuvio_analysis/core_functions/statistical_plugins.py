@@ -276,6 +276,12 @@ class BayesianBootstrap:
     ) -> NDArray[np.floating]:
         """Computes weighted-sum residual profiles for each bootstrap sample.
 
+        Before multiplying, rows where the residual is entirely NaN are
+        zeroed out and the Dirichlet weights for those rows are zeroed and
+        renormalized over the remaining valid spectra.  This prevents a
+        single masked or failed spectrum from propagating NaN through the
+        entire matrix multiply (``0 * NaN == NaN`` in IEEE 754).
+
         Args:
             residuals: Per-spectrum residuals from the NCP fit,
                 shape (n_spectra, n_bins).
@@ -283,12 +289,41 @@ class BayesianBootstrap:
         Returns:
             Weighted residuals, shape (n_samples, n_bins). Each row is
             the weighted sum ``w @ residuals`` where ``w`` is a
-            Dirichlet weight vector.
+            Dirichlet weight vector renormalized over valid spectra.
         """
-        n_spectra = residuals.shape[0]
-        weights = self.generate_weights(n_spectra)
+        n_spectra, n_bins = residuals.shape
+
+        # Identify rows that are entirely non-finite (masked / failed fits).
+        bad_rows = ~np.any(np.isfinite(residuals), axis=1)   # (n_spectra,)
+        n_bad = int(np.sum(bad_rows))
+        if n_bad > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "BayesianBootstrap: %d/%d residual spectrum row(s) are "
+                "all-NaN (masked or failed fit).  Zeroing these rows "
+                "before weighting to prevent NaN propagation.",
+                n_bad, n_spectra,
+            )
+
+        # Work on a sanitized copy: replace bad rows with 0.
+        clean_residuals = residuals.copy()
+        clean_residuals[bad_rows, :] = 0.0
+        # Replace any remaining isolated NaNs (partial-bin masking) with 0.
+        np.nan_to_num(clean_residuals, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+        weights = self.generate_weights(n_spectra)   # (n_samples, n_spectra)
+
+        # Zero out weight elements for bad rows and renormalize each sample
+        # so the remaining valid-spectrum weights still sum to 1.
+        if n_bad > 0:
+            weights[:, bad_rows] = 0.0
+            row_sums = weights.sum(axis=1, keepdims=True)
+            # Avoid divide-by-zero if somehow ALL rows are bad.
+            safe_sums = np.where(row_sums > 0.0, row_sums, 1.0)
+            weights = weights / safe_sums
+
         # Matrix multiply: (n_samples, n_spectra) @ (n_spectra, n_bins)
-        return weights @ residuals
+        return weights @ clean_residuals
 
 
 def detector_relative_difference_metrics(
