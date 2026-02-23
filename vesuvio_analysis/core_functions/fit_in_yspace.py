@@ -836,7 +836,7 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
 
     # Create workspace to store best fit curve and errors on the fit
     wsMinFit = createFitResultsWorkspace(wsYSpaceSym, dataX, dataY, dataE, dataYFit, dataYSigma, Residuals)
-    saveMinuitPlot(yFitIC, wsMinFit, m)
+    saveMinuitPlot(yFitIC, wsMinFit, m, chi2=chi2)
 
     # Calculate correlation matrix
     corrMatrix = m.covariance.correlation()
@@ -1131,13 +1131,18 @@ def createFitResultsWorkspace(
     return wsMinFit
 
 
-def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
+def saveMinuitPlot(
+    yFitIC: Any, wsMinuitFit: Any, mObj: Minuit, chi2: float = float("nan")
+) -> None:
     """Save a PDF plot of the Minuit fit result.
 
     Args:
-        yFitIC: Y-space fit configuration with ``figSavePath``.
+        yFitIC: Y-space fit configuration with ``figSavePath`` and
+            optionally ``maskedDetectorIdx``.
         wsMinuitFit: The 3-spectrum fit-result workspace.
         mObj: The ``Minuit`` object (used for the legend).
+        chi2: Normalised chi-squared (χ²/ndof).  When finite, it is
+            annotated as a text box on the figure.
     """
 
     leg = ""
@@ -1156,6 +1161,24 @@ def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
     ax.set_ylabel(r"$J(y)$ (a.u.)")
     ax.set_title("Minuit Fit")
     ax.legend()
+
+    # Annotate χ²/ndof and masked Spectrum IDs
+    annotation_lines = []
+    if np.isfinite(chi2):
+        annotation_lines.append(f"$\\chi^2/\\mathrm{{ndof}} = {chi2:.3f}$")
+    masked_idx = getattr(yFitIC, "maskedDetectorIdx", None)
+    if masked_idx is not None and len(masked_idx) > 0:
+        annotation_lines.append(f"Masked Spectra: {list(masked_idx)}")
+    if annotation_lines:
+        ax.text(
+            0.02, 0.97,
+            "\n".join(annotation_lines),
+            transform=ax.transAxes,
+            fontsize=7,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor="grey", alpha=0.85),
+        )
 
     fileName = wsMinuitFit.name()+".pdf"
     savePath = yFitIC.figSavePath / fileName

@@ -298,12 +298,14 @@ def plot_outlier_scatter(
     embedding_coords: NDArray[np.floating],
     labels: NDArray[np.intp],
     save_path: Optional[Path] = None,
+    summary_info: Optional[Dict] = None,
 ) -> plt.Figure:
     """Scatter plot in UMAP embedding space highlighting outlier detectors.
 
     Renders the first two UMAP embedding dimensions.  Inlier detectors
     are drawn in the first colour of the COLORBLIND_PALETTE; outliers
-    (``label == -1``) are drawn in red.
+    (``label == -1``) are drawn in red.  An optional summary table is
+    rendered as a text box in the upper-right corner of the axes.
 
     Args:
         embedding_coords: 2-D array of UMAP projections, shape
@@ -314,6 +316,11 @@ def plot_outlier_scatter(
             ``(n_spectra,)``.  ``-1`` = outlier, ``0`` = inlier.
         save_path: Optional file path.  When provided the figure is
             saved and closed; otherwise it is returned open.
+        summary_info: Optional dict with keys ``n_total`` (int),
+            ``n_outliers`` (int), ``n_clusters`` (int, optional),
+            ``n_neighbors`` (int, optional), ``min_dist`` (float,
+            optional).  When provided, a metadata summary box is
+            rendered on the axes.
 
     Returns:
         The Matplotlib :class:`~matplotlib.figure.Figure`.
@@ -337,6 +344,32 @@ def plot_outlier_scatter(
     ax.set_ylabel("UMAP 2")
     ax.set_title("Hardware Outlier Detection — UMAP Embedding")
     ax.legend()
+
+    # Optional metadata summary box
+    if summary_info is not None:
+        n_total = summary_info.get("n_total", len(labels))
+        n_out = summary_info.get("n_outliers", int(outlier_mask.sum()))
+        pct = 100.0 * n_out / max(n_total, 1)
+        lines = [
+            f"Total Detectors: {n_total}",
+            f"Outliers Removed: {n_out} ({pct:.1f}%)",
+        ]
+        if "n_clusters" in summary_info:
+            lines.append(f"DBSCAN Clusters: {summary_info['n_clusters']}")
+        n_nbrs = summary_info.get("n_neighbors", "—")
+        mdist = summary_info.get("min_dist", "—")
+        lines.append(f"UMAP: n_neighbors={n_nbrs}, min_dist={mdist}")
+        box_text = "\n".join(lines)
+        ax.text(
+            0.98, 0.98, box_text,
+            transform=ax.transAxes,
+            fontsize=7,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor="grey", alpha=0.85),
+        )
+
     plt.tight_layout()
 
     if save_path is not None:
@@ -709,6 +742,138 @@ def plot_bootstrap_convergence(
     ax.set_xlabel("Bootstrap replica mean residual")
     ax.set_ylabel("Density")
     ax.set_title(f"Bayesian Bootstrap Convergence  ($n = {n_samples}$)")
+    ax.legend(fontsize=7)
+    plt.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_fisher_discriminant(
+    features: NDArray[np.floating],
+    labels: NDArray[np.intp],
+    feature_names: Optional[List[str]] = None,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Fisher linear discriminant distribution plot (AppStat/NBI style).
+
+    Projects detector features onto the Fisher discriminant axis (via
+    sklearn ``LinearDiscriminantAnalysis``) and renders a 1-D histogram
+    of the scores colour-coded by class ("High-Fidelity" inliers vs.
+    "Poor-Fidelity" outliers), a KDE overlay, a vertical decision-
+    boundary line, the AUC score, and the Fisher weight vector
+    annotated per physical feature.
+
+    Args:
+        features: Detector feature matrix, shape ``(n_spectra,
+            n_features)``.  Typical columns: [angle, total_counts,
+            spectral_width, …].
+        labels: Outlier labels, shape ``(n_spectra,)``.  ``-1`` =
+            outlier ("Poor-Fidelity"), ``0`` = inlier
+            ("High-Fidelity").
+        feature_names: Human-readable names for each column of
+            ``features``.  Defaults to ``["f0", "f1", ...]``.
+        save_path: Optional file path.  When provided the figure is
+            saved and closed; otherwise it is returned open.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+
+    Notes:
+        Requires ``sklearn``.  AUC is computed via
+        ``sklearn.metrics.roc_auc_score`` from the LDA decision
+        function scores.  The decision boundary is placed at the
+        score threshold that maximises the Youden J-statistic.
+    """
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import roc_curve
+
+    if feature_names is None:
+        feature_names = [f"f{k}" for k in range(features.shape[1])]
+
+    # Binary class labels: 1 = inlier, 0 = outlier
+    y_binary = (labels == 0).astype(int)
+
+    # Guard: need at least one member per class
+    if len(np.unique(y_binary)) < 2:
+        set_thesis_style()
+        fig, ax = figure_factory()
+        ax.text(0.5, 0.5, "Insufficient class diversity for LDA",
+                ha="center", va="center", transform=ax.transAxes)
+        if save_path is not None:
+            fig.savefig(save_path)
+            plt.close(fig)
+        return fig
+
+    lda = LinearDiscriminantAnalysis(n_components=1)
+    scores = lda.fit_transform(features, y_binary).ravel()
+    weights = lda.coef_.ravel()
+
+    # AUC
+    fpr, tpr, thresholds = roc_curve(y_binary, scores)
+    auc_val = float(roc_auc_score(y_binary, scores))
+
+    # Decision boundary: threshold maximising Youden J = TPR - FPR
+    j_stat = tpr - fpr
+    best_idx = int(np.argmax(j_stat))
+    boundary = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(np.mean(scores))
+
+    inlier_scores = scores[y_binary == 1]
+    outlier_scores = scores[y_binary == 0]
+
+    set_thesis_style()
+    fig, ax = figure_factory()
+
+    # Histogram for each class
+    # Adaptive binning: 10-30 bins, approximately 3 samples per bin
+    all_scores = np.concatenate([inlier_scores, outlier_scores])
+    bins = np.linspace(all_scores.min(), all_scores.max(),
+                       min(30, max(10, len(scores) // 3)))
+
+    ax.hist(inlier_scores, bins=bins, density=True,
+            color=COLORBLIND_PALETTE[0], alpha=0.5,
+            label="High-Fidelity (inlier)")
+    ax.hist(outlier_scores, bins=bins, density=True,
+            color="#D62728", alpha=0.5,
+            label="Poor-Fidelity (outlier)")
+
+    # KDE overlay per class
+    x_grid = np.linspace(all_scores.min(), all_scores.max(), 300)
+    if len(inlier_scores) >= 2:
+        kde_in = stats.gaussian_kde(inlier_scores)
+        ax.plot(x_grid, kde_in(x_grid), color=COLORBLIND_PALETTE[0],
+                linewidth=1.8)
+    if len(outlier_scores) >= 2:
+        kde_out = stats.gaussian_kde(outlier_scores)
+        ax.plot(x_grid, kde_out(x_grid), color="#D62728", linewidth=1.8)
+
+    # Decision boundary
+    ax.axvline(boundary, color="black", linestyle="--", linewidth=1.2,
+               label=f"Decision boundary ({boundary:.3g})")
+
+    # Fisher weights annotation
+    weight_lines = [f"  $w_{{{name}}}={w:.3g}$"
+                    for name, w in zip(feature_names, weights)]
+    annotation = (
+        f"AUC = {auc_val:.3f}\n"
+        "Fisher weights:\n"
+        + "\n".join(weight_lines)
+    )
+    ax.text(
+        0.02, 0.97, annotation,
+        transform=ax.transAxes,
+        fontsize=7,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                  edgecolor="grey", alpha=0.85),
+    )
+
+    ax.set_xlabel("Fisher Discriminant Score")
+    ax.set_ylabel("Density")
+    ax.set_title("Fisher Discriminant Distribution")
     ax.legend(fontsize=7)
     plt.tight_layout()
 

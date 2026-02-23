@@ -121,6 +121,10 @@ def _plot_optimizer_comparison(ic: Any) -> None:
     1. Chi-squared comparison across spectra
     2. Parameter-wise relative differences for worst-case spectra
 
+    Also generates per-spectrum ``[exp]_Fit_Comparison_Spec_[N].pdf``
+    figures with a parameter table and "Top Offender" highlighting via
+    :func:`_plot_per_spectrum_optimizer_comparison`.
+
     Args:
         ic: Initial-conditions object with figSavePath.
     """
@@ -170,6 +174,112 @@ def _plot_optimizer_comparison(ic: Any) -> None:
         logger.warning(f"Failed to save optimizer comparison plot: {e}")
     
     plt.close(fig)
+
+    # Per-spectrum comparison plots
+    _plot_per_spectrum_optimizer_comparison(ic)
+
+
+def _plot_per_spectrum_optimizer_comparison(ic: Any) -> None:
+    """Generate per-spectrum ``[exp]_Fit_Comparison_Spec_[N].pdf`` plots.
+
+    For each entry in ``_fit_comparison_log``, renders a figure with a
+    parameter table (Param | iMinuit | SciPy | % Diff) where the "Top
+    Offender" row (the parameter with the largest relative difference
+    that exceeds ``_AGREEMENT_THRESHOLD``) is highlighted in red.
+
+    The figure title includes the Spectrum Number and Scattering Angle.
+
+    Args:
+        ic: Initial-conditions object with ``figSavePath`` and ``name``.
+    """
+    fig_dir = getattr(ic, "figSavePath", None)
+    if fig_dir is None:
+        return
+
+    for entry in _fit_comparison_log:
+        spec_no = entry.get("specNo", "?")
+        angle = entry.get("angle", float("nan"))
+        par_names = entry.get("par_names") or []
+        scipy_pars = entry.get("scipy_pars")
+        iminuit_pars = entry.get("iminuit_pars")
+        par_rel_diff = entry.get("par_rel_diff")
+
+        if scipy_pars is None or iminuit_pars is None or par_rel_diff is None:
+            continue
+
+        n_params = len(par_names)
+        if n_params == 0:
+            continue
+
+        try:
+            set_thesis_style()
+            fig, ax = plt.subplots(figsize=(8, max(3, 1 + 0.35 * n_params)))
+            ax.axis("off")
+
+            # Title with Spectrum Number and Scattering Angle
+            if np.isfinite(float(angle)):
+                title = (
+                    f"Optimizer Comparison — "
+                    f"Spectrum {int(spec_no)},  "
+                    f"θ = {float(angle):.2f}°"
+                )
+            else:
+                title = f"Optimizer Comparison — Spectrum {int(spec_no)}"
+            fig.suptitle(title, fontsize=10, fontweight="bold")
+
+            # Find top offender: parameter with largest rel diff > threshold
+            top_offender_idx: Optional[int] = None
+            if np.any(par_rel_diff > _AGREEMENT_THRESHOLD):
+                top_offender_idx = int(np.argmax(par_rel_diff))
+
+            # Build table data
+            col_labels = ["Parameter", "iMinuit", "SciPy", "% Diff"]
+            table_data = []
+            cell_colors: List[List[str]] = []
+            for k, name in enumerate(par_names):
+                pct = float(par_rel_diff[k]) * 100.0
+                row = [
+                    str(name),
+                    f"{float(iminuit_pars[k]):.5g}",
+                    f"{float(scipy_pars[k]):.5g}",
+                    f"{pct:.2f}",
+                ]
+                table_data.append(row)
+                if k == top_offender_idx:
+                    cell_colors.append(["#ffcccc"] * 4)
+                else:
+                    cell_colors.append(["white"] * 4)
+
+            tbl = ax.table(
+                cellText=table_data,
+                colLabels=col_labels,
+                cellColours=cell_colors,
+                loc="center",
+                cellLoc="center",
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(8)
+            tbl.scale(1.0, 1.4)
+
+            # Annotate the top-offender cell in red text
+            if top_offender_idx is not None:
+                for col_idx in range(len(col_labels)):
+                    cell = tbl[(top_offender_idx + 1, col_idx)]
+                    cell.set_text_props(color="red", fontweight="bold")
+
+            plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+            spec_no_safe = str(int(spec_no)) if spec_no != "?" else "unknown"
+            fileName = f"{ic.name}_Fit_Comparison_Spec_{spec_no_safe}.pdf"
+            savePath = fig_dir / fileName
+            plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+            plt.close(fig)
+        except Exception as exc:
+            logger.warning(
+                "Failed to save per-spectrum comparison plot for spec %s: %s",
+                spec_no, exc,
+            )
+            plt.close("all")
 
 
 def iterativeFitForDataReduction(
@@ -1540,6 +1650,7 @@ def fitNcpToSingleSpec(
         # Store data for fit comparison visualization
         _fit_comparison_log.append({
             'specNo': instrPars[0],
+            'angle': instrPars[2],
             'scipy_chi2': scipy_chi2,
             'iminuit_chi2': iminuit_chi2,
             'scipy_pars': scipy_pars.copy(),
