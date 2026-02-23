@@ -1,26 +1,44 @@
-"""Phase 6 — Full-Stack Statistical Workflow for the VESUVIO pipeline.
+"""Phase 6 — Transparency-First Diagnostic Suite for the VESUVIO pipeline.
 
-Provides statistical post-processing for the VESUVIO analysis pipeline:
-hardware outlier identification, density-based detector clustering, and
-probabilistic uncertainty quantification via Bayesian Bootstrap.
+Provides modular statistical diagnostics for the VESUVIO analysis pipeline
+organized into five logical blocks:
+
+1. **Summary-Feature Outlier Detection** (EllipticEnvelope): Extracts
+   per-detector summary statistics (total counts, RMS, skewness,
+   kurtosis) and flags anomalies via robust Mahalanobis distance.
+2. **Cluster Analysis** (DBSCAN): Identify density-based groupings of
+   detector responses in (L, θ) space.
+3. **Classification** (Fisher/LDA): Categorize spectra based on
+   fit-fidelity labels (Agreement < 1% vs > 5%).
+4. **Physical Diagnostics** (Anisotropy Detection): Analyze residuals as a
+   function of scattering angle to identify non-Gaussian behavior.
+5. **Calibration & Residuals**: Calculate δ = (Y_obs − Y_fit)/Y_fit to
+   highlight systematic detector biases.
+
+PHILOSOPHY — DIAGNOSTIC ASSISTANCE, NOT AUTOMATED REMOVAL:
+    Automated outlier masking is **deprecated**. Real samples can be
+    anisotropic; automated removal risks discarding genuine physical signals
+    (e.g. anisotropic broadening) by misidentifying them as hardware failures.
+    Outlier detection now functions as an *Anisotropy & Health Monitor*:
+    suspicious detectors are flagged for manual review, and only spectra
+    explicitly listed in ``maskedSpecAllNo`` are excluded from the fit.
 
 Classes:
-    HardwareOutlierDetector: UMAP + robust-covariance anomaly detection
-        for broken detectors.
-    PhysicsTrendClusterer: DBSCAN clustering of detector features
-        (L, theta).
+    HardwareOutlierDetector: Summary-feature + robust-covariance anomaly
+        detection for broken detectors (diagnostic only — no automated
+        masking).
+    PhysicsTrendClusterer: DBSCAN clustering of detector features (L, θ).
     BayesianBootstrap: Rubin-style Weighted Bayesian Bootstrap with
         Dirichlet weights for high-speed resampling of NCP residuals.
 
 Notes:
     - scikit-learn DBSCAN labels noise points as -1; these are explicitly
       excluded from physics-trend groups.
-    - UMAP preserves local topological structure via a fuzzy simplicial
-      set construction (McInnes, Healy & Melville, 2018,
-      arXiv:1802.03426).  This is critical for spectroscopic data where
-      non-linear variance arises from kinematic TOF broadening and
-      $J(y)$ scaling — linear PCA cannot capture these manifold
-      curvatures.
+    - Per-detector summary statistics (total counts, RMS, skewness,
+      kurtosis) provide a compact, deterministic, and interpretable
+      feature space for outlier detection without nonlinear
+      dimensionality reduction.  EllipticEnvelope uses robust
+      Mahalanobis distance in this space.
     - Dirichlet(1, 1, ..., 1) produces the uniform prior over the simplex
       (Rubin, 1981).  Each weight vector sums to 1.0 (up to
       floating-point rounding).
@@ -56,6 +74,620 @@ from vesuvio_analysis.core_functions.plot_style import (
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Diagnostic Table & Anisotropy-Health Monitor
+# ---------------------------------------------------------------------------
+
+
+def format_diagnostic_table(
+    outlier_indices: NDArray[np.intp],
+    metadata_map: Dict[int, Dict[str, Any]],
+    masked_spec_all_no: NDArray[np.intp],
+    fisher_scores: Optional[NDArray[np.floating]] = None,
+) -> str:
+    """Format outlier detections into a human-readable diagnostic table.
+
+    Implements the transparency-first philosophy: every flagged spectrum
+    is printed with its physical identifiers and a recommendation that
+    explicitly distinguishes between user-acknowledged masks and
+    unrecognized anomalies requiring manual review.
+
+    Args:
+        outlier_indices: Array indices of flagged spectra.
+        metadata_map: ``{array_index: {spec_no, angle, detector_id}}``.
+        masked_spec_all_no: Spectrum IDs explicitly listed in
+            ``BackwardInitialConditions.maskedSpecAllNo`` or
+            ``ForwardInitialConditions.maskedSpecAllNo``.
+        fisher_scores: Optional per-detector Fisher discriminant scores.
+
+    Returns:
+        Formatted multi-line string suitable for terminal output.
+    """
+    pre_masked = set(int(s) for s in masked_spec_all_no)
+    header = (
+        f"{'Index':>6} | {'Spectrum ID':>11} | {'Scatt. Angle':>12} | "
+        f"{'Fisher Score':>12} | {'Recommendation'}"
+    )
+    sep = "-" * len(header)
+    lines = [
+        "",
+        "=" * len(header),
+        "  DETECTOR ANISOTROPY & HEALTH MONITOR — Diagnostic Report",
+        "=" * len(header),
+        header,
+        sep,
+    ]
+    n_unrecognized = 0
+    for idx in outlier_indices:
+        meta = metadata_map.get(int(idx), {})
+        spec_no = meta.get("spec_no", idx)
+        angle = meta.get("angle", float("nan"))
+        f_score = (
+            f"{float(fisher_scores[idx]):.4f}"
+            if fisher_scores is not None and idx < len(fisher_scores)
+            else "N/A"
+        )
+        if int(spec_no) in pre_masked:
+            recommendation = "PRE-MASKED (user)"
+        else:
+            recommendation = "MANUAL REVIEW"
+            n_unrecognized += 1
+        lines.append(
+            f"{int(idx):>6} | {int(spec_no):>11} | {angle:>11.2f}° | "
+            f"{f_score:>12} | {recommendation}"
+        )
+    lines.append(sep)
+    lines.append(
+        f"  Total flagged: {len(outlier_indices)}  |  "
+        f"Pre-masked: {len(outlier_indices) - n_unrecognized}  |  "
+        f"Unrecognized (manual review): {n_unrecognized}"
+    )
+    if n_unrecognized > 0:
+        lines.append(
+            "  WARNING: Unrecognized outliers detected. Add their Spectrum IDs "
+            "to maskedSpecAllNo if they are confirmed hardware failures, or "
+            "consider a more complex model (e.g. Anisotropic Gaussian) if the "
+            "deviations are physical."
+        )
+    lines.append("=" * len(header))
+    return "\n".join(lines)
+
+
+def compute_anisotropy_residuals(
+    spectra: NDArray[np.floating],
+    ncp_total: NDArray[np.floating],
+    theta_deg: NDArray[np.floating],
+) -> Dict[str, NDArray[np.floating]]:
+    """Analyze residuals as a function of scattering angle for anisotropy.
+
+    Computes the per-detector normalised residual
+    δ = (Y_obs − Y_fit) / Y_fit and its angular dependence.  A systematic
+    trend (e.g. residual increasing with θ) indicates anisotropic
+    broadening that a simple isotropic Gaussian model cannot capture.
+
+    Args:
+        spectra: Observed detector spectra, shape ``(n_det, n_bins)``.
+        ncp_total: Fitted NCP profiles, shape ``(n_det, n_bins)``.
+        theta_deg: Scattering angles in degrees, shape ``(n_det,)``.
+
+    Returns:
+        Dict with keys:
+            - ``theta``: scattering angles (sorted).
+            - ``mean_residual``: mean normalised residual per detector.
+            - ``std_residual``: standard deviation of residual per detector.
+            - ``spearman_r``: Spearman correlation between θ and |residual|.
+            - ``spearman_p``: p-value of Spearman test.
+    """
+    eps = 1e-10
+    denom = np.where(np.abs(ncp_total) > eps, ncp_total, eps)
+    delta = (spectra - ncp_total) / denom
+    delta = np.where(np.isfinite(delta), delta, 0.0)
+
+    mean_res = np.mean(delta, axis=1)
+    std_res = np.std(delta, axis=1)
+
+    # Spearman rank correlation of |residual| vs θ — detects monotonic
+    # angular trends characteristic of anisotropy.
+    abs_mean = np.abs(mean_res)
+    finite = np.isfinite(abs_mean) & np.isfinite(theta_deg)
+    if np.sum(finite) >= 5 and np.ptp(abs_mean[finite]) > 0:
+        sr = stats.spearmanr(theta_deg[finite], abs_mean[finite])
+        spearman_r = float(sr.statistic)
+        spearman_p = float(sr.pvalue)
+    else:
+        spearman_r = float("nan")
+        spearman_p = float("nan")
+
+    return {
+        "theta": theta_deg,
+        "mean_residual": mean_res,
+        "std_residual": std_res,
+        "spearman_r": spearman_r,
+        "spearman_p": spearman_p,
+    }
+
+
+def generate_physical_interpretation_hint(
+    n_clusters: int,
+    spearman_r: float,
+    spearman_p: float,
+    n_outliers: int,
+    n_total: int,
+) -> str:
+    """Generate a 'Show Your Work' interpretation hint for the terminal.
+
+    Provides actionable physical interpretation of the diagnostic results
+    so the user understands what the statistical analysis implies about
+    the sample and instrument.
+
+    Args:
+        n_clusters: Number of DBSCAN clusters found.
+        spearman_r: Spearman rank correlation |residual| vs θ.
+        spearman_p: p-value of the Spearman test.
+        n_outliers: Number of flagged outlier detectors.
+        n_total: Total number of detectors.
+
+    Returns:
+        Formatted multi-line string with physical interpretation.
+    """
+    lines = ["", "[Diagnostic] Physical Interpretation Hints:"]
+
+    if n_clusters > 1:
+        lines.append(
+            f"  • Clusters found: {n_clusters}. If clusters correlate with "
+            "scattering angle, consider checking for instrument resolution "
+            "gradients or sample anisotropy."
+        )
+    elif n_clusters == 1:
+        lines.append(
+            "  • Single cluster found — detector bank appears homogeneous."
+        )
+
+    if np.isfinite(spearman_r):
+        if abs(spearman_r) > 0.5 and spearman_p < 0.05:
+            lines.append(
+                f"  • Strong angular trend in residuals (ρ = {spearman_r:.3f}, "
+                f"p = {spearman_p:.2e}). This suggests anisotropic "
+                "broadening — consider a non-isotropic model."
+            )
+        elif abs(spearman_r) > 0.3:
+            lines.append(
+                f"  • Moderate angular trend (ρ = {spearman_r:.3f}, "
+                f"p = {spearman_p:.2e}). May indicate mild anisotropy or "
+                "resolution gradients."
+            )
+        else:
+            lines.append(
+                f"  • No significant angular trend (ρ = {spearman_r:.3f}). "
+                "Residuals appear isotropic."
+            )
+
+    if n_outliers > 0:
+        pct = 100.0 * n_outliers / max(n_total, 1)
+        lines.append(
+            f"  • {n_outliers}/{n_total} detectors flagged ({pct:.1f}%). "
+            "Review the diagnostic table to distinguish hardware failures "
+            "from genuine anisotropy."
+        )
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Diagnostic Dashboard
+# ---------------------------------------------------------------------------
+
+
+def plot_phase6_diagnostic_dashboard(
+    summary_features: NDArray[np.floating],
+    labels: NDArray[np.intp],
+    fisher_scores: Optional[NDArray[np.floating]],
+    fidelity_labels: Optional[NDArray[np.intp]],
+    theta_deg: NDArray[np.floating],
+    anisotropy: Dict[str, NDArray[np.floating]],
+    roc_data: Optional[Dict[str, Any]],
+    metadata_map: Dict[int, Dict[str, Any]],
+    ws_name: str,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Generate the unified Phase 6 Diagnostic Summary dashboard.
+
+    Four-panel layout:
+        Panel 1: Feature-space scatter color-coded by Fisher Score.
+        Panel 2: Fisher-style 1D histogram of discriminant scores.
+        Panel 3: Residuals vs Scattering Angle (anisotropy detection).
+        Panel 4: ROC curve showing detector-bank trustworthiness.
+
+    Args:
+        summary_features: Summary features, shape ``(n_det, >=2)``.
+        labels: Outlier labels (``-1`` = outlier, ``0`` = inlier).
+        fisher_scores: LDA discriminant scores, shape ``(n_det,)``.
+        fidelity_labels: Convergence labels (0=hi, 1=poor, -1=unlabeled).
+        theta_deg: Scattering angles, shape ``(n_det,)``.
+        anisotropy: Output from ``compute_anisotropy_residuals()``.
+        roc_data: Output from ``fisher_lda_with_roc()`` or ``None``.
+        metadata_map: ``{array_index: {spec_no, angle, detector_id}}``.
+        ws_name: Workspace name for the title.
+        save_path: File path for the PDF output.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig_w = cm_to_inches(FULL_WIDTH_CM)
+    fig_h = cm_to_inches(FULL_WIDTH_CM * 1.2)
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.patch.set_facecolor("white")
+
+    gs = GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.30)
+
+    # --- Panel 1: Feature-space scatter ---
+    ax1 = fig.add_subplot(gs[0, 0])
+    if fisher_scores is not None:
+        sc = ax1.scatter(
+            summary_features[:, 0], summary_features[:, 1],
+            c=fisher_scores, cmap="viridis", s=18, alpha=0.85,
+        )
+        cbar = fig.colorbar(sc, ax=ax1, shrink=0.8)
+        cbar.set_label("Fisher Score", fontsize=8)
+    else:
+        inlier_m = labels == 0
+        outlier_m = labels == -1
+        ax1.scatter(
+            summary_features[inlier_m, 0], summary_features[inlier_m, 1],
+            color=COLORBLIND_PALETTE[0], s=18, label="Inlier",
+        )
+        if np.any(outlier_m):
+            ax1.scatter(
+                summary_features[outlier_m, 0], summary_features[outlier_m, 1],
+                color="#D62728", marker="x", s=50, linewidths=1.3,
+                label="Flagged",
+            )
+            # Label flagged detectors with Spectrum IDs
+            for idx in np.where(outlier_m)[0]:
+                meta = metadata_map.get(int(idx), {})
+                spec_id = meta.get("spec_no", "?")
+                ax1.annotate(
+                    str(spec_id), (summary_features[idx, 0], summary_features[idx, 1]),
+                    fontsize=5, alpha=0.7,
+                )
+        ax1.legend(fontsize=7)
+    ax1.set_xlabel("Total Counts", fontsize=9)
+    ax1.set_ylabel("RMS", fontsize=9)
+    ax1.set_title("(a) Detector Feature Space", fontsize=9)
+
+    # --- Panel 2: Fisher 1D histogram ---
+    ax2 = fig.add_subplot(gs[0, 1])
+    if fisher_scores is not None and fidelity_labels is not None:
+        hi_mask = fidelity_labels == 0
+        poor_mask = fidelity_labels == 1
+        if np.any(hi_mask):
+            ax2.hist(
+                fisher_scores[hi_mask], bins=20, alpha=0.6,
+                color=COLORBLIND_PALETTE[0], label="Hi-Fidelity (<1%)",
+                density=True,
+            )
+        if np.any(poor_mask):
+            ax2.hist(
+                fisher_scores[poor_mask], bins=20, alpha=0.6,
+                color=COLORBLIND_PALETTE[3], label="Poor-Fidelity (>5%)",
+                density=True,
+            )
+        if roc_data is not None:
+            ax2.text(
+                0.98, 0.98,
+                f"AUC = {float(roc_data['auc']):.3f}",
+                transform=ax2.transAxes, fontsize=8,
+                ha="right", va="top",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.7),
+            )
+        ax2.legend(fontsize=7)
+    else:
+        ax2.text(
+            0.5, 0.5, "Fisher/LDA not available\n(no optimizer diagnostics)",
+            ha="center", va="center", transform=ax2.transAxes, fontsize=9,
+        )
+    ax2.set_xlabel("Fisher Discriminant Score", fontsize=9)
+    ax2.set_ylabel("Density", fontsize=9)
+    ax2.set_title("(b) Fisher Discriminant Distribution", fontsize=9)
+
+    # --- Panel 3: Residuals vs Scattering Angle ---
+    ax3 = fig.add_subplot(gs[1, 0])
+    theta = anisotropy["theta"]
+    mean_res = anisotropy["mean_residual"]
+    std_res = anisotropy["std_residual"]
+    ax3.errorbar(
+        theta, mean_res, yerr=std_res,
+        fmt="o", markersize=3, capsize=2, elinewidth=0.5,
+        color=COLORBLIND_PALETTE[0], alpha=0.7,
+    )
+    ax3.axhline(0.0, color="#888888", linestyle="--", linewidth=0.8)
+    sr = anisotropy["spearman_r"]
+    sp = anisotropy["spearman_p"]
+    if np.isfinite(sr):
+        ax3.text(
+            0.02, 0.98,
+            f"Spearman ρ = {sr:.3f}\np = {sp:.2e}",
+            transform=ax3.transAxes, fontsize=7,
+            va="top", fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.7),
+        )
+    ax3.set_xlabel(r"Scattering Angle $\theta$ (°)", fontsize=9)
+    ax3.set_ylabel(r"Mean Residual $\langle\delta\rangle$", fontsize=9)
+    ax3.set_title("(c) Residuals vs Angle — Anisotropy Check", fontsize=9)
+
+    # --- Panel 4: ROC Curve ---
+    ax4 = fig.add_subplot(gs[1, 1])
+    if roc_data is not None:
+        ax4.plot(
+            roc_data["fpr"], roc_data["tpr"],
+            color=COLORBLIND_PALETTE[3],
+            label=f"Fisher LDA (AUC={float(roc_data['auc']):.3f})",
+        )
+        ax4.plot([0, 1], [0, 1], linestyle="--", color="black", linewidth=0.8,
+                 label="Chance")
+        ax4.legend(fontsize=7)
+    else:
+        ax4.text(
+            0.5, 0.5, "ROC not available",
+            ha="center", va="center", transform=ax4.transAxes, fontsize=9,
+        )
+    ax4.set_xlabel("False Positive Rate", fontsize=9)
+    ax4.set_ylabel("True Positive Rate", fontsize=9)
+    ax4.set_title("(d) ROC — Detector Trustworthiness", fontsize=9)
+
+    fig.suptitle(
+        f"Phase 6 Diagnostic Summary — {ws_name}",
+        fontsize=11, fontweight="bold", y=0.98,
+    )
+
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight", pad_inches=0.1,
+                    facecolor="white")
+        plt.close(fig)
+        logger.info("Phase 6 dashboard saved to %s", save_path)
+    return fig
+
+
+def plot_feature_annotated(
+    summary_features: NDArray[np.floating],
+    labels: NDArray[np.intp],
+    metadata_map: Dict[int, Dict[str, Any]],
+    cluster_labels: Optional[NDArray[np.intp]] = None,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Feature-space scatter with cluster angle annotations and anomaly labels.
+
+    Clusters are annotated with their average scattering angle.
+    Isolated anomaly detectors are labeled with their Spectrum ID.
+
+    Args:
+        summary_features: Summary features, shape ``(n_det, >=2)``.
+        labels: Outlier labels (``-1`` = outlier, ``0`` = inlier).
+        metadata_map: Physical detector metadata per array index.
+        cluster_labels: Optional DBSCAN cluster labels for annotation.
+        save_path: File path for the output PDF.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig, ax = figure_factory()
+
+    inlier_m = labels == 0
+    outlier_m = labels == -1
+
+    # Scatter inliers
+    ax.scatter(
+        summary_features[inlier_m, 0], summary_features[inlier_m, 1],
+        color=COLORBLIND_PALETTE[0], s=20, alpha=0.7, label="Inlier",
+    )
+
+    # Scatter outliers with Spectrum ID annotations
+    if np.any(outlier_m):
+        ax.scatter(
+            summary_features[outlier_m, 0], summary_features[outlier_m, 1],
+            color="#D62728", marker="x", s=60, linewidths=1.5,
+            label=f"Flagged (n={int(outlier_m.sum())})",
+        )
+        for idx in np.where(outlier_m)[0]:
+            meta = metadata_map.get(int(idx), {})
+            spec_id = meta.get("spec_no", idx)
+            ax.annotate(
+                f"Spec {spec_id}",
+                (summary_features[idx, 0], summary_features[idx, 1]),
+                fontsize=6, alpha=0.8,
+                xytext=(5, 5), textcoords="offset points",
+            )
+
+    # Annotate clusters with average scattering angle
+    if cluster_labels is not None:
+        unique_clusters = sorted(set(cluster_labels) - {-1})
+        for cl in unique_clusters:
+            cl_mask = cluster_labels == cl
+            if not np.any(cl_mask):
+                continue
+            cx = np.mean(summary_features[cl_mask, 0])
+            cy = np.mean(summary_features[cl_mask, 1])
+            angles = [
+                metadata_map.get(int(i), {}).get("angle", float("nan"))
+                for i in np.where(cl_mask)[0]
+            ]
+            mean_angle = float(np.nanmean(angles))
+            ax.annotate(
+                f"Cluster {cl}\n⟨θ⟩={mean_angle:.1f}°",
+                (cx, cy), fontsize=7, ha="center",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow",
+                          alpha=0.8, edgecolor="#999999"),
+            )
+
+    ax.set_xlabel("Total Counts")
+    ax.set_ylabel("RMS")
+    ax.set_title("Detector Health — Feature Space")
+    ax.legend(fontsize=7)
+    plt.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_fisher_distribution(
+    fisher_scores: NDArray[np.floating],
+    fidelity_labels: NDArray[np.intp],
+    feature_names: List[str],
+    lda_model: Any,
+    roc_auc: float,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Fisher Discriminant distribution plot (AppStat NBI style).
+
+    Shows the 1D Fisher discriminant score distribution for both
+    hi-fidelity and poor-fidelity populations, annotated with the AUC
+    and the feature importances (LDA coefficients).
+
+    Args:
+        fisher_scores: LDA discriminant scores, shape ``(n_det,)``.
+        fidelity_labels: Convergence labels (0=hi, 1=poor, -1=unlabeled).
+        feature_names: Human-readable names for the input features.
+        lda_model: Trained ``LinearDiscriminantAnalysis`` model.
+        roc_auc: AUC value from the ROC curve.
+        save_path: File path for the output PDF.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig, (ax_hist, ax_imp) = figure_factory(ncols=2, aspect_ratio=0.55)
+
+    # Left panel: Score distributions
+    hi_mask = fidelity_labels == 0
+    poor_mask = fidelity_labels == 1
+
+    if np.any(hi_mask):
+        ax_hist.hist(
+            fisher_scores[hi_mask], bins=25, alpha=0.6, density=True,
+            color=COLORBLIND_PALETTE[0],
+            label=f"Hi-Fidelity (n={int(hi_mask.sum())})",
+        )
+    if np.any(poor_mask):
+        ax_hist.hist(
+            fisher_scores[poor_mask], bins=25, alpha=0.6, density=True,
+            color=COLORBLIND_PALETTE[3],
+            label=f"Poor-Fidelity (n={int(poor_mask.sum())})",
+        )
+
+    ax_hist.set_xlabel("Fisher Discriminant Score")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title(f"Fisher LDA (AUC = {roc_auc:.3f})")
+    ax_hist.legend(fontsize=7)
+
+    # Right panel: Feature importance (LDA coefficients)
+    if hasattr(lda_model, "coef_") and lda_model.coef_ is not None:
+        coefs = np.abs(lda_model.coef_[0])
+        n_coefs = len(coefs)
+        names = feature_names[:n_coefs] if len(feature_names) >= n_coefs else (
+            feature_names + [f"Feature {i}" for i in range(len(feature_names), n_coefs)]
+        )
+        sorted_idx = np.argsort(coefs)[::-1]
+        ax_imp.barh(
+            range(n_coefs),
+            coefs[sorted_idx],
+            color=COLORBLIND_PALETTE[2], alpha=0.8,
+        )
+        ax_imp.set_yticks(range(n_coefs))
+        ax_imp.set_yticklabels([names[i] for i in sorted_idx], fontsize=8)
+        ax_imp.set_xlabel("|LDA Coefficient|")
+        ax_imp.set_title("Feature Importance")
+        ax_imp.invert_yaxis()
+    else:
+        ax_imp.text(
+            0.5, 0.5, "No coefficients available",
+            ha="center", va="center", transform=ax_imp.transAxes,
+        )
+
+    plt.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_residuals_vs_angle(
+    anisotropy: Dict[str, NDArray[np.floating]],
+    metadata_map: Dict[int, Dict[str, Any]],
+    outlier_indices: Optional[NDArray[np.intp]] = None,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Plot normalised residuals vs scattering angle for anisotropy detection.
+
+    Each detector is plotted as a point at its scattering angle vs its
+    mean normalised residual.  Outlier detectors (if provided) are
+    highlighted and labeled with their Spectrum ID.
+
+    Args:
+        anisotropy: Output from ``compute_anisotropy_residuals()``.
+        metadata_map: Physical detector metadata per array index.
+        outlier_indices: Indices of flagged detectors (optional).
+        save_path: File path for the output PDF.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+    fig, ax = figure_factory()
+
+    theta = anisotropy["theta"]
+    mean_res = anisotropy["mean_residual"]
+    std_res = anisotropy["std_residual"]
+
+    ax.errorbar(
+        theta, mean_res, yerr=std_res,
+        fmt="o", markersize=4, capsize=2, elinewidth=0.5,
+        color=COLORBLIND_PALETTE[0], alpha=0.7, label="Detectors",
+    )
+    ax.axhline(0.0, color="#888888", linestyle="--", linewidth=0.8)
+
+    if outlier_indices is not None and len(outlier_indices) > 0:
+        ax.scatter(
+            theta[outlier_indices], mean_res[outlier_indices],
+            color="#D62728", marker="x", s=60, linewidths=1.5, zorder=5,
+            label="Flagged",
+        )
+        for idx in outlier_indices:
+            meta = metadata_map.get(int(idx), {})
+            spec_id = meta.get("spec_no", idx)
+            ax.annotate(
+                f"Spec {spec_id}",
+                (theta[idx], mean_res[idx]),
+                fontsize=6, xytext=(4, 4), textcoords="offset points",
+            )
+
+    sr = anisotropy["spearman_r"]
+    sp = anisotropy["spearman_p"]
+    if np.isfinite(sr):
+        ax.text(
+            0.02, 0.98,
+            f"Spearman ρ = {sr:.3f}\np = {sp:.2e}",
+            transform=ax.transAxes, fontsize=8, va="top",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.7),
+        )
+
+    ax.set_xlabel(r"Scattering Angle $\theta$ (°)")
+    ax.set_ylabel(r"Mean Normalised Residual $\langle\delta\rangle$")
+    ax.set_title("Residuals vs Angle — Anisotropy Detection")
+    ax.legend(fontsize=7)
+    plt.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # NCP publication-plot helpers
 # ---------------------------------------------------------------------------
@@ -68,7 +700,7 @@ _PARAM_LABEL_MAP: Dict[str, str] = {
 
 
 def _apply_latex_labels(label: str) -> str:
-    """Replace raw parameter names in *label* with LaTeX equivalents.
+    r"""Replace raw parameter names in *label* with LaTeX equivalents.
 
     Substitutions are driven by :data:`_PARAM_LABEL_MAP`, which maps
     ``'sigma'`` → ``r'$\sigma_p$'`` and ``'x0'`` → ``r'$y_\mathrm{center}$'``
@@ -131,61 +763,70 @@ def _parse_script_name_components(ic_name: str) -> Tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 class HardwareOutlierDetector:
-    """Identifies broken detectors via UMAP + robust covariance scoring.
+    """Summary-feature robust covariance.
 
-    Each row of the input matrix is a detector spectrum.  The spectra
-    are standardised, then projected onto a low-dimensional manifold
-    using UMAP (Uniform Manifold Approximation and Projection).
-    Outliers are detected in the reduced space using a robust
-    covariance estimator (``EllipticEnvelope``).
+    Each row of the input matrix is a detector spectrum.  Per-detector
+    summary statistics (total counts, RMS, skewness, kurtosis) are
+    extracted to build a compact, interpretable feature space.
+    ``EllipticEnvelope`` then flags anomalies via robust Mahalanobis
+    distance in this space — no dimensionality reduction required.
 
-    UMAP is preferred over linear PCA because TOF spectroscopic data
-    exhibit non-linear variance from kinematic broadening and the
-    $J(y)$ scaling relation.  UMAP preserves local topological
-    structure via a fuzzy simplicial set construction, faithfully
-    representing the detector manifold curvature that PCA collapses
-    (McInnes, Healy & Melville, 2018, arXiv:1802.03426).
+    This approach is deterministic and fast: the four summary features
+    capture both intensity anomalies (total counts), shape anomalies
+    (skewness, kurtosis), and noise-level anomalies (RMS) without
+    relying on stochastic manifold embeddings.
 
     Attributes:
-        n_components: Number of UMAP embedding dimensions.
-        n_neighbors: Size of the local neighbourhood used by UMAP
-            for manifold approximation.  Controls the balance between
-            local and global structure preservation.
-        min_dist: Minimum distance between embedded points in UMAP.
-            Smaller values produce tighter clusters.
         contamination: Expected fraction of outlier spectra
             (0 < contamination < 0.5).
 
     Example::
 
-        detector = HardwareOutlierDetector(
-            n_components=2, n_neighbors=15, min_dist=0.1,
-        )
+        detector = HardwareOutlierDetector(contamination=0.1)
         labels = detector.fit_predict(spectra_matrix)
         outlier_indices = np.where(labels == -1)[0]
     """
 
     def __init__(
         self,
-        n_components: int = 2,
-        n_neighbors: int = 15,
-        min_dist: float = 0.1,
         contamination: float = 0.1,
+        **kwargs: Any,
     ) -> None:
-        self.n_components = n_components
-        self.n_neighbors = n_neighbors
-        self.min_dist = min_dist
         self.contamination = contamination
-        self._scaler = StandardScaler()
         self._detector = EllipticEnvelope(
             contamination=contamination, random_state=0,
         )
 
+    @staticmethod
+    def _extract_summary_features(
+        spectra: NDArray[np.floating],
+    ) -> NDArray[np.floating]:
+        """Extract per-detector summary statistics as outlier features.
+
+        Features:
+            0. Total counts (row sum)
+            1. Row RMS
+            2. Row skewness (Fisher–Pearson)
+            3. Row excess kurtosis
+
+        Args:
+            spectra: Detector spectra, shape ``(n_spectra, n_bins)``.
+
+        Returns:
+            Feature matrix, shape ``(n_spectra, 4)``.
+        """
+        total = np.sum(spectra, axis=1)
+        rms = np.sqrt(np.mean(np.square(spectra), axis=1))
+        skew = stats.skew(spectra, axis=1, nan_policy="omit")
+        kurt = stats.kurtosis(spectra, axis=1, nan_policy="omit")
+        features = np.column_stack([total, rms, skew, kurt])
+        return np.where(np.isfinite(features), features, 0.0)
+
     def fit_predict(self, spectra: NDArray[np.floating]) -> NDArray[np.intp]:
         """Fit the detector and return outlier labels.
 
-        Applies UMAP dimensionality reduction followed by
-        ``EllipticEnvelope`` robust covariance outlier detection.
+        Extracts summary features then applies ``EllipticEnvelope``
+        robust covariance outlier detection.
 
         Args:
             spectra: Raw detector spectra, shape ``(n_spectra, n_bins)``.
@@ -195,31 +836,10 @@ class HardwareOutlierDetector:
             ``0`` for inlier (mapped from EllipticEnvelope's +1 to
             align with DBSCAN convention).
         """
-        try:
-            from umap import UMAP
-        except ImportError as exc:
-            raise ImportError(
-                "umap-learn is required for UMAP-based outlier detection.  "
-                "Install with: pip install umap-learn"
-            ) from exc
+        features = self._extract_summary_features(spectra)
+        self.summary_features_ = features
 
-        scaled = self._scaler.fit_transform(spectra)
-
-        # UMAP preserves local topological structure of the spectral
-        # manifold (McInnes et al., 2018).  n_neighbors controls the
-        # trade-off between local vs global structure; min_dist controls
-        # cluster compactness in the embedding.
-        reducer = UMAP(
-            n_components=self.n_components,
-            n_neighbors=min(self.n_neighbors, spectra.shape[0] - 1),
-            min_dist=self.min_dist,
-            random_state=0,
-            n_jobs=1,
-        )
-        reduced = reducer.fit_transform(scaled)
-        self.embedding_coords_ = reduced
-
-        raw_labels = self._detector.fit_predict(reduced)
+        raw_labels = self._detector.fit_predict(features)
         # EllipticEnvelope: -1 = outlier, +1 = inlier
         # Map +1 -> 0 (normal) to align with DBSCAN convention
         labels = np.where(raw_labels == 1, 0, -1)
@@ -475,12 +1095,10 @@ def build_detector_feature_matrix(
     spectra: NDArray[np.floating],
     theta_deg: NDArray[np.floating],
     width_proxy: NDArray[np.floating],
-    umap_embedding: Optional[NDArray[np.floating]] = None,
 ) -> NDArray[np.floating]:
     """Assemble detector features for Fisher/LDA classification.
 
-    Features include total counts, spectrum RMS shape proxy, fitted width,
-    scattering angle, and optional UMAP coordinates.
+    Features: total counts, spectrum RMS, fitted width, scattering angle.
     """
     total_counts = np.sum(spectra, axis=1)
     row_std = np.std(spectra, axis=1)
@@ -490,8 +1108,6 @@ def build_detector_feature_matrix(
         width_proxy[:, np.newaxis],
         theta_deg[:, np.newaxis],
     ]
-    if umap_embedding is not None and umap_embedding.shape[0] == spectra.shape[0]:
-        cols.append(umap_embedding[:, :2])
     features = np.hstack(cols)
     return np.where(np.isfinite(features), features, 0.0)
 
@@ -605,18 +1221,21 @@ def plot_fisher_roc(
     return fig
 
 
-def plot_umap_lda_overlay(
-    embedding_coords: NDArray[np.floating],
+def plot_feature_lda_overlay(
+    summary_features: NDArray[np.floating],
     p_fail: NDArray[np.floating],
     labels: Optional[NDArray[np.intp]] = None,
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
-    """Overlay LDA failure probability onto the UMAP detector embedding."""
+    """Overlay LDA failure probability onto the summary-feature scatter.
+
+    Uses the first two summary features (total counts vs RMS) as axes.
+    """
     set_thesis_style()
     fig, ax = figure_factory()
     sc = ax.scatter(
-        embedding_coords[:, 0],
-        embedding_coords[:, 1],
+        summary_features[:, 0],
+        summary_features[:, 1],
         c=p_fail,
         cmap="viridis",
         s=24,
@@ -626,8 +1245,8 @@ def plot_umap_lda_overlay(
         poor = labels == 1
         if np.any(poor):
             ax.scatter(
-                embedding_coords[poor, 0],
-                embedding_coords[poor, 1],
+                summary_features[poor, 0],
+                summary_features[poor, 1],
                 facecolors="none",
                 edgecolors=COLORBLIND_PALETTE[3],
                 s=60,
@@ -635,9 +1254,9 @@ def plot_umap_lda_overlay(
                 label="Poor-Fidelity",
             )
             ax.legend(fontsize=8)
-    ax.set_xlabel("UMAP 1")
-    ax.set_ylabel("UMAP 2")
-    ax.set_title("UMAP + Fisher/LDA Failure Probability")
+    ax.set_xlabel("Total Counts")
+    ax.set_ylabel("RMS")
+    ax.set_title("Feature Space + Fisher/LDA Failure Probability")
     cbar = fig.colorbar(sc, ax=ax)
     cbar.set_label("Predicted failure probability")
     plt.tight_layout()
@@ -653,33 +1272,31 @@ def plot_umap_lda_overlay(
 
 
 def plot_outlier_scatter(
-    embedding_coords: NDArray[np.floating],
+    summary_features: NDArray[np.floating],
     labels: NDArray[np.intp],
     save_path: Optional[Path] = None,
     summary_stats: Optional[Dict[str, Any]] = None,
 ) -> plt.Figure:
-    """Scatter plot in UMAP embedding space highlighting outlier detectors.
+    """Scatter plot in summary-feature space highlighting outlier detectors.
 
-    Renders the first two UMAP embedding dimensions.  Inlier detectors
-    are drawn in the first colour of the COLORBLIND_PALETTE; outliers
-    (``label == -1``) are drawn in red.
+    Renders the first two summary features (total counts vs RMS).
+    Inlier detectors are drawn in the first colour of the
+    COLORBLIND_PALETTE; outliers (``label == -1``) are drawn in red.
 
     When *summary_stats* is provided, a metadata table is rendered on
-    the figure showing Total Detectors, Outliers Removed, DBSCAN
-    Clusters, and UMAP parameters for transparent traceability.
+    the figure showing Total Detectors, Outliers Flagged, and DBSCAN
+    Clusters for transparent traceability.
 
     Args:
-        embedding_coords: 2-D array of UMAP projections, shape
-            ``(n_spectra, n_components)``.  At least 2 columns are
-            required.
+        summary_features: 2-D array of summary features, shape
+            ``(n_spectra, >=2)``.  At least 2 columns are required.
         labels: Outlier labels produced by
             :meth:`HardwareOutlierDetector.fit_predict`, shape
             ``(n_spectra,)``.  ``-1`` = outlier, ``0`` = inlier.
         save_path: Optional file path.  When provided the figure is
             saved and closed; otherwise it is returned open.
         summary_stats: Optional dict with keys ``n_total``,
-            ``n_outliers``, ``n_neighbors``, ``min_dist``, and
-            optionally ``n_clusters``.
+            ``n_outliers``, and optionally ``n_clusters``.
 
     Returns:
         The Matplotlib :class:`~matplotlib.figure.Figure`.
@@ -691,17 +1308,17 @@ def plot_outlier_scatter(
     outlier_mask = labels == -1
 
     ax.scatter(
-        embedding_coords[inlier_mask, 0], embedding_coords[inlier_mask, 1],
+        summary_features[inlier_mask, 0], summary_features[inlier_mask, 1],
         color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
     )
     ax.scatter(
-        embedding_coords[outlier_mask, 0], embedding_coords[outlier_mask, 1],
+        summary_features[outlier_mask, 0], summary_features[outlier_mask, 1],
         color="#D62728", marker="x", s=60, linewidths=1.5,
         label=f"Outlier (n={int(outlier_mask.sum())})",
     )
-    ax.set_xlabel("UMAP 1")
-    ax.set_ylabel("UMAP 2")
-    ax.set_title("Hardware Outlier Detection — UMAP Embedding")
+    ax.set_xlabel("Total Counts")
+    ax.set_ylabel("RMS")
+    ax.set_title("Hardware Outlier Detection — Feature Space")
     ax.legend()
 
     # --- Summary metadata table ---
@@ -709,14 +1326,11 @@ def plot_outlier_scatter(
         n_total = summary_stats.get("n_total", len(labels))
         n_outliers = summary_stats.get("n_outliers", int(outlier_mask.sum()))
         pct = 100.0 * n_outliers / max(n_total, 1)
-        n_neighbors = summary_stats.get("n_neighbors", "?")
-        min_dist = summary_stats.get("min_dist", "?")
         n_clusters = summary_stats.get("n_clusters", "—")
         table_text = (
             f"Total Detectors: {n_total}\n"
-            f"Outliers Removed: {n_outliers} ({pct:.1f}%)\n"
-            f"DBSCAN Clusters: {n_clusters}\n"
-            f"UMAP: n_neighbors={n_neighbors}, min_dist={min_dist}"
+            f"Outliers Flagged: {n_outliers} ({pct:.1f}%)\n"
+            f"DBSCAN Clusters: {n_clusters}"
         )
         ax.text(
             0.02, 0.02, table_text,
@@ -736,23 +1350,22 @@ def plot_outlier_scatter(
 
 
 def plot_outlier_before_after(
-    embedding_before: NDArray[np.floating],
+    features_before: NDArray[np.floating],
     labels_before: NDArray[np.intp],
-    embedding_after: NDArray[np.floating],
+    features_after: NDArray[np.floating],
     labels_after: NDArray[np.intp],
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
-    """Side-by-side UMAP scatter: before and after outlier removal.
+    """Side-by-side feature-space scatter: before and after outlier removal.
 
-    Left panel shows the original UMAP embedding with outliers
-    highlighted.  Right panel shows the re-embedded clean spectra
-    after masking.
+    Left panel shows the original feature scatter with outliers
+    highlighted.  Right panel shows the clean spectra after masking.
 
     Args:
-        embedding_before: UMAP projections before masking, shape
+        features_before: Summary features before masking, shape
             ``(n_spectra, >=2)``.
         labels_before: Outlier labels before masking (``-1`` = outlier).
-        embedding_after: UMAP projections after masking, shape
+        features_after: Summary features after masking, shape
             ``(n_clean, >=2)``.
         labels_after: Outlier labels after masking.
         save_path: Optional file path for saving.
@@ -767,16 +1380,16 @@ def plot_outlier_before_after(
     inlier_b = labels_before == 0
     outlier_b = labels_before == -1
     ax_l.scatter(
-        embedding_before[inlier_b, 0], embedding_before[inlier_b, 1],
+        features_before[inlier_b, 0], features_before[inlier_b, 1],
         color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
     )
     ax_l.scatter(
-        embedding_before[outlier_b, 0], embedding_before[outlier_b, 1],
+        features_before[outlier_b, 0], features_before[outlier_b, 1],
         color="#D62728", marker="x", s=60, linewidths=1.5,
         label=f"Outlier (n={int(outlier_b.sum())})",
     )
-    ax_l.set_xlabel("UMAP 1")
-    ax_l.set_ylabel("UMAP 2")
+    ax_l.set_xlabel("Total Counts")
+    ax_l.set_ylabel("RMS")
     ax_l.set_title("Before Outlier Removal")
     ax_l.legend(fontsize=7)
 
@@ -784,21 +1397,21 @@ def plot_outlier_before_after(
     inlier_a = labels_after == 0
     outlier_a = labels_after == -1
     ax_r.scatter(
-        embedding_after[inlier_a, 0], embedding_after[inlier_a, 1],
+        features_after[inlier_a, 0], features_after[inlier_a, 1],
         color=COLORBLIND_PALETTE[0], s=20, label="Inlier",
     )
     if outlier_a.any():
         ax_r.scatter(
-            embedding_after[outlier_a, 0], embedding_after[outlier_a, 1],
+            features_after[outlier_a, 0], features_after[outlier_a, 1],
             color="#D62728", marker="x", s=60, linewidths=1.5,
             label=f"Outlier (n={int(outlier_a.sum())})",
         )
-    ax_r.set_xlabel("UMAP 1")
+    ax_r.set_xlabel("Total Counts")
     ax_r.set_ylabel("")
     ax_r.set_title("After Outlier Removal")
     ax_r.legend(fontsize=7)
 
-    fig.suptitle("UMAP Hardware Outlier Detection", fontsize=11)
+    fig.suptitle("Hardware Outlier Detection — Feature Space", fontsize=11)
     plt.tight_layout()
 
     if save_path is not None:

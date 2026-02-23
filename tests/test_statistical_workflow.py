@@ -38,6 +38,8 @@ class TestHardwareOutlierDetector(unittest.TestCase):
 
         Normal spectra follow a smooth Gaussian peak; outlier spectra
         have wildly different baselines (simulating broken detectors).
+        Outliers are placed at the END of the array to avoid index
+        collisions.
         """
         rng = np.random.default_rng(seed)
         x = np.linspace(0, 10, n_bins)
@@ -45,17 +47,22 @@ class TestHardwareOutlierDetector(unittest.TestCase):
 
         data = np.empty((n_spectra, n_bins))
         for i in range(n_spectra):
-            data[i] = normal + rng.normal(0, 0.05, n_bins)
+            # Very tight normal cluster — essentially identical spectra
+            data[i] = normal + rng.normal(0, 1e-4, n_bins)
 
-        # Inject outliers: flat or huge-offset spectra
-        outlier_indices = list(range(n_outliers))
+        # Inject outliers at the END.  Each outlier uses a unique random
+        # spectrum drawn independently from a heavy-tailed Cauchy
+        # distribution, producing a radically different shape that
+        # cannot be mistaken for the Gaussian-peak population via
+        # summary statistics (total counts, RMS, skewness, kurtosis).
+        outlier_indices = list(range(n_spectra - n_outliers, n_spectra))
         for idx in outlier_indices:
-            data[idx] = rng.uniform(-10, 10, n_bins)  # random noise
+            data[idx] = rng.standard_cauchy(n_bins)
 
         return data, np.array(outlier_indices)
 
-    def test_outliers_detected_by_pca(self):
-        """PCA-based Mahalanobis distance should flag injected outliers."""
+    def test_outliers_detected_by_summary_features(self):
+        """Summary-feature + EllipticEnvelope should flag injected outliers."""
         from vesuvio_analysis.core_functions.statistical_plugins import (
             HardwareOutlierDetector,
         )
@@ -63,7 +70,7 @@ class TestHardwareOutlierDetector(unittest.TestCase):
         data, true_outlier_idx = self._make_detector_data(
             n_spectra=50, n_outliers=3, seed=42,
         )
-        detector = HardwareOutlierDetector(n_components=5, contamination=0.1)
+        detector = HardwareOutlierDetector(contamination=0.1)
         labels = detector.fit_predict(data)
 
         # labels: -1 = outlier, 0 = normal
@@ -82,7 +89,7 @@ class TestHardwareOutlierDetector(unittest.TestCase):
         )
 
         data, _ = self._make_detector_data(n_spectra=30, n_outliers=2)
-        detector = HardwareOutlierDetector(n_components=3, contamination=0.15)
+        detector = HardwareOutlierDetector(contamination=0.15)
         labels = detector.fit_predict(data)
         self.assertEqual(labels.shape[0], 30)
 
@@ -98,11 +105,23 @@ class TestHardwareOutlierDetector(unittest.TestCase):
         data = np.array([normal + rng.normal(0, 0.01, 100)
                          for _ in range(40)])
 
-        detector = HardwareOutlierDetector(n_components=3, contamination=0.05)
+        detector = HardwareOutlierDetector(contamination=0.05)
         labels = detector.fit_predict(data)
         n_outliers = np.sum(labels == -1)
         # At most ~10% should be flagged in clean data
         self.assertLessEqual(n_outliers, max(2, int(0.1 * len(data))))
+
+    def test_summary_features_stored(self):
+        """After fit_predict, summary_features_ should be available."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            HardwareOutlierDetector,
+        )
+
+        data, _ = self._make_detector_data(n_spectra=30, n_outliers=2)
+        detector = HardwareOutlierDetector(contamination=0.1)
+        detector.fit_predict(data)
+        self.assertTrue(hasattr(detector, "summary_features_"))
+        self.assertEqual(detector.summary_features_.shape, (30, 4))
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +506,463 @@ class TestPhase6HistogramAlignment(unittest.TestCase):
         self.assertEqual(spectra.shape, (n_spectra, n_bins))
         residuals = spectra - ncp_total
         self.assertEqual(residuals.shape, (n_spectra, n_bins))
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic table formatting
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDiagnosticTable(unittest.TestCase):
+    """Verifies the transparency-first diagnostic table formatter."""
+
+    def _make_metadata_map(self, n=10, start_spec=3):
+        meta = {}
+        for i in range(n):
+            meta[i] = {
+                "spec_no": start_spec + i,
+                "angle": 30.0 + i * 5.0,
+                "detector_id": 100 + i,
+            }
+        return meta
+
+    def test_empty_outlier_list(self):
+        """An empty outlier array should produce a table with zero data rows."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            format_diagnostic_table,
+        )
+        meta = self._make_metadata_map()
+        table = format_diagnostic_table(
+            np.array([], dtype=np.intp), meta,
+            np.array([], dtype=np.intp),
+        )
+        self.assertIn("Total flagged: 0", table)
+        self.assertNotIn("MANUAL REVIEW", table)
+
+    def test_pre_masked_spectra_labelled(self):
+        """Outliers that appear in maskedSpecAllNo must be labelled PRE-MASKED."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            format_diagnostic_table,
+        )
+        meta = self._make_metadata_map(n=10, start_spec=3)
+        masked = np.array([3, 5], dtype=np.intp)  # spec IDs 3 and 5
+        outlier_idx = np.array([0, 2], dtype=np.intp)  # idx 0→spec 3, idx 2→spec 5
+        table = format_diagnostic_table(outlier_idx, meta, masked)
+        self.assertIn("PRE-MASKED", table)
+
+    def test_unrecognized_outlier_triggers_warning(self):
+        """Outliers NOT in maskedSpecAllNo must trigger MANUAL REVIEW."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            format_diagnostic_table,
+        )
+        meta = self._make_metadata_map(n=10, start_spec=3)
+        masked = np.array([], dtype=np.intp)
+        outlier_idx = np.array([0], dtype=np.intp)
+        table = format_diagnostic_table(outlier_idx, meta, masked)
+        self.assertIn("MANUAL REVIEW", table)
+        self.assertIn("Unrecognized", table)
+
+    def test_fisher_scores_displayed(self):
+        """When Fisher scores are provided they should appear in the table."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            format_diagnostic_table,
+        )
+        meta = self._make_metadata_map(n=5, start_spec=10)
+        scores = np.array([0.1, 0.9, 0.5, 0.3, 0.7])
+        outlier_idx = np.array([1], dtype=np.intp)
+        table = format_diagnostic_table(
+            outlier_idx, meta,
+            np.array([], dtype=np.intp),
+            fisher_scores=scores,
+        )
+        self.assertIn("0.9000", table)
+
+
+# ---------------------------------------------------------------------------
+# Anisotropy residuals
+# ---------------------------------------------------------------------------
+
+
+class TestComputeAnisotropyResiduals(unittest.TestCase):
+    """Verifies the anisotropy-detection residual computation."""
+
+    def test_perfect_fit_gives_zero_residuals(self):
+        """Identical spectra and NCP should yield near-zero residuals."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            compute_anisotropy_residuals,
+        )
+        rng = np.random.default_rng(0)
+        spectra = rng.uniform(1.0, 2.0, size=(20, 50))
+        theta = np.linspace(30, 130, 20)
+
+        result = compute_anisotropy_residuals(spectra, spectra, theta)
+        np.testing.assert_allclose(result["mean_residual"], 0.0, atol=1e-8)
+
+    def test_spearman_correlation_returned(self):
+        """Output dict must contain spearman_r and spearman_p keys."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            compute_anisotropy_residuals,
+        )
+        rng = np.random.default_rng(1)
+        spectra = rng.normal(5.0, 0.5, size=(20, 50))
+        ncp = spectra * 0.95
+        theta = np.linspace(30, 130, 20)
+
+        result = compute_anisotropy_residuals(spectra, ncp, theta)
+        self.assertIn("spearman_r", result)
+        self.assertIn("spearman_p", result)
+        self.assertTrue(np.isfinite(result["spearman_r"]))
+
+    def test_angular_trend_detected(self):
+        """Synthetic linear trend in residuals should yield |ρ| > 0.3."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            compute_anisotropy_residuals,
+        )
+        n_det = 30
+        theta = np.linspace(30, 150, n_det)
+        rng = np.random.default_rng(7)
+        ncp = rng.uniform(1.0, 3.0, size=(n_det, 80))
+        # Inject angle-dependent offset ⇒ anisotropic residual
+        offset = np.outer(theta / 150.0, np.ones(80)) * 0.5
+        spectra = ncp + offset
+
+        result = compute_anisotropy_residuals(spectra, ncp, theta)
+        self.assertGreater(abs(result["spearman_r"]), 0.3)
+
+
+# ---------------------------------------------------------------------------
+# Physical interpretation hints
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratePhysicalInterpretationHint(unittest.TestCase):
+    """Verifies the 'Show Your Work' hint generator."""
+
+    def test_single_cluster_message(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            generate_physical_interpretation_hint,
+        )
+        text = generate_physical_interpretation_hint(
+            n_clusters=1, spearman_r=0.05, spearman_p=0.8,
+            n_outliers=0, n_total=50,
+        )
+        self.assertIn("homogeneous", text)
+
+    def test_multi_cluster_message(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            generate_physical_interpretation_hint,
+        )
+        text = generate_physical_interpretation_hint(
+            n_clusters=3, spearman_r=0.1, spearman_p=0.5,
+            n_outliers=2, n_total=50,
+        )
+        self.assertIn("Clusters found: 3", text)
+
+    def test_strong_angular_trend_message(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            generate_physical_interpretation_hint,
+        )
+        text = generate_physical_interpretation_hint(
+            n_clusters=2, spearman_r=0.7, spearman_p=0.001,
+            n_outliers=5, n_total=50,
+        )
+        self.assertIn("anisotropic", text.lower())
+        self.assertIn("5/50", text)
+
+
+# ---------------------------------------------------------------------------
+# Build fidelity labels
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFidelityLabels(unittest.TestCase):
+    """Verifies convergence-based label construction for Fisher/LDA."""
+
+    def test_perfect_agreement_labelled_hi(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            build_fidelity_labels,
+        )
+        agreement = np.array([0.001, 0.005, 0.008])
+        migrad_valid = np.array([True, True, True])
+        labels = build_fidelity_labels(agreement, migrad_valid)
+        np.testing.assert_array_equal(labels, [0, 0, 0])
+
+    def test_poor_agreement_labelled_poor(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            build_fidelity_labels,
+        )
+        agreement = np.array([0.10, 0.20])
+        migrad_valid = np.array([True, True])
+        labels = build_fidelity_labels(agreement, migrad_valid)
+        np.testing.assert_array_equal(labels, [1, 1])
+
+    def test_ambiguous_region_labelled_minus_one(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            build_fidelity_labels,
+        )
+        agreement = np.array([0.03])
+        migrad_valid = np.array([True])
+        labels = build_fidelity_labels(agreement, migrad_valid)
+        np.testing.assert_array_equal(labels, [-1])
+
+    def test_invalid_migrad_forces_poor(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            build_fidelity_labels,
+        )
+        agreement = np.array([0.005])  # would be hi-fidelity
+        migrad_valid = np.array([False])  # but migrad failed
+        labels = build_fidelity_labels(agreement, migrad_valid)
+        np.testing.assert_array_equal(labels, [1])
+
+
+# ---------------------------------------------------------------------------
+# Detector relative difference metrics
+# ---------------------------------------------------------------------------
+
+
+class TestDetectorRelativeDifferenceMetrics(unittest.TestCase):
+    """Verifies the AppStat-style calibration diagnostic computation."""
+
+    def test_identical_gives_zero(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            detector_relative_difference_metrics,
+        )
+        y = np.ones((5, 20))
+        result = detector_relative_difference_metrics(y, y)
+        np.testing.assert_allclose(result["bias"], 0.0, atol=1e-8)
+        np.testing.assert_allclose(result["rms"], 0.0, atol=1e-8)
+
+    def test_known_offset(self):
+        """A 10% multiplicative offset should yield bias ≈ 0.1 and rms ≈ 0.1."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            detector_relative_difference_metrics,
+        )
+        y_fit = np.ones((3, 50)) * 10.0
+        y_obs = y_fit * 1.1
+        result = detector_relative_difference_metrics(y_obs, y_fit)
+        np.testing.assert_allclose(result["bias"], 0.1, atol=1e-6)
+        np.testing.assert_allclose(result["rms"], 0.1, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Fisher LDA with ROC
+# ---------------------------------------------------------------------------
+
+
+class TestFisherLDAWithROC(unittest.TestCase):
+    """Verifies Fisher/LDA + ROC pipeline on synthetic data."""
+
+    def test_returns_none_with_insufficient_labels(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            fisher_lda_with_roc,
+        )
+        features = np.random.default_rng(0).normal(size=(10, 3))
+        labels = np.full(10, -1, dtype=np.intp)  # all unlabeled
+        self.assertIsNone(fisher_lda_with_roc(features, labels))
+
+    def test_separable_data_yields_high_auc(self):
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            fisher_lda_with_roc,
+        )
+        rng = np.random.default_rng(42)
+        features = np.vstack([
+            rng.normal(loc=[0, 0, 0], scale=0.3, size=(20, 3)),
+            rng.normal(loc=[3, 3, 3], scale=0.3, size=(20, 3)),
+        ])
+        labels = np.array([0] * 20 + [1] * 20, dtype=np.intp)
+        result = fisher_lda_with_roc(features, labels)
+        self.assertIsNotNone(result)
+        self.assertGreater(result["auc"], 0.9)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 diagnostic dashboard and enhanced plots
+# ---------------------------------------------------------------------------
+
+
+class TestPhase6DiagnosticPlots(unittest.TestCase):
+    """Verifies the Phase 6 unified dashboard and enhanced plot functions."""
+
+    def _make_anisotropy(self, n=30, seed=5):
+        rng = np.random.default_rng(seed)
+        theta = np.linspace(30, 150, n)
+        return {
+            "theta": theta,
+            "mean_residual": rng.normal(0, 0.1, n),
+            "std_residual": rng.uniform(0.01, 0.05, n),
+            "spearman_r": 0.35,
+            "spearman_p": 0.06,
+        }
+
+    def _make_metadata_map(self, n=30, start_spec=3):
+        meta = {}
+        for i in range(n):
+            meta[i] = {
+                "spec_no": start_spec + i,
+                "angle": 30.0 + i * 4.0,
+                "detector_id": 200 + i,
+            }
+        return meta
+
+    def test_dashboard_returns_figure(self):
+        """plot_phase6_diagnostic_dashboard must return a Figure."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_phase6_diagnostic_dashboard,
+        )
+        n = 30
+        rng = np.random.default_rng(0)
+        features = rng.normal(size=(n, 4))
+        labels = np.zeros(n, dtype=np.intp)
+        labels[:3] = -1
+        aniso = self._make_anisotropy(n)
+        meta = self._make_metadata_map(n)
+
+        fig = plot_phase6_diagnostic_dashboard(
+            summary_features=features,
+            labels=labels,
+            fisher_scores=None,
+            fidelity_labels=None,
+            theta_deg=aniso["theta"],
+            anisotropy=aniso,
+            roc_data=None,
+            metadata_map=meta,
+            ws_name="test_ws_0",
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_dashboard_saves_pdf(self):
+        """plot_phase6_diagnostic_dashboard must save a PDF when save_path given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_phase6_diagnostic_dashboard,
+        )
+        n = 20
+        rng = np.random.default_rng(1)
+        features = rng.normal(size=(n, 4))
+        labels = np.zeros(n, dtype=np.intp)
+        aniso = self._make_anisotropy(n, seed=1)
+        meta = self._make_metadata_map(n)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "dashboard.pdf"
+            plot_phase6_diagnostic_dashboard(
+                summary_features=features,
+                labels=labels,
+                fisher_scores=None,
+                fidelity_labels=None,
+                theta_deg=aniso["theta"],
+                anisotropy=aniso,
+                roc_data=None,
+                metadata_map=meta,
+                ws_name="test_ws_1",
+                save_path=out,
+            )
+            self.assertTrue(out.is_file())
+
+    def test_dashboard_with_fisher_scores(self):
+        """Dashboard should render fisher-colored scatter when scores provided."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_phase6_diagnostic_dashboard,
+        )
+        n = 25
+        rng = np.random.default_rng(2)
+        features = rng.normal(size=(n, 4))
+        labels = np.zeros(n, dtype=np.intp)
+        scores = rng.uniform(0, 1, n)
+        fidelity = np.array([0] * 15 + [1] * 10, dtype=np.intp)
+        aniso = self._make_anisotropy(n, seed=2)
+        meta = self._make_metadata_map(n)
+        roc_data = {
+            "fpr": np.array([0.0, 0.3, 1.0]),
+            "tpr": np.array([0.0, 0.8, 1.0]),
+            "auc": 0.85,
+        }
+
+        fig = plot_phase6_diagnostic_dashboard(
+            summary_features=features,
+            labels=labels,
+            fisher_scores=scores,
+            fidelity_labels=fidelity,
+            theta_deg=aniso["theta"],
+            anisotropy=aniso,
+            roc_data=roc_data,
+            metadata_map=meta,
+            ws_name="test_fisher",
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_feature_annotated_returns_figure(self):
+        """plot_feature_annotated must return a Figure with annotations."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_feature_annotated,
+        )
+        n = 20
+        rng = np.random.default_rng(3)
+        features = rng.normal(size=(n, 4))
+        labels = np.zeros(n, dtype=np.intp)
+        labels[:2] = -1
+        meta = self._make_metadata_map(n)
+        cluster_labels = np.array([0] * 10 + [1] * 10, dtype=np.intp)
+
+        fig = plot_feature_annotated(
+            features, labels, meta, cluster_labels=cluster_labels,
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_fisher_distribution_returns_figure(self):
+        """plot_fisher_distribution must return a Figure."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_distribution,
+        )
+        from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+        rng = np.random.default_rng(4)
+        n = 40
+        features = np.vstack([
+            rng.normal(loc=[0, 0], scale=0.5, size=(20, 2)),
+            rng.normal(loc=[2, 2], scale=0.5, size=(20, 2)),
+        ])
+        labels = np.array([0] * 20 + [1] * 20, dtype=np.intp)
+        model = LinearDiscriminantAnalysis(solver="svd")
+        model.fit(features, labels)
+        scores = model.decision_function(features)
+
+        fig = plot_fisher_distribution(
+            scores, labels,
+            feature_names=["Feature A", "Feature B"],
+            lda_model=model,
+            roc_auc=0.95,
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_residuals_vs_angle_returns_figure(self):
+        """plot_residuals_vs_angle must return a Figure."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_residuals_vs_angle,
+        )
+        aniso = self._make_anisotropy(n=25, seed=6)
+        meta = self._make_metadata_map(n=25)
+        outlier_idx = np.array([0, 5], dtype=np.intp)
+
+        fig = plot_residuals_vs_angle(aniso, meta, outlier_indices=outlier_idx)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_residuals_vs_angle_saves_file(self):
+        """plot_residuals_vs_angle must save a file when save_path is given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_residuals_vs_angle,
+        )
+        aniso = self._make_anisotropy(n=15, seed=7)
+        meta = self._make_metadata_map(n=15)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "res_vs_angle.pdf"
+            plot_residuals_vs_angle(aniso, meta, save_path=out)
+            self.assertTrue(out.is_file())
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ from mantid.api import mtd
 from mantid.simpleapi import (
     ConvertToYSpace,
     DeleteWorkspaces,
-    MaskDetectors,
     Rebin,
     SumSpectra,
 )
@@ -599,35 +598,36 @@ def _runPreFitStatistics(
     fwdIC: Any,
     yFitIC: Any,
 ) -> Dict[str, Any]:
-    """Phase 6a: two-pass outlier masking and DBSCAN clustering (pre-fit).
+    """Phase 6a: Diagnostic-only outlier detection and DBSCAN clustering.
 
-    Runs **before** the y-space global fit so that its results can
-    dynamically configure ``yFitIC.nGlobalFitGroups`` and exclude
-    broken detectors from subsequent fitting.
+    PHILOSOPHY — DIAGNOSTIC ASSISTANCE, NOT AUTOMATED REMOVAL:
+        Automated outlier masking is **deprecated**.  Real samples (e.g.
+        Thymol) can be anisotropic; automated removal risks discarding
+        genuine physical signals.  This function now operates as an
+        *Anisotropy & Health Monitor*: suspicious detectors are flagged
+        for manual review via formatted diagnostic tables.
 
-    Two-pass outlier removal workflow:
-        **Pass 1** — Extract NCP profiles from the final-iteration
-        workspace.  Run UMAP + ``EllipticEnvelope`` outlier detection
-        on the raw NCP array.  Map the Python array indices of the
-        anomalous spectra to Mantid workspace indices and mask them
-        via ``MaskDetectors(Workspace=ws, WorkspaceIndexList=[…])``.
+        The **only** spectra excluded from the fit are those explicitly
+        listed by the user in ``maskedSpecAllNo``.  If the summary-feature
+        outlier pipeline detects an outlier whose Spectrum ID
+        is **not** in ``maskedSpecAllNo``, it is flagged as
+        "Unrecognized Outlier — Manual Review Required".
 
-        **Pass 2** — Re-extract the (now clean) NCP profiles from the
-        masked workspace.  Counts and errors for masked spectra are
-        strictly zeroed by Mantid, so the downstream
-        ``takeOutMaskedSpectra`` in ``runGlobalFit`` will
-        automatically exclude them.
+    Runs **before** the y-space global fit so that DBSCAN results can
+    dynamically configure ``yFitIC.nGlobalFitGroups``.
 
-    DBSCAN grouping:
-        When ``userCtr.runPhysicsClustering`` is ``True``, DBSCAN
-        clusters the cleaned (outlier-free) NCP profiles in
-        (L, θ) space.  The number of valid (non-noise) clusters
-        dynamically overwrites ``yFitIC.nGlobalFitGroups``.  Noise
-        points (label ``-1``) are excluded from all groups.
+    Diagnostic outputs:
+        1. Formatted terminal table with Index, Spectrum ID, Scattering
+           Angle, Fisher Score, and Recommendation.
+        2. Physical interpretation hints (angular trends, cluster count).
+        3. Unified Phase 6 Diagnostic Summary PDF:
+           - Panel 1: Feature-space scatter (color-coded by Fisher Score).
+           - Panel 2: Fisher 1D histogram of discriminant scores.
+           - Panel 3: Residuals vs Scattering Angle (anisotropy check).
+           - Panel 4: ROC curve (detector trustworthiness).
 
     Args:
-        userCtr: ``UserScriptControls`` with detection/clustering flags
-            and UMAP hyperparameters.
+        userCtr: ``UserScriptControls`` with detection/clustering flags.
         res: Result tuple from the iterative NCP fit (may be ``None``).
         bckwdIC: Completed backward initial-conditions object.
         fwdIC: Completed forward initial-conditions object.
@@ -642,17 +642,23 @@ def _runPreFitStatistics(
         apply_detector_intensity_calibration,
         build_detector_feature_matrix,
         build_fidelity_labels,
+        compute_anisotropy_residuals,
         detector_quality_weights,
         detector_relative_difference_metrics,
         fisher_lda_with_roc,
+        format_diagnostic_table,
+        generate_physical_interpretation_hint,
         HardwareOutlierDetector,
         PhysicsTrendClusterer,
         plot_cluster_ltheta,
         plot_detector_calibration_distribution,
+        plot_fisher_distribution,
         plot_fisher_roc,
-        plot_outlier_before_after,
         plot_outlier_scatter,
-        plot_umap_lda_overlay,
+        plot_phase6_diagnostic_dashboard,
+        plot_residuals_vs_angle,
+        plot_feature_annotated,
+        plot_feature_lda_overlay,
     )
     from vesuvio_analysis.core_functions.analysis_functions import (
         loadInstrParsFileIntoArray,
@@ -676,7 +682,7 @@ def _runPreFitStatistics(
         results_and_ics = [(res[1], ic)]
 
     for results, ic in results_and_ics:
-        # --- Pass 1: Extract NCP profiles for outlier identification ---
+        # --- Extract NCP profiles for diagnostic analysis ---
         spectra = results.all_fit_workspaces[-1]
         ncp_total = results.all_tot_ncp[-1]
 
@@ -686,31 +692,39 @@ def _runPreFitStatistics(
 
         n_total = spectra.shape[0]
         outlier_mask: Optional[np.ndarray] = None
+        cluster_labels_full: Optional[np.ndarray] = None
 
-        # Resolve the Mantid workspace name: ic.name = "{script}_{DIR}_"
-        # Final iteration workspace = ic.name + str(ic.noOfMSIterations)
+        # Resolve the Mantid workspace name
         ws_name = ic.name + str(ic.noOfMSIterations)
         print(
-            f"[Phase 6] Entering pre-fit statistics for workspace: {ws_name}"
+            f"\n{_SEP_DOUBLE}\n"
+            f"  [Phase 6] Anisotropy & Health Monitor — {ws_name}\n"
+            f"{_SEP_DOUBLE}"
         )
 
         # --- Build MetadataMap: array_index → {spec_no, angle, detector_id} ---
         metadata_map = build_metadata_map(ic)
         diagnostics["metadata_map"] = metadata_map
 
-        # ---- Outlier Detection (UMAP + EllipticEnvelope) ----
+        # --- Resolve user-defined masks ---
+        masked_spec_all_no = np.asarray(
+            getattr(ic, "maskedSpecAllNo", []), dtype=np.intp,
+        )
+
+        # Load instrument parameters (needed for θ, L, spec_no mapping)
+        instrPars = loadInstrParsFileIntoArray(
+            ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
+        )
+        theta_deg = instrPars[:, 2]
+        all_spec_nos = instrPars[:, 0]
+
+        # ---- Outlier Detection (Summary-Feature + EllipticEnvelope) — DIAGNOSTIC ONLY ----
         if getattr(userCtr, "runOutlierDetection", False):
-            # UMAP hyperparameters from user config
-            n_neighbors = getattr(userCtr, "umapNNeighbors", 15)
-            min_dist = getattr(userCtr, "umapMinDist", 0.1)
-            n_components = getattr(userCtr, "umapNComponents", 2)
             n_outlier_passes = max(1, int(getattr(userCtr, "outlierPasses", 1)))
 
-            # Accumulate all removed indices across passes for final report
-            all_removed_indices: List[int] = []
-            all_removed_spec_ids: List[int] = []
+            all_flagged_indices: List[int] = []
+            all_flagged_spec_ids: List[int] = []
             current_spectra = spectra.copy()
-            # Track which of the *original* indices are still active
             active_indices = np.arange(n_total)
 
             for pass_no in range(1, n_outlier_passes + 1):
@@ -722,9 +736,6 @@ def _runPreFitStatistics(
                     break
 
                 detector = HardwareOutlierDetector(
-                    n_components=n_components,
-                    n_neighbors=min(n_neighbors, current_spectra.shape[0] - 1),
-                    min_dist=min_dist,
                     contamination=0.1,
                 )
                 labels = detector.fit_predict(current_spectra)
@@ -733,94 +744,51 @@ def _runPreFitStatistics(
 
                 if n_outliers_pass == 0:
                     print(
-                        f"[Phase 6] Pass {pass_no}: No new outliers detected — "
+                        f"[Phase 6] Pass {pass_no}: No anomalies detected — "
                         f"converged after {pass_no} pass(es)."
                     )
                     break
 
-                # Map local outlier indices back to original array indices
                 outlier_original = active_indices[outlier_local]
-                # Resolve physical Spectrum IDs via MetadataMap
-                removed_spec_ids_pass = []
+                flagged_spec_ids_pass = []
                 for oi in outlier_original:
                     meta = metadata_map.get(int(oi), {})
                     spec_id = meta.get("spec_no", oi)
-                    angle = meta.get("angle", float("nan"))
-                    removed_spec_ids_pass.append(spec_id)
-                    all_removed_spec_ids.append(spec_id)
-                all_removed_indices.extend(outlier_original.tolist())
+                    flagged_spec_ids_pass.append(spec_id)
+                    all_flagged_spec_ids.append(spec_id)
+                all_flagged_indices.extend(outlier_original.tolist())
 
-                pct_remaining = 100.0 * (n_total - len(all_removed_indices)) / n_total
+                pct_remaining = 100.0 * (n_total - len(all_flagged_indices)) / n_total
                 print(
-                    f"[Phase 6] Pass {pass_no}: Removing Spectrum IDs "
-                    f"{removed_spec_ids_pass}  "
-                    f"({n_outliers_pass} outlier(s) this pass, "
-                    f"{len(all_removed_indices)}/{n_total} total removed, "
-                    f"{pct_remaining:.1f}% remaining)"
+                    f"[Phase 6] Pass {pass_no}: Flagged Spectrum IDs "
+                    f"{flagged_spec_ids_pass}  "
+                    f"({n_outliers_pass} anomaly(ies) this pass, "
+                    f"{len(all_flagged_indices)}/{n_total} total flagged, "
+                    f"{pct_remaining:.1f}% clean)"
                 )
 
-                # Log individual outlier details with angle
-                for oi in outlier_original:
-                    meta = metadata_map.get(int(oi), {})
-                    print(
-                        f"          Spec {meta.get('spec_no', '?'):>4}  "
-                        f"θ = {meta.get('angle', float('nan')):6.2f}°  "
-                        f"Det ID = {meta.get('detector_id', '?')}"
-                    )
-
                 if pass_no < n_outlier_passes:
-                    # Remove outliers from active set and re-run UMAP
                     keep_mask = np.ones(len(active_indices), dtype=bool)
                     keep_mask[outlier_local] = False
                     active_indices = active_indices[keep_mask]
                     current_spectra = current_spectra[keep_mask]
 
             # Final summary
-            outlier_idx = np.array(sorted(set(all_removed_indices)), dtype=np.intp)
+            outlier_idx = np.array(sorted(set(all_flagged_indices)), dtype=np.intp)
             n_outliers = len(outlier_idx)
             pct_remaining = 100.0 * (n_total - n_outliers) / n_total
-            print(
-                f"[Phase 6] Total Spectra Removed: {n_outliers}/{n_total} "
-                f"({100.0 - pct_remaining:.1f}%)  "
-                f"Original Population: {n_total}"
-            )
-            if all_removed_spec_ids:
-                print(
-                    f"[Phase 6] Removed Spectrum IDs: {sorted(set(all_removed_spec_ids))}"
-                )
 
             diagnostics["outlier_passes"] = min(pass_no, n_outlier_passes)
 
-            # generate masking summary plot (spectrum index vs counts)
-            fig_dir = getattr(ic, "figSavePath", None)
-            if n_outliers > 0 and fig_dir is not None:
-                try:
-                    total_counts = np.sum(spectra, axis=1)
-                    fig, ax = plt.subplots()
-                    idxs = np.arange(n_total)
-                    ax.plot(idxs, total_counts, '.', color='blue', label='counts')
-                    ax.plot(idxs[outlier_idx], total_counts[outlier_idx], 'ro', label='masked')
-                    ax.set_xlabel('Spectrum Index')
-                    ax.set_ylabel('Total Counts')
-                    ax.set_title(f"Masking summary — {ws_name}")
-                    ax.legend()
-                    fig.savefig(fig_dir / f"{ws_name}_masking_summary.pdf")
-                    plt.close(fig)
-                except Exception as exc:  # pragma: no cover
-                    warnings.warn(f"Masking summary plot failed: {exc}")
-            logger.info(
-                "Phase 6 outlier detection: %d/%d outliers at Spec IDs %s (%.1f%% remaining)",
-                n_outliers, n_total, sorted(set(all_removed_spec_ids)), pct_remaining,
-            )
-            # Reconstruct labels array for the full original array
+            # Reconstruct labels for the full original array
             labels = np.zeros(n_total, dtype=np.intp)
             labels[outlier_idx] = -1
 
             diagnostics["outlier_indices"] = outlier_idx
             diagnostics["outlier_labels"] = labels
+            outlier_mask = labels == -1
 
             # ---- Calibration pass (AppStat Week 5 style) ----
-            # Relative detector residual: delta = (Y_obs - Y_fit) / Y_fit
             calib = detector_relative_difference_metrics(spectra, ncp_total)
             det_bias = calib["bias"]
             det_rms = calib["rms"]
@@ -831,14 +799,12 @@ def _runPreFitStatistics(
             if fig_dir is not None:
                 try:
                     plot_detector_calibration_distribution(
-                        det_bias,
-                        det_rms,
+                        det_bias, det_rms,
                         save_path=fig_dir / f"{ws_name}_calibration_distribution.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 calibration distribution plot failed: {exc}")
 
-            # Avoid forced correction when physics residuals are already low.
             median_rms = float(np.nanmedian(det_rms))
             rms_gate = float(getattr(userCtr, "calibrationRMSGate", 0.02))
             apply_calibration = median_rms > rms_gate
@@ -861,86 +827,95 @@ def _runPreFitStatistics(
                 spectra = y_corr[:, :spectra.shape[1]]
                 diagnostics["calibration_factors"] = corr_factor
                 logger.info(
-                    "Phase 6 calibration pass: corrected %d/%d detectors (median RMS %.4g > %.4g).",
-                    int(np.sum(biased_mask)),
-                    int(len(biased_mask)),
-                    median_rms,
-                    rms_gate,
+                    "Phase 6 calibration pass: corrected %d/%d detectors "
+                    "(median RMS %.4g > %.4g).",
+                    int(np.sum(biased_mask)), int(len(biased_mask)),
+                    median_rms, rms_gate,
                 )
             else:
                 logger.info(
-                    "Phase 6 calibration pass skipped (median RMS %.4g, gate %.4g, biased=%d).",
-                    median_rms,
-                    rms_gate,
-                    int(np.sum(biased_mask)),
+                    "Phase 6 calibration pass skipped "
+                    "(median RMS %.4g, gate %.4g, biased=%d).",
+                    median_rms, rms_gate, int(np.sum(biased_mask)),
                 )
+
+            # ---- Anisotropy Detection: residuals vs scattering angle ----
+            anisotropy = compute_anisotropy_residuals(
+                spectra, ncp_total, theta_deg,
+            )
+            diagnostics["anisotropy"] = anisotropy
 
             # ---- Fisher discriminant (LDA) + ROC from convergence labels ----
             lda_result = None
             fidelity_labels = None
+            fisher_scores = None
+            feature_names = ["Total Counts", "RMS Shape", "Width σ", "Angle θ"]
+
             if ws_name + "_Optimizer_Diagnostics" in mtd:
                 opt_table = mtd[ws_name + "_Optimizer_Diagnostics"]
 
-                # instrPars must be loaded first; we need all_spec_nos to map
-                # the diagnostics table (which only has rows for spectra where
-                # iMinuit cross-validation succeeded, len ≤ n_spectra) back to
-                # the full detector array.  Without this alignment,
-                # fisher_lda_with_roc(features, fidelity_labels) raises an
-                # IndexError whenever any spectrum fails iMinuit convergence.
-                instrPars = loadInstrParsFileIntoArray(
-                    ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
-                )
-                theta_deg = instrPars[:, 2]
                 n_det = len(spectra)
-                all_spec_nos = instrPars[:, 0]
-
                 spec_nos_tab = np.array(opt_table.column("Spec Idx"), dtype=float)
                 chi2_rel_tab = np.array(opt_table.column("Chi2 Rel Diff"), dtype=float)
                 par_rel_tab = np.array(opt_table.column("Max Par Rel Diff"), dtype=float)
                 migrad_valid_tab = np.array(opt_table.column("Migrad Valid"), dtype=float) > 0.5
 
-                # Default: treat unmatched spectra as poor-fidelity
                 agreement_full = np.full(n_det, np.inf)
                 migrad_valid_full = np.zeros(n_det, dtype=bool)
                 for k, sno in enumerate(spec_nos_tab):
                     row = np.where(np.isclose(all_spec_nos, sno))[0]
                     if len(row) == 1:
-                        agreement_full[row[0]] = max(float(chi2_rel_tab[k]), float(par_rel_tab[k]))
+                        agreement_full[row[0]] = max(
+                            float(chi2_rel_tab[k]), float(par_rel_tab[k]),
+                        )
                         migrad_valid_full[row[0]] = bool(migrad_valid_tab[k])
 
                 fidelity_labels = build_fidelity_labels(
-                    agreement_full,
-                    migrad_valid_full,
-                    hi_fidelity_thr=0.01,
-                    poor_fidelity_thr=0.05,
+                    agreement_full, migrad_valid_full,
+                    hi_fidelity_thr=0.01, poor_fidelity_thr=0.05,
                 )
                 diagnostics["fidelity_labels"] = fidelity_labels
 
                 width_proxy = np.zeros(len(spectra), dtype=float)
                 fit_table_name = ws_name + "_Best_Fit_NCP_Parameters"
                 if fit_table_name in mtd and "Width 0" in mtd[fit_table_name].keys():
-                    width_proxy = np.array(mtd[fit_table_name].column("Width 0"), dtype=float)
+                    width_proxy = np.array(
+                        mtd[fit_table_name].column("Width 0"), dtype=float,
+                    )
 
                 features = build_detector_feature_matrix(
-                    spectra,
-                    theta_deg,
-                    width_proxy,
-                    umap_embedding=getattr(detector, "embedding_coords_", None),
+                    spectra, theta_deg, width_proxy,
                 )
 
                 lda_result = fisher_lda_with_roc(features, fidelity_labels)
-                if lda_result is not None and fig_dir is not None:
-                    try:
-                        plot_fisher_roc(
-                            lda_result["fpr"],
-                            lda_result["tpr"],
-                            float(lda_result["auc"]),
-                            save_path=fig_dir / f"{ws_name}_fisher_roc.pdf",
-                        )
-                    except Exception as exc:
-                        warnings.warn(f"Phase 6 Fisher ROC plot failed: {exc}")
+                if lda_result is not None:
+                    fisher_scores = np.array(lda_result["scores"], dtype=float)
+                    diagnostics["fisher_scores"] = fisher_scores
 
-            p_fail = None if lda_result is None else np.array(lda_result["p_fail"], dtype=float)
+                    if fig_dir is not None:
+                        try:
+                            plot_fisher_roc(
+                                lda_result["fpr"], lda_result["tpr"],
+                                float(lda_result["auc"]),
+                                save_path=fig_dir / f"{ws_name}_fisher_roc.pdf",
+                            )
+                        except Exception as exc:
+                            warnings.warn(f"Phase 6 Fisher ROC plot failed: {exc}")
+
+                        try:
+                            plot_fisher_distribution(
+                                fisher_scores, fidelity_labels,
+                                feature_names, lda_result["model"],
+                                float(lda_result["auc"]),
+                                save_path=fig_dir / f"{ws_name}_fisher_distribution.pdf",
+                            )
+                        except Exception as exc:
+                            warnings.warn(f"Phase 6 Fisher distribution plot failed: {exc}")
+
+            # ---- Detector quality weights ----
+            p_fail = None if lda_result is None else np.array(
+                lda_result["p_fail"], dtype=float,
+            )
             det_weights = detector_quality_weights(det_rms, p_fail)
             diagnostics["detector_weights"] = det_weights
 
@@ -948,135 +923,97 @@ def _runPreFitStatistics(
                 yFitIC.detectorQualityWeightsByWorkspace = {}
             yFitIC.detectorQualityWeightsByWorkspace[ws_name] = det_weights
 
-            # Store pass-1 embedding for before/after visualisation
-            embedding_before = detector.embedding_coords_.copy()
+            # ---- DIAGNOSTIC TABLE — Transparency-first output ----
+            print(
+                format_diagnostic_table(
+                    outlier_idx, metadata_map,
+                    masked_spec_all_no, fisher_scores,
+                )
+            )
+            logger.info(
+                "Phase 6 diagnostic: %d/%d detectors flagged at Spec IDs %s "
+                "(%.1f%% clean)",
+                n_outliers, n_total,
+                sorted(set(all_flagged_spec_ids)), pct_remaining,
+            )
+
+            # ---- DEPRECATED: Automated masking ----
+            # Automated MaskDetectors calls have been removed. Only
+            # spectra in maskedSpecAllNo are excluded (handled earlier
+            # via ICHelpers.completeICFromInputs → maskedDetectorIdx).
+            if getattr(userCtr, "removeOutliers", False):
+                warnings.warn(
+                    "removeOutliers=True is DEPRECATED and has no effect. "
+                    "Outlier detection now operates as a diagnostic-only "
+                    "Anisotropy & Health Monitor. To exclude spectra, add "
+                    "their Spectrum IDs to maskedSpecAllNo in the IC class.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+
+            # ---- Diagnostic plots ----
+            features_before = detector.summary_features_.copy()
             labels_before = labels.copy()
 
-            # --- Masking: Map array indices → Mantid WorkspaceIndices ---
-            if getattr(userCtr, "removeOutliers", False) and n_outliers > 0:
-                # WorkspaceIndex is the 0-based row index within the
-                # cropped workspace.  The NCP array rows correspond
-                # directly to workspace indices 0 … n_total-1.
-                ws_indices_to_mask = outlier_idx.tolist()
-
-                # Resolve physical IDs for the masked spectra
-                masked_spec_ids = [
-                    metadata_map.get(int(i), {}).get("spec_no", i)
-                    for i in outlier_idx
-                ]
-
-                if ws_name in mtd:
-                    MaskDetectors(
-                        Workspace=ws_name,
-                        WorkspaceIndexList=ws_indices_to_mask,
-                    )
-                    print(
-                        f"[Phase 6] Masked {n_outliers} outlier spectra "
-                        f"in workspace '{ws_name}' — "
-                        f"Spectrum IDs: {masked_spec_ids}"
-                    )
-                    logger.info(
-                        "Phase 6 masked %d spectra in '%s': Spec IDs %s",
-                        n_outliers, ws_name, masked_spec_ids,
-                    )
-
-                    # --- Pass 2: Re-extract clean NCP from masked ws ---
-                    # MaskDetectors zeroes out dataY and dataE for the
-                    # masked rows.  Re-read to get the clean arrays that
-                    # downstream DBSCAN and groupDetectors will consume.
-                    ws_masked = mtd[ws_name]
-                    spectra = ws_masked.extractY()
-                    if spectra.shape[1] == ncp_total.shape[1] + 1:
-                        spectra = spectra[:, :-1].copy()
-                    print(
-                        f"[Phase 6] Entering Pass 2 for Workspace: {ws_name}"
-                    )
-                    print(
-                        f"[Phase 6] Pass 2: Confirming mask on {len(outlier_idx)} spectra for {ws_name}."
-                    )
-
-                    # --- Pass 2: Re-embed clean spectra for after plot ---
-                    clean_mask = ~(labels_before == -1)
-                    spectra_clean = spectra[clean_mask]
-                    if spectra_clean.shape[0] >= 4:
-                        detector_pass2 = HardwareOutlierDetector(
-                            n_components=n_components,
-                            n_neighbors=min(n_neighbors, spectra_clean.shape[0] - 1),
-                            min_dist=min_dist,
-                            contamination=0.1,
-                        )
-                        labels_after = detector_pass2.fit_predict(spectra_clean)
-                        embedding_after = detector_pass2.embedding_coords_
-                    else:
-                        embedding_after = embedding_before[clean_mask]
-                        labels_after = np.zeros(clean_mask.sum(), dtype=np.intp)
-                else:
-                    print(
-                        f"[Phase 6] Workspace '{ws_name}' not in ADS. "
-                        f"Outlier indices recorded but not masked."
-                    )
-                    embedding_after = embedding_before
-                    labels_after = labels_before
-
-                outlier_mask = labels == -1
-            else:
-                embedding_after = embedding_before
-                labels_after = labels_before
-
-            fig_dir = getattr(ic, "figSavePath", None)
-            # Build summary stats dict for plot annotations
-            _outlier_summary = {
-                "n_total": n_total,
-                "n_outliers": n_outliers,
-                "n_neighbors": n_neighbors,
-                "min_dist": min_dist,
-            }
             if fig_dir is not None:
+                _outlier_summary = {
+                    "n_total": n_total,
+                    "n_outliers": n_outliers,
+                }
                 try:
-                    # Before/after side-by-side subplot
-                    plot_outlier_before_after(
-                        embedding_before, labels_before,
-                        embedding_after, labels_after,
-                        save_path=fig_dir / f"{ws_name}_umap_before_after.pdf",
+                    # Annotated feature-space scatter with Spectrum IDs and cluster angles
+                    plot_feature_annotated(
+                        features_before, labels_before,
+                        metadata_map,
+                        cluster_labels=cluster_labels_full,
+                        save_path=fig_dir / f"{ws_name}_diagnostic_features.pdf",
                     )
-                    # Save UMAP outlier map. If LDA is available, overlay
-                    # failure probability on the same canonical filename.
+                except Exception as exc:
+                    warnings.warn(f"Phase 6 annotated feature plot failed: {exc}")
+
+                try:
                     if (lda_result is not None) and (p_fail is not None):
-                        plot_umap_lda_overlay(
-                            embedding_before,
-                            p_fail,
+                        plot_feature_lda_overlay(
+                            features_before, p_fail,
                             labels=fidelity_labels,
-                            save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
+                            save_path=fig_dir / f"{ws_name}_feature_outliers.pdf",
                         )
                     else:
                         plot_outlier_scatter(
-                            embedding_before, labels_before,
-                            save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
+                            features_before, labels_before,
+                            save_path=fig_dir / f"{ws_name}_feature_outliers.pdf",
                             summary_stats=_outlier_summary,
                         )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
+                # Residuals vs angle plot
+                try:
+                    plot_residuals_vs_angle(
+                        anisotropy, metadata_map,
+                        outlier_indices=outlier_idx,
+                        save_path=fig_dir / f"{ws_name}_residuals_vs_angle.pdf",
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Phase 6 residuals vs angle plot failed: {exc}")
+
         # ---- Physics Clustering (DBSCAN) — pre-Global Fit ----
         if getattr(userCtr, "runPhysicsClustering", False):
-            instrPars = loadInstrParsFileIntoArray(
-                ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
-            )
             L_total = instrPars[:, 4] + instrPars[:, 5]
             theta = instrPars[:, 2]
             features = np.column_stack([L_total, theta])
 
-            # If outliers were removed, exclude them from clustering
             if outlier_mask is not None:
                 features_clean = features[~outlier_mask]
             else:
                 features_clean = features
 
             clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
-            labels = clusterer.fit_predict(features_clean)
-            groups = clusterer.get_cluster_groups(labels)
-            n_noise = int(np.sum(labels == -1))
+            cluster_labels = clusterer.fit_predict(features_clean)
+            groups = clusterer.get_cluster_groups(cluster_labels)
+            n_noise = int(np.sum(cluster_labels == -1))
             n_clusters = len(groups)
+            cluster_labels_full = cluster_labels
 
             print(
                 f"[Phase 6] DBSCAN clustering: {n_clusters} cluster(s) "
@@ -1087,14 +1024,10 @@ def _runPreFitStatistics(
                 n_clusters, n_noise,
             )
 
-            diagnostics["cluster_labels"] = labels
+            diagnostics["cluster_labels"] = cluster_labels
             diagnostics["cluster_groups"] = groups
             diagnostics["n_noise"] = n_noise
 
-            # --- Dynamic overwrite of nGlobalFitGroups ---
-            # This executes *before* the global fit so that
-            # groupDetectors() uses the DBSCAN count instead of the
-            # legacy k-means default.
             if n_clusters > 0:
                 old_n = yFitIC.nGlobalFitGroups
                 yFitIC.nGlobalFitGroups = n_clusters
@@ -1116,11 +1049,52 @@ def _runPreFitStatistics(
             if fig_dir is not None:
                 try:
                     plot_cluster_ltheta(
-                        features_clean, labels,
+                        features_clean, cluster_labels,
                         save_path=fig_dir / f"{ws_name}_cluster_ltheta.pdf",
                     )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 cluster plot failed: {exc}")
+
+        # ---- "Show Your Work" Physical Interpretation Hints ----
+        _n_clusters = diagnostics.get("n_noise", 0)
+        if "cluster_labels" in diagnostics:
+            _n_clusters = len(set(diagnostics["cluster_labels"]) - {-1})
+        _sp_r = diagnostics.get("anisotropy", {}).get("spearman_r", float("nan"))
+        _sp_p = diagnostics.get("anisotropy", {}).get("spearman_p", float("nan"))
+        _n_out = len(diagnostics.get("outlier_indices", []))
+        print(
+            generate_physical_interpretation_hint(
+                _n_clusters, _sp_r, _sp_p, _n_out, n_total,
+            )
+        )
+
+        # ---- Unified Phase 6 Diagnostic Dashboard PDF ----
+        fig_dir = getattr(ic, "figSavePath", None)
+        if fig_dir is not None and getattr(userCtr, "runOutlierDetection", False):
+            try:
+                _aniso = diagnostics.get("anisotropy", {
+                    "theta": theta_deg,
+                    "mean_residual": np.zeros_like(theta_deg),
+                    "std_residual": np.zeros_like(theta_deg),
+                    "spearman_r": float("nan"),
+                    "spearman_p": float("nan"),
+                })
+                _emb = diagnostics.get("outlier_labels", np.zeros(n_total, dtype=np.intp))
+                _features = getattr(detector, "summary_features_", np.zeros((n_total, 4)))
+                plot_phase6_diagnostic_dashboard(
+                    summary_features=_features,
+                    labels=_emb,
+                    fisher_scores=diagnostics.get("fisher_scores"),
+                    fidelity_labels=diagnostics.get("fidelity_labels"),
+                    theta_deg=theta_deg,
+                    anisotropy=_aniso,
+                    roc_data=lda_result if "fisher_scores" in diagnostics else None,
+                    metadata_map=metadata_map,
+                    ws_name=ws_name,
+                    save_path=fig_dir / f"{ws_name}_Phase6_Diagnostic_Summary.pdf",
+                )
+            except Exception as exc:
+                warnings.warn(f"Phase 6 dashboard generation failed: {exc}")
 
     return diagnostics
 
