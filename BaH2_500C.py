@@ -311,6 +311,9 @@ class UserScriptControls:
     removeOutliers: bool = False         # Mask detected outliers from workspace
     runPhysicsClustering: bool = False   # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
 
+    # Iterative (Chauvenet-style) outlier removal passes
+    outlierPasses: int = 1
+
     # UMAP hyperparameters for outlier detection dimensionality reduction.
     # UMAP preserves local topological structure of spectroscopic data
     # (McInnes, Healy & Melville, 2018, arXiv:1802.03426).

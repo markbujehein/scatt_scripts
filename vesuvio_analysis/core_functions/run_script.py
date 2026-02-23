@@ -14,6 +14,43 @@ from mantid.simpleapi import (
     SumSpectra,
 )
 
+
+def build_metadata_map(
+    ic: Any,
+) -> Dict[int, Dict[str, Any]]:
+    """Build a metadata dictionary mapping array indices to physical detector info.
+
+    Uses the instrument parameter file (columns: spec, det, angle, T0, L0, L1)
+    to create a lookup from zero-based array index to physical identifiers.
+
+    Args:
+        ic: Completed initial-conditions object with ``InstrParsPath``,
+            ``firstSpec``, and ``lastSpec``.
+
+    Returns:
+        ``{array_index: {'spec_no': int, 'angle': float, 'detector_id': int}}``
+    """
+    from vesuvio_analysis.core_functions.analysis_functions import (
+        loadInstrParsFileIntoArray,
+    )
+
+    try:
+        instrPars = loadInstrParsFileIntoArray(
+            ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
+        )
+    except Exception as exc:
+        warnings.warn(f"build_metadata_map: failed to load instrument parameters: {exc}")
+        return {}
+
+    metadata: Dict[int, Dict[str, Any]] = {}
+    for i in range(len(instrPars)):
+        metadata[i] = {
+            "spec_no": int(instrPars[i, 0]),
+            "angle": float(instrPars[i, 2]),
+            "detector_id": int(instrPars[i, 1]),
+        }
+    return metadata
+
 from vesuvio_analysis.core_functions.bootstrap import runBootstrap
 from vesuvio_analysis.core_functions.correction_plots import dispatch_correction_plots
 from vesuvio_analysis.core_functions.fit_in_yspace import fitInYSpaceProcedure
@@ -657,29 +694,102 @@ def _runPreFitStatistics(
             f"[Phase 6] Entering pre-fit statistics for workspace: {ws_name}"
         )
 
+        # --- Build MetadataMap: array_index → {spec_no, angle, detector_id} ---
+        metadata_map = build_metadata_map(ic)
+        diagnostics["metadata_map"] = metadata_map
+
         # ---- Outlier Detection (UMAP + EllipticEnvelope) ----
         if getattr(userCtr, "runOutlierDetection", False):
             # UMAP hyperparameters from user config
             n_neighbors = getattr(userCtr, "umapNNeighbors", 15)
             min_dist = getattr(userCtr, "umapMinDist", 0.1)
             n_components = getattr(userCtr, "umapNComponents", 2)
+            n_outlier_passes = max(1, int(getattr(userCtr, "outlierPasses", 1)))
 
-            detector = HardwareOutlierDetector(
-                n_components=n_components,
-                n_neighbors=n_neighbors,
-                min_dist=min_dist,
-                contamination=0.1,
-            )
-            labels = detector.fit_predict(spectra)
-            outlier_idx = np.where(labels == -1)[0]
+            # Accumulate all removed indices across passes for final report
+            all_removed_indices: List[int] = []
+            all_removed_spec_ids: List[int] = []
+            current_spectra = spectra.copy()
+            # Track which of the *original* indices are still active
+            active_indices = np.arange(n_total)
+
+            for pass_no in range(1, n_outlier_passes + 1):
+                if current_spectra.shape[0] < 4:
+                    print(
+                        f"[Phase 6] Pass {pass_no}: Too few spectra "
+                        f"remaining ({current_spectra.shape[0]}) — stopping."
+                    )
+                    break
+
+                detector = HardwareOutlierDetector(
+                    n_components=n_components,
+                    n_neighbors=min(n_neighbors, current_spectra.shape[0] - 1),
+                    min_dist=min_dist,
+                    contamination=0.1,
+                )
+                labels = detector.fit_predict(current_spectra)
+                outlier_local = np.where(labels == -1)[0]
+                n_outliers_pass = len(outlier_local)
+
+                if n_outliers_pass == 0:
+                    print(
+                        f"[Phase 6] Pass {pass_no}: No new outliers detected — "
+                        f"converged after {pass_no} pass(es)."
+                    )
+                    break
+
+                # Map local outlier indices back to original array indices
+                outlier_original = active_indices[outlier_local]
+                # Resolve physical Spectrum IDs via MetadataMap
+                removed_spec_ids_pass = []
+                for oi in outlier_original:
+                    meta = metadata_map.get(int(oi), {})
+                    spec_id = meta.get("spec_no", oi)
+                    angle = meta.get("angle", float("nan"))
+                    removed_spec_ids_pass.append(spec_id)
+                    all_removed_spec_ids.append(spec_id)
+                all_removed_indices.extend(outlier_original.tolist())
+
+                pct_remaining = 100.0 * (n_total - len(all_removed_indices)) / n_total
+                print(
+                    f"[Phase 6] Pass {pass_no}: Removing Spectrum IDs "
+                    f"{removed_spec_ids_pass}  "
+                    f"({n_outliers_pass} outlier(s) this pass, "
+                    f"{len(all_removed_indices)}/{n_total} total removed, "
+                    f"{pct_remaining:.1f}% remaining)"
+                )
+
+                # Log individual outlier details with angle
+                for oi in outlier_original:
+                    meta = metadata_map.get(int(oi), {})
+                    print(
+                        f"          Spec {meta.get('spec_no', '?'):>4}  "
+                        f"θ = {meta.get('angle', float('nan')):6.2f}°  "
+                        f"Det ID = {meta.get('detector_id', '?')}"
+                    )
+
+                if pass_no < n_outlier_passes:
+                    # Remove outliers from active set and re-run UMAP
+                    keep_mask = np.ones(len(active_indices), dtype=bool)
+                    keep_mask[outlier_local] = False
+                    active_indices = active_indices[keep_mask]
+                    current_spectra = current_spectra[keep_mask]
+
+            # Final summary
+            outlier_idx = np.array(sorted(set(all_removed_indices)), dtype=np.intp)
             n_outliers = len(outlier_idx)
             pct_remaining = 100.0 * (n_total - n_outliers) / n_total
-
             print(
-                f"[Phase 6] Outlier detection (UMAP): {n_outliers}/{n_total} "
-                f"outlier(s) at indices {outlier_idx.tolist()}  "
-                f"({pct_remaining:.1f}% of detector bank remaining)"
+                f"[Phase 6] Total Spectra Removed: {n_outliers}/{n_total} "
+                f"({100.0 - pct_remaining:.1f}%)  "
+                f"Original Population: {n_total}"
             )
+            if all_removed_spec_ids:
+                print(
+                    f"[Phase 6] Removed Spectrum IDs: {sorted(set(all_removed_spec_ids))}"
+                )
+
+            diagnostics["outlier_passes"] = min(pass_no, n_outlier_passes)
 
             # generate masking summary plot (spectrum index vs counts)
             fig_dir = getattr(ic, "figSavePath", None)
@@ -699,9 +809,12 @@ def _runPreFitStatistics(
                 except Exception as exc:  # pragma: no cover
                     warnings.warn(f"Masking summary plot failed: {exc}")
             logger.info(
-                "Phase 6 outlier detection: %d/%d outliers at %s (%.1f%% remaining)",
-                n_outliers, n_total, outlier_idx.tolist(), pct_remaining,
+                "Phase 6 outlier detection: %d/%d outliers at Spec IDs %s (%.1f%% remaining)",
+                n_outliers, n_total, sorted(set(all_removed_spec_ids)), pct_remaining,
             )
+            # Reconstruct labels array for the full original array
+            labels = np.zeros(n_total, dtype=np.intp)
+            labels[outlier_idx] = -1
 
             diagnostics["outlier_indices"] = outlier_idx
             diagnostics["outlier_labels"] = labels
@@ -846,6 +959,12 @@ def _runPreFitStatistics(
                 # directly to workspace indices 0 … n_total-1.
                 ws_indices_to_mask = outlier_idx.tolist()
 
+                # Resolve physical IDs for the masked spectra
+                masked_spec_ids = [
+                    metadata_map.get(int(i), {}).get("spec_no", i)
+                    for i in outlier_idx
+                ]
+
                 if ws_name in mtd:
                     MaskDetectors(
                         Workspace=ws_name,
@@ -854,11 +973,11 @@ def _runPreFitStatistics(
                     print(
                         f"[Phase 6] Masked {n_outliers} outlier spectra "
                         f"in workspace '{ws_name}' — "
-                        f"WorkspaceIndexList: {ws_indices_to_mask}"
+                        f"Spectrum IDs: {masked_spec_ids}"
                     )
                     logger.info(
-                        "Phase 6 masked %d spectra in '%s': %s",
-                        n_outliers, ws_name, ws_indices_to_mask,
+                        "Phase 6 masked %d spectra in '%s': Spec IDs %s",
+                        n_outliers, ws_name, masked_spec_ids,
                     )
 
                     # --- Pass 2: Re-extract clean NCP from masked ws ---
@@ -905,6 +1024,13 @@ def _runPreFitStatistics(
                 labels_after = labels_before
 
             fig_dir = getattr(ic, "figSavePath", None)
+            # Build summary stats dict for plot annotations
+            _outlier_summary = {
+                "n_total": n_total,
+                "n_outliers": n_outliers,
+                "n_neighbors": n_neighbors,
+                "min_dist": min_dist,
+            }
             if fig_dir is not None:
                 try:
                     # Before/after side-by-side subplot
@@ -926,6 +1052,7 @@ def _runPreFitStatistics(
                         plot_outlier_scatter(
                             embedding_before, labels_before,
                             save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
+                            summary_stats=_outlier_summary,
                         )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")

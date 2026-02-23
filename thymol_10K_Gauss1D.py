@@ -373,10 +373,15 @@ class UserScriptControls:
     removeOutliers: bool = True         # Mask detected outliers from workspace
     runPhysicsClustering: bool = True    # DBSCAN physics-trend clustering → dynamic nGlobalFitGroups
 
+    # Iterative (Chauvenet-style) outlier removal: number of sequential
+    # UMAP + EllipticEnvelope passes.  Each pass removes newly identified
+    # outliers before re-embedding.  Default: 1 (single pass).
+    outlierPasses: int = 1
+
     # UMAP hyperparameters for outlier detection dimensionality reduction.
     # UMAP preserves local topological structure of spectroscopic data
     # (McInnes, Healy & Melville, 2018, arXiv:1802.03426).
-    umapNNeighbors: int = 15    # Neighbourhood size — balances local vs global structure
+    umapNNeighbors: int = 25    # Neighbourhood size — balances local vs global structure
     umapMinDist: float = 0.1    # Minimum embedding distance — controls cluster compactness
     umapNComponents: int = 2    # Embedding dimensionality
 
@@ -384,9 +389,9 @@ class UserScriptControls:
     verbose: bool = True
 
     # Choose main procedure to run
-    procedure = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    procedure = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
-    fitInYSpace = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    fitInYSpace = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
 
 
 class BootstrapInitialConditions:

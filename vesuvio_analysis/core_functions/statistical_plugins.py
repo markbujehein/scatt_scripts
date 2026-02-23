@@ -577,12 +577,17 @@ def plot_outlier_scatter(
     embedding_coords: NDArray[np.floating],
     labels: NDArray[np.intp],
     save_path: Optional[Path] = None,
+    summary_stats: Optional[Dict[str, Any]] = None,
 ) -> plt.Figure:
     """Scatter plot in UMAP embedding space highlighting outlier detectors.
 
     Renders the first two UMAP embedding dimensions.  Inlier detectors
     are drawn in the first colour of the COLORBLIND_PALETTE; outliers
     (``label == -1``) are drawn in red.
+
+    When *summary_stats* is provided, a metadata table is rendered on
+    the figure showing Total Detectors, Outliers Removed, DBSCAN
+    Clusters, and UMAP parameters for transparent traceability.
 
     Args:
         embedding_coords: 2-D array of UMAP projections, shape
@@ -593,6 +598,9 @@ def plot_outlier_scatter(
             ``(n_spectra,)``.  ``-1`` = outlier, ``0`` = inlier.
         save_path: Optional file path.  When provided the figure is
             saved and closed; otherwise it is returned open.
+        summary_stats: Optional dict with keys ``n_total``,
+            ``n_outliers``, ``n_neighbors``, ``min_dist``, and
+            optionally ``n_clusters``.
 
     Returns:
         The Matplotlib :class:`~matplotlib.figure.Figure`.
@@ -616,6 +624,30 @@ def plot_outlier_scatter(
     ax.set_ylabel("UMAP 2")
     ax.set_title("Hardware Outlier Detection — UMAP Embedding")
     ax.legend()
+
+    # --- Summary metadata table ---
+    if summary_stats is not None:
+        n_total = summary_stats.get("n_total", len(labels))
+        n_outliers = summary_stats.get("n_outliers", int(outlier_mask.sum()))
+        pct = 100.0 * n_outliers / max(n_total, 1)
+        n_neighbors = summary_stats.get("n_neighbors", "?")
+        min_dist = summary_stats.get("min_dist", "?")
+        n_clusters = summary_stats.get("n_clusters", "—")
+        table_text = (
+            f"Total Detectors: {n_total}\n"
+            f"Outliers Removed: {n_outliers} ({pct:.1f}%)\n"
+            f"DBSCAN Clusters: {n_clusters}\n"
+            f"UMAP: n_neighbors={n_neighbors}, min_dist={min_dist}"
+        )
+        ax.text(
+            0.02, 0.02, table_text,
+            transform=ax.transAxes,
+            fontsize=7,
+            verticalalignment="bottom",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="wheat", alpha=0.7),
+        )
+
     plt.tight_layout()
 
     if save_path is not None:

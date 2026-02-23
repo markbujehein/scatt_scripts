@@ -115,17 +115,41 @@ def _print_per_parameter_divergence_summary() -> None:
 
 
 def _plot_optimizer_comparison(ic: Any) -> None:
-    """Plot iMinuit vs scipy chi-squared and parameter differences.
+    """Plot iMinuit vs scipy chi-squared and per-spectrum parameter tables.
 
     Creates a diagnostic figure showing:
-    1. Chi-squared comparison across spectra
-    2. Parameter-wise relative differences for worst-case spectra
+    1. Chi-squared comparison across spectra (titled with Spectrum Number)
+    2. Relative chi-squared difference with agreement threshold
+    3. Per-spectrum comparison PDF with parameter table and top-offender
+       highlighting for the worst-case spectra.
+
+    Titles include the physical Spectrum Number and scattering angle
+    resolved from the instrument parameter file.
 
     Args:
-        ic: Initial-conditions object with figSavePath.
+        ic: Initial-conditions object with figSavePath, InstrParsPath,
+            firstSpec, lastSpec.
     """
     if not _fit_comparison_log or ic.runningSampleWS:
         return
+
+    # Load instrument parameters for angle lookup
+    _instr_pars = None
+    try:
+        _instr_pars = loadInstrParsFileIntoArray(
+            ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
+        )
+    except Exception:
+        pass
+
+    def _lookup_angle(spec_no: float) -> float:
+        """Return scattering angle for a given spectrum number."""
+        if _instr_pars is None:
+            return float("nan")
+        row = np.where(np.isclose(_instr_pars[:, 0], spec_no))[0]
+        if len(row) == 1:
+            return float(_instr_pars[row[0], 2])
+        return float("nan")
 
     set_thesis_style()
     fig, axes = plt.subplots(2, 1, figsize=(10, 8))
@@ -152,7 +176,7 @@ def _plot_optimizer_comparison(ic: Any) -> None:
     ]
     colors = ['red' if d > _AGREEMENT_THRESHOLD else 'green' for d in chi2_rel_diffs]
     ax.bar(range(len(chi2_rel_diffs)), [d*100 for d in chi2_rel_diffs], color=colors, alpha=0.7)
-    ax.axhline(_AGREEMENT_THRESHOLD * 100, color='black', linestyle='--', label='2.5% Threshold')
+    ax.axhline(_AGREEMENT_THRESHOLD * 100, color='black', linestyle='--', label=f'{_AGREEMENT_THRESHOLD*100:.1f}% Threshold')
     ax.set_xlabel('Spectrum Index')
     ax.set_ylabel('Relative Difference (%)')
     ax.set_title('Chi-squared Relative Difference (SciPy vs iMinuit)')
@@ -170,6 +194,75 @@ def _plot_optimizer_comparison(ic: Any) -> None:
         logger.warning(f"Failed to save optimizer comparison plot: {e}")
     
     plt.close(fig)
+
+    # --- Per-spectrum comparison plots with parameter table ---
+    # Generate individual comparison PDFs for the worst-offending spectra
+    # (those exceeding the agreement threshold).
+    offenders = [
+        d for d in _fit_comparison_log
+        if d.get("max_par_diff", 0) > _AGREEMENT_THRESHOLD
+    ]
+    # Limit to worst 10 to avoid file proliferation
+    offenders = sorted(offenders, key=lambda d: d.get("max_par_diff", 0), reverse=True)[:10]
+
+    for entry in offenders:
+        spec_no = int(entry["specNo"])
+        angle = _lookup_angle(float(spec_no))
+        par_names = entry.get("par_names", [])
+        scipy_pars = entry.get("scipy_pars", np.array([]))
+        iminuit_pars = entry.get("iminuit_pars", np.array([]))
+        par_rel_diff = entry.get("par_rel_diff", np.array([]))
+
+        n_pars = min(len(par_names), len(scipy_pars), len(iminuit_pars))
+        if n_pars == 0:
+            continue
+
+        fig_spec, ax_spec = plt.subplots(figsize=(8, 3 + 0.4 * n_pars))
+        ax_spec.axis("off")
+        ax_spec.set_title(
+            f"Fit Comparison — Spec {spec_no}  (θ = {angle:.2f}°)",
+            fontsize=11, fontweight="bold",
+        )
+
+        # Build table data
+        col_labels = ["Parameter", "iMinuit", "SciPy", "% Diff"]
+        cell_text = []
+        cell_colors = []
+        top_offender_idx = int(np.argmax(par_rel_diff[:n_pars])) if n_pars > 0 else -1
+        for k in range(n_pars):
+            pname = par_names[k] if k < len(par_names) else f"p{k}"
+            pct = par_rel_diff[k] * 100 if k < len(par_rel_diff) else 0.0
+            cell_text.append([
+                pname,
+                f"{iminuit_pars[k]:.6g}",
+                f"{scipy_pars[k]:.6g}",
+                f"{pct:.2f}%",
+            ])
+            if k == top_offender_idx and par_rel_diff[k] > _AGREEMENT_THRESHOLD:
+                cell_colors.append(["#FFCCCC"] * 4)  # Red highlight
+            else:
+                cell_colors.append(["white"] * 4)
+
+        table = ax_spec.table(
+            cellText=cell_text,
+            colLabels=col_labels,
+            cellColours=cell_colors,
+            colColours=["#E0E0E0"] * 4,
+            loc="center",
+            cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.0, 1.4)
+
+        plt.tight_layout()
+        try:
+            spec_fileName = f"{ic.name}Fit_Comparison_Spec_{spec_no}.pdf"
+            spec_savePath = ic.figSavePath / spec_fileName
+            fig_spec.savefig(spec_savePath, bbox_inches="tight", pad_inches=0.1)
+        except Exception as e:
+            logger.warning(f"Failed to save per-spectrum comparison for spec {spec_no}: {e}")
+        plt.close(fig_spec)
 
 
 def iterativeFitForDataReduction(
@@ -1062,6 +1155,9 @@ def createWS(
 def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: Any) -> None:
     """Save a PDF plot comparing the summed data to the fitted NCP profiles.
 
+    Includes an annotation text box with final chi²/ndof and any masked
+    Spectrum IDs for transparent traceability.
+
     Skipped when running a bootstrap sample (``IC.runningSampleWS`` is
     ``True``).
 
@@ -1088,6 +1184,48 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
     ax.set_ylabel("Counts")
     ax.set_title("Sum of NCP fits")
     ax.legend()
+
+    # --- Annotation: chi²/ndof and masked Spectrum IDs ---
+    annot_lines = []
+    # Compute chi²/ndof from summed workspace data
+    try:
+        sum_y = wsDataSum.extractY()[0]
+        fit_y = wsTotNCPSum.extractY()[0]
+        sum_e = wsDataSum.extractE()[0]
+        valid = (sum_y != 0) & (sum_e != 0)
+        if np.any(valid):
+            chi2 = float(np.sum(((sum_y[valid] - fit_y[valid]) / sum_e[valid]) ** 2))
+            ndof = max(int(np.sum(valid)) - 3 * len(IC.masses), 1)
+            annot_lines.append(f"$\\chi^2/\\mathrm{{ndof}}$ = {chi2:.1f}/{ndof} = {chi2/ndof:.2f}")
+    except Exception:
+        pass
+    # Retrieve masked Spectrum IDs from the workspace
+    try:
+        ws_name = wsDataSum.name().replace("_Sum", "")
+        if ws_name in mtd:
+            _ws = mtd[ws_name]
+            masked_ids = []
+            for i in range(_ws.getNumberHistograms()):
+                try:
+                    if _ws.getDetector(i).isMasked():
+                        masked_ids.append(int(_ws.getSpectrum(i).getSpectrumNo()))
+                except Exception:
+                    pass
+            if masked_ids:
+                annot_lines.append(f"Masked Spec IDs: {masked_ids}")
+    except Exception:
+        pass
+    if annot_lines:
+        annot_text = "\n".join(annot_lines)
+        ax.text(
+            0.98, 0.02, annot_text,
+            transform=ax.transAxes,
+            fontsize=7,
+            verticalalignment="bottom",
+            horizontalalignment="right",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.8),
+        )
 
     fileName = wsDataSum.name()+"_NCP_Fits.pdf"
     savePath = IC.figSavePath / fileName
