@@ -642,6 +642,7 @@ def _runPreFitStatistics(
         apply_detector_intensity_calibration,
         build_detector_feature_matrix,
         build_fidelity_labels,
+        centroid_distance_scores,
         compute_anisotropy_residuals,
         detector_quality_weights,
         detector_relative_difference_metrics,
@@ -891,6 +892,20 @@ def _runPreFitStatistics(
                 if lda_result is not None:
                     fisher_scores = np.array(lda_result["scores"], dtype=float)
                     diagnostics["fisher_scores"] = fisher_scores
+                else:
+                    # No Poor-Fidelity class (e.g. Forward bank, all Hi-Fidelity).
+                    # Fall back to centroid-distance proxy so the dashboard
+                    # receives a meaningful per-detector score instead of N/A.
+                    fisher_scores = centroid_distance_scores(
+                        detector.summary_features_,
+                    )
+                    diagnostics["fisher_scores"] = fisher_scores
+                    logger.info(
+                        "[Phase 6] Fisher/LDA unavailable for %s "
+                        "(no Poor-Fidelity class) — centroid-distance proxy "
+                        "scores computed, n=%d.",
+                        ws_name, len(fisher_scores),
+                    )
 
                     if fig_dir is not None:
                         try:
@@ -961,11 +976,16 @@ def _runPreFitStatistics(
                     "n_outliers": n_outliers,
                 }
                 try:
-                    # Annotated feature-space scatter with Spectrum IDs and cluster angles
+                    # Annotated feature-space scatter with Spectrum IDs, cluster angles,
+                    # and Spearman ρ as a Physics Metric inset.
+                    _sp_r_val = anisotropy.get("spearman_r", float("nan")) if isinstance(anisotropy, dict) else float("nan")
+                    _sp_p_val = anisotropy.get("spearman_p", float("nan")) if isinstance(anisotropy, dict) else float("nan")
                     plot_feature_annotated(
                         features_before, labels_before,
                         metadata_map,
                         cluster_labels=cluster_labels_full,
+                        spearman_r=float(_sp_r_val),
+                        spearman_p=float(_sp_p_val),
                         save_path=fig_dir / f"{ws_name}_diagnostic_features.pdf",
                     )
                 except Exception as exc:
@@ -1008,7 +1028,13 @@ def _runPreFitStatistics(
             else:
                 features_clean = features
 
-            clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=3)
+            _n_det_clust = len(features_clean)
+            _min_samp = max(3, int(0.05 * _n_det_clust))
+            logger.info(
+                "[Phase 6] DBSCAN bank-aware min_samples=%d (n_det=%d, 5%% rule)",
+                _min_samp, _n_det_clust,
+            )
+            clusterer = PhysicsTrendClusterer(eps=0.5, min_samples=_min_samp)
             cluster_labels = clusterer.fit_predict(features_clean)
             groups = clusterer.get_cluster_groups(cluster_labels)
             n_noise = int(np.sum(cluster_labels == -1))
@@ -1084,17 +1110,27 @@ def _runPreFitStatistics(
                 plot_phase6_diagnostic_dashboard(
                     summary_features=_features,
                     labels=_emb,
-                    fisher_scores=diagnostics.get("fisher_scores"),
-                    fidelity_labels=diagnostics.get("fidelity_labels"),
+                    fisher_scores=fisher_scores,
+                    fidelity_labels=fidelity_labels,
                     theta_deg=theta_deg,
                     anisotropy=_aniso,
-                    roc_data=lda_result if "fisher_scores" in diagnostics else None,
+                    roc_data=lda_result,
                     metadata_map=metadata_map,
                     ws_name=ws_name,
                     save_path=fig_dir / f"{ws_name}_Phase6_Diagnostic_Summary.pdf",
                 )
             except Exception as exc:
                 warnings.warn(f"Phase 6 dashboard generation failed: {exc}")
+                logger.error(
+                    "[Phase 6] Dashboard shape debug — "
+                    "summary_features: %s, labels: %s, "
+                    "fisher_scores: %s, fidelity_labels: %s, theta_deg: %s",
+                    getattr(_features, "shape", type(_features)),
+                    getattr(_emb, "shape", type(_emb)),
+                    getattr(fisher_scores, "shape", None),
+                    getattr(fidelity_labels, "shape", None),
+                    getattr(theta_deg, "shape", type(theta_deg)),
+                )
 
     return diagnostics
 

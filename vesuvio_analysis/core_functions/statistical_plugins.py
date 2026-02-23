@@ -455,18 +455,25 @@ def plot_feature_annotated(
     labels: NDArray[np.intp],
     metadata_map: Dict[int, Dict[str, Any]],
     cluster_labels: Optional[NDArray[np.intp]] = None,
+    spearman_r: Optional[float] = None,
+    spearman_p: Optional[float] = None,
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """Feature-space scatter with cluster angle annotations and anomaly labels.
 
     Clusters are annotated with their average scattering angle.
-    Isolated anomaly detectors are labeled with their Spectrum ID.
+    Isolated anomaly detectors are labeled with their Spectrum ID.  When
+    Spearman ρ is provided it is displayed as a *Physics Metric* inset box.
 
     Args:
         summary_features: Summary features, shape ``(n_det, >=2)``.
         labels: Outlier labels (``-1`` = outlier, ``0`` = inlier).
         metadata_map: Physical detector metadata per array index.
         cluster_labels: Optional DBSCAN cluster labels for annotation.
+        spearman_r: Spearman rank correlation between residuals and angle
+            (from ``compute_anisotropy_residuals``).  Displayed as a
+            Physics Metric inset when finite.
+        spearman_p: Two-sided p-value for the Spearman correlation.
         save_path: File path for the output PDF.
 
     Returns:
@@ -521,6 +528,18 @@ def plot_feature_annotated(
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow",
                           alpha=0.8, edgecolor="#999999"),
             )
+
+    # Physics Metric inset — Spearman ρ between NCP residuals and angle
+    if spearman_r is not None and np.isfinite(float(spearman_r)):
+        _p_str = f"p = {float(spearman_p):.2e}" if (spearman_p is not None and np.isfinite(float(spearman_p))) else ""
+        ax.text(
+            0.98, 0.02,
+            f"Physics Metric\nSpearman ρ = {float(spearman_r):.3f}" + (f"\n{_p_str}" if _p_str else ""),
+            transform=ax.transAxes, fontsize=7, ha="right", va="bottom",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
+                      alpha=0.85, edgecolor="#AAAAAA"),
+        )
 
     ax.set_xlabel("Total Counts")
     ax.set_ylabel("RMS")
@@ -1151,6 +1170,32 @@ def fisher_lda_with_roc(
         "thresholds": thr,
         "auc": roc_auc,
     }
+
+
+def centroid_distance_scores(
+    summary_features: NDArray[np.floating],
+) -> NDArray[np.floating]:
+    """Standardised Euclidean distance from the bank centroid.
+
+    Fallback Fisher-proxy used when ``fisher_lda_with_roc`` returns ``None``
+    because all detectors achieve hi-fidelity convergence (no Poor-Fidelity
+    class — typically the Forward bank in well-resolved samples).
+
+    Larger values indicate detectors that deviate more from the typical bank
+    behaviour, analogous to a Mahalanobis distance proxy in whitened space.
+
+    Args:
+        summary_features: Shape ``(n_det, n_features)`` summary feature matrix.
+
+    Returns:
+        1-D array of shape ``(n_det,)`` with per-detector standardised
+        distances.  Suitable as a drop-in replacement for ``fisher_scores``
+        in the diagnostic dashboard.
+    """
+    mean = np.nanmean(summary_features, axis=0)
+    std = np.nanstd(summary_features, axis=0) + 1e-12
+    dist = np.sqrt(np.nansum(((summary_features - mean) / std) ** 2, axis=1))
+    return dist.astype(np.float64)
 
 
 def detector_quality_weights(
