@@ -1867,17 +1867,27 @@ def runGlobalFit(
 
     print("\nRunning GLobal Fit ...\n")
 
-    dataX, dataY, dataE, dataRes, instrPars = extractData(wsYSpace, wsRes, IC)   
-    dataX, dataY, dataE, dataRes, instrPars = takeOutMaskedSpectra(dataX, dataY, dataE, dataRes, instrPars)
+    detector_weights = getattr(yFitIC, "detectorQualityWeights", None)
+
+    dataX, dataY, dataE, dataRes, instrPars = extractData(wsYSpace, wsRes, IC)
+    dataX, dataY, dataE, dataRes, instrPars, detector_weights = takeOutMaskedSpectra(
+        dataX, dataY, dataE, dataRes, instrPars, detector_weights,
+    )
 
     idxList = groupDetectors(instrPars, yFitIC)
-    dataX, dataY, dataE, dataRes = avgWeightDetGroups(dataX, dataY, dataE, dataRes, idxList, yFitIC)
+    dataX, dataY, dataE, dataRes, group_weights = avgWeightDetGroups(
+        dataX, dataY, dataE, dataRes, idxList, yFitIC, detector_weights,
+    )
 
     if yFitIC.symmetrisationFlag:  
         dataY, dataE = weightedSymArr(dataY, dataE)
 
     model, defaultPars, sharedPars = selectModelAndPars(yFitIC.fitModel)   
     
+    # Quality-weighted averaging in avgGroupsOverCols already incorporates
+    # per-detector weights into the group's combined error (σ_group).
+    # Passing g_w again to calcCostFun would divide σ_group by sqrt(g_w) a
+    # second time, squaring the weight's influence (w → w²). Drop it here.
     totCost = 0
     for i, (x, y, yerr, res) in enumerate(zip(dataX, dataY, dataE, dataRes)):
         totCost += calcCostFun(model, i, x, y, yerr, res, sharedPars)
@@ -2000,7 +2010,8 @@ def takeOutMaskedSpectra(
     dataE: np.ndarray,
     dataRes: np.ndarray,
     instrPars: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    detector_weights: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """Remove fully masked (all-zero) spectra from all arrays.
 
     Args:
@@ -2011,7 +2022,9 @@ def takeOutMaskedSpectra(
         instrPars: Instrument parameters, shape ``(n_spectra, 6)``.
 
     Returns:
-        The five input arrays with masked rows removed.
+        The input arrays with masked rows removed.  If detector
+        weights are provided, the filtered weights are returned as the
+        sixth output.
     """
     zerosRowMask = np.all(dataY==0, axis=1)
     dataY = dataY[~zerosRowMask]
@@ -2019,7 +2032,9 @@ def takeOutMaskedSpectra(
     dataX = dataX[~zerosRowMask]
     dataRes = dataRes[~zerosRowMask]
     instrPars = instrPars[~zerosRowMask]
-    return dataX, dataY, dataE, dataRes, instrPars 
+    if detector_weights is not None:
+        detector_weights = np.asarray(detector_weights)[~zerosRowMask]
+    return dataX, dataY, dataE, dataRes, instrPars, detector_weights
 
 # ------- Groupings 
 
@@ -2276,7 +2291,8 @@ def avgWeightDetGroups(
     dataRes: np.ndarray,
     idxList: List[List[int]],
     yFitIC: Any,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    detector_weights: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Weighted average of data within each detector group.
 
     Dispatches to ``avgGroupsWithBins`` (NAN masking) or
@@ -2291,16 +2307,19 @@ def avgWeightDetGroups(
         yFitIC: Y-space fit configuration with ``maskTypeProcedure``.
 
     Returns:
-        A 4-tuple ``(wDataX, wDataY, wDataE, wDataRes)`` of
-        group-averaged arrays, shape ``(n_groups, n_bins)``.
+        A 5-tuple ``(wDataX, wDataY, wDataE, wDataRes, groupWeights)``.
     """
     assert ~np.any(np.all(dataY==0, axis=1)), f"Input data should not include masked spectra at: {np.argwhere(np.all(dataY==0, axis=1))}"
 
+    if detector_weights is None:
+        detector_weights = np.ones(dataY.shape[0], dtype=float)
+    detector_weights = np.asarray(detector_weights, dtype=float)
+
     if (yFitIC.maskTypeProcedure=="NAN"): 
-        return avgGroupsWithBins(dataX, dataY, dataE, dataRes, idxList, yFitIC)
+        return avgGroupsWithBins(dataX, dataY, dataE, dataRes, idxList, yFitIC, detector_weights)
     
     # Use Default for unmasked or NCP masked
-    return avgGroupsOverCols(dataX, dataY, dataE, dataRes, idxList)
+    return avgGroupsOverCols(dataX, dataY, dataE, dataRes, idxList, detector_weights)
 
 
 def avgGroupsOverCols(
@@ -2309,7 +2328,8 @@ def avgGroupsOverCols(
     dataE: np.ndarray,
     dataRes: np.ndarray,
     idxList: List[List[int]],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    detector_weights: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Weighted average per group when data is already rebinned.
 
     Args:
@@ -2320,21 +2340,26 @@ def avgGroupsOverCols(
         idxList: Detector groupings.
 
     Returns:
-        Group-averaged arrays, shape ``(n_groups, n_bins)``.
+        Group-averaged arrays and one quality weight per group.
     """
 
     wDataX, wDataY, wDataE, wDataRes = initiateZeroArr((len(idxList), len(dataY[0])))
+    groupWeights = np.ones(len(idxList), dtype=float)
 
     for i, idxs in enumerate(idxList):
         groupX, groupY, groupE, groupRes = extractArrByIdx(dataX, dataY, dataE, dataRes, idxs)
+        gWeights = detector_weights[idxs]
         assert len(groupY) > 0, "Group with zero detectors found, invalid."
+        groupWeights[i] = float(np.clip(np.nanmean(gWeights), 1e-4, 1.0))
+
+        groupEAdj = groupE / np.sqrt(np.clip(gWeights[:, np.newaxis], 1e-6, 1.0))
 
         if len(groupY) == 1:   # Cannot use weight avg in single spec, wrong results
-            meanY, meanE = groupY, groupE
+            meanY, meanE = groupY, groupEAdj
             meanRes = groupRes
 
         else:
-            meanY, meanE = weightedAvgArr(groupY, groupE)
+            meanY, meanE = weightedAvgArr(groupY, groupEAdj)
             meanRes = np.nanmean(groupRes, axis=0)   # Nans are not present but safeguard
 
         assert np.all(groupX[0] == np.mean(groupX, axis=0)), "X values should not change with groups"
@@ -2343,7 +2368,7 @@ def avgGroupsOverCols(
             wsData[i] = mean
     
     assert ~np.any(np.all(wDataY==0, axis=1)), f"Some avg weights in groups are not being performed:\n{np.argwhere(np.all(wDataY==0, axis=1))}"
-    return wDataX, wDataY, wDataE, wDataRes
+    return wDataX, wDataY, wDataE, wDataRes, groupWeights
 
 
 def avgGroupsWithBins(
@@ -2353,7 +2378,8 @@ def avgGroupsWithBins(
     dataRes: np.ndarray,
     idxList: List[List[int]],
     yFitIC: Any,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    detector_weights: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Weighted average per group when NAN bin-masking is active.
 
     Uses ``weightedAvgXBinsArr`` to handle multiple dataY per bin
@@ -2368,24 +2394,29 @@ def avgGroupsWithBins(
         yFitIC: Y-space fit configuration.
 
     Returns:
-        Group-averaged arrays, shape ``(n_groups, n_bins)``.
+        Group-averaged arrays and one quality weight per group.
     """
 
     # Build range to average over
     meanX = buildXRangeFromRebinPars(yFitIC)  
 
     wDataX, wDataY, wDataE, wDataRes = initiateZeroArr((len(idxList), len(meanX)))
+    groupWeights = np.ones(len(idxList), dtype=float)
     for i, idxs in enumerate(idxList):
         groupX, groupY, groupE, groupRes = extractArrByIdx(dataX, dataY, dataE, dataRes, idxs)
+        gWeights = detector_weights[idxs]
+        groupWeights[i] = float(np.clip(np.nanmean(gWeights), 1e-4, 1.0))
 
-        meanY, meanE = weightedAvgXBinsArr(groupX, groupY, groupE, meanX)
+        groupEAdj = groupE / np.sqrt(np.clip(gWeights[:, np.newaxis], 1e-6, 1.0))
+
+        meanY, meanE = weightedAvgXBinsArr(groupX, groupY, groupEAdj, meanX)
         
         meanRes = np.nanmean(groupRes, axis=0)   # Nans are not present but safeguard
         
         for wsData, mean in zip([wDataX, wDataY, wDataE, wDataRes], [meanX, meanY, meanE, meanRes]):
             wsData[i] = mean
     
-    return wDataX, wDataY, wDataE, wDataRes
+    return wDataX, wDataY, wDataE, wDataRes, groupWeights
 
 
 def initiateZeroArr(
@@ -2440,6 +2471,7 @@ def calcCostFun(
     yerr: np.ndarray,
     res: np.ndarray,
     sharedPars: List[str],
+    detector_weight: float = 1.0,
 ) -> "GlobalNCPCostFunction":
     """Build a ``GlobalNCPCostFunction`` for one detector group.
 
@@ -2475,6 +2507,7 @@ def calcCostFun(
     xNZ = x[nonZeros]
     yNZ = y[nonZeros]
     yerrNZ = yerr[nonZeros]
+    yerrNZ = yerrNZ / np.sqrt(np.clip(detector_weight, 1e-6, 1.0))
 
     costFun = GlobalNCPCostFunction(xNZ, yNZ, yerrNZ, convolvedModel, costSig)
     return costFun

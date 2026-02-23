@@ -363,7 +363,7 @@ class UserScriptControls:
             (errors and warnings are always shown).
     """
 
-    runRoutine = True
+    runRoutine = False
 
     # Fast-track flag: when True, truncates expensive operations for smoke testing
     runningTest: bool = False
@@ -384,9 +384,9 @@ class UserScriptControls:
     verbose: bool = True
 
     # Choose main procedure to run
-    procedure = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    procedure = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
     # Choose on which ws to perform the fit in y space
-    fitInYSpace = "JOINT"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
+    fitInYSpace = "FORWARD"  # Options: None, "BACKWARD", "FORWARD", "JOINT"
 
 
 class BootstrapInitialConditions:
@@ -416,10 +416,10 @@ class BootstrapInitialConditions:
             bootstrap procedure can be exercised inside unit tests.
     """
 
-    runBootstrap = False
+    runBootstrap = True
 
-    procedure = "JOINT"
-    fitInYSpace = "JOINT"
+    procedure = "FORWARD"
+    fitInYSpace = "FORWARD"
 
     bootstrapType: str = "BOOT_BAYESIAN"    # Options: "JACKKNIFE", "BOOT_RESIDUALS", "BOOT_GAUSS_ERRS", "BOOT_BAYESIAN"
     nSamples = 100  # Used if running Bootstrap, otherwise code ignores it. 500-1000 is a reasonable number for production runs

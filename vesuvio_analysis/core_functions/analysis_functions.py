@@ -550,6 +550,7 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     _print_optimizer_agreement_summary()
     _plot_optimizer_comparison(IC)
     createTableWSForFitPars(ws.name(), IC.noOfMasses, arrFitPars)
+    createTableWSForOptimizerDiagnostics(ws.name())
     arrBestFitPars = arrFitPars[:, 1:-2]
     ncpForEachMass, ncpTotal = calculateNcpArr(IC, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
     ncpSumWSs = createNcpWorkspaces(ncpForEachMass, ncpTotal, ws, IC)
@@ -868,6 +869,27 @@ def createTableWSForFitPars(
     for row in arrFitPars:    # Pass array onto table ws
         tableWS.addRow(row)
     return 
+
+
+def createTableWSForOptimizerDiagnostics(wsName: str) -> None:
+    """Create a per-spectrum optimizer diagnostics TableWorkspace."""
+    if not _fit_comparison_log:
+        return
+
+    tableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsName + "_Optimizer_Diagnostics")
+    tableWS.addColumn(type='float', name="Spec Idx")
+    tableWS.addColumn(type='float', name="Chi2 Rel Diff")
+    tableWS.addColumn(type='float', name="Max Par Rel Diff")
+    tableWS.addColumn(type='float', name="Migrad Valid")
+
+    for row in _fit_comparison_log:
+        tableWS.addRow([
+            float(row.get("specNo", np.nan)),
+            float(row.get("chi2_rel_diff", np.nan)),
+            float(row.get("max_par_diff", np.nan)),
+            1.0 if bool(row.get("migrad_valid", False)) else 0.0,
+        ])
+    return
 
 
 def calculateNcpArr(
@@ -1407,6 +1429,7 @@ def fitNcpToSingleSpec(
     ]
 
     # --- iMinuit MIGRAD + Hesse fit (parallel cross-validation) ---
+    migrad_valid = False
     try:
         cost_fn = NCPCostFunction(
             dataY, dataE, ySpacesForEachMass,
@@ -1441,6 +1464,7 @@ def fitNcpToSingleSpec(
         m.hesse()
 
         # --- Migrad convergence and bound-hit diagnostics ---
+        migrad_valid = bool(m.valid)
         if not m.valid:
             logger.warning(
                 "OptimizerCheck Spec %.0f: MIGRAD did NOT converge "
@@ -1546,6 +1570,9 @@ def fitNcpToSingleSpec(
             'iminuit_pars': iminuit_pars.copy(),
             'par_names': par_names,
             'par_rel_diff': par_rel_diff.copy(),
+            'chi2_rel_diff': chi2_rel_diff,
+            'max_par_diff': max_par_diff,
+            'migrad_valid': migrad_valid,
         })
     except Exception:
         logger.debug(

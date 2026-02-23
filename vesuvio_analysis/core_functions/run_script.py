@@ -3,6 +3,7 @@ import logging
 import time
 import warnings
 
+import matplotlib.pyplot as plt
 import numpy as np
 from mantid.api import mtd
 from mantid.simpleapi import (
@@ -260,6 +261,8 @@ def runScript(
                 # temporarily align fitInYSpace for diagnostics/logging
                 prev_fit = userCtr.fitInYSpace
                 userCtr.fitInYSpace = mode
+                if hasattr(yFitIC, "detectorQualityWeightsByWorkspace"):
+                    yFitIC.detectorQualityWeights = yFitIC.detectorQualityWeightsByWorkspace.get(wsName)
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
                 userCtr.fitInYSpace = prev_fit
             run_logger.write()
@@ -307,6 +310,8 @@ def runScript(
                     continue
                 prev_fit = userCtr.fitInYSpace
                 userCtr.fitInYSpace = mode
+                if hasattr(yFitIC, "detectorQualityWeightsByWorkspace"):
+                    yFitIC.detectorQualityWeights = yFitIC.detectorQualityWeightsByWorkspace.get(wsName)
                 resYFit = fitInYSpaceProcedure(yFitIC, IC, mtd[wsName])
                 userCtr.fitInYSpace = prev_fit
             run_logger.log_timestamp("yspace_end")
@@ -573,11 +578,20 @@ def _runPreFitStatistics(
         etc.) or an empty dict if nothing ran.
     """
     from vesuvio_analysis.core_functions.statistical_plugins import (
+        apply_detector_intensity_calibration,
+        build_detector_feature_matrix,
+        build_fidelity_labels,
+        detector_quality_weights,
+        detector_relative_difference_metrics,
+        fisher_lda_with_roc,
         HardwareOutlierDetector,
         PhysicsTrendClusterer,
         plot_cluster_ltheta,
+        plot_detector_calibration_distribution,
+        plot_fisher_roc,
         plot_outlier_before_after,
         plot_outlier_scatter,
+        plot_umap_lda_overlay,
     )
     from vesuvio_analysis.core_functions.analysis_functions import (
         loadInstrParsFileIntoArray,
@@ -668,6 +682,135 @@ def _runPreFitStatistics(
             diagnostics["outlier_indices"] = outlier_idx
             diagnostics["outlier_labels"] = labels
 
+            # ---- Calibration pass (AppStat Week 5 style) ----
+            # Relative detector residual: delta = (Y_obs - Y_fit) / Y_fit
+            calib = detector_relative_difference_metrics(spectra, ncp_total)
+            det_bias = calib["bias"]
+            det_rms = calib["rms"]
+            diagnostics["detector_bias"] = det_bias
+            diagnostics["detector_rms"] = det_rms
+
+            fig_dir = getattr(ic, "figSavePath", None)
+            if fig_dir is not None:
+                try:
+                    plot_detector_calibration_distribution(
+                        det_bias,
+                        det_rms,
+                        save_path=fig_dir / f"{ws_name}_calibration_distribution.pdf",
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Phase 6 calibration distribution plot failed: {exc}")
+
+            # Avoid forced correction when physics residuals are already low.
+            median_rms = float(np.nanmedian(det_rms))
+            rms_gate = float(getattr(userCtr, "calibrationRMSGate", 0.02))
+            apply_calibration = median_rms > rms_gate
+
+            bias_sigma = float(getattr(userCtr, "calibrationBiasSigma", 2.0))
+            bias_threshold = bias_sigma * float(np.nanstd(det_bias))
+            biased_mask = np.abs(det_bias) > bias_threshold
+
+            if apply_calibration and np.any(biased_mask) and (ws_name in mtd):
+                ws_calib = mtd[ws_name]
+                y_corr, e_corr, corr_factor = apply_detector_intensity_calibration(
+                    ws_calib.extractY(),
+                    ws_calib.extractE(),
+                    det_bias,
+                    biased_mask,
+                )
+                for row_idx in range(ws_calib.getNumberHistograms()):
+                    ws_calib.dataY(row_idx)[:] = y_corr[row_idx, :]
+                    ws_calib.dataE(row_idx)[:] = e_corr[row_idx, :]
+                spectra = y_corr[:, :spectra.shape[1]]
+                diagnostics["calibration_factors"] = corr_factor
+                logger.info(
+                    "Phase 6 calibration pass: corrected %d/%d detectors (median RMS %.4g > %.4g).",
+                    int(np.sum(biased_mask)),
+                    int(len(biased_mask)),
+                    median_rms,
+                    rms_gate,
+                )
+            else:
+                logger.info(
+                    "Phase 6 calibration pass skipped (median RMS %.4g, gate %.4g, biased=%d).",
+                    median_rms,
+                    rms_gate,
+                    int(np.sum(biased_mask)),
+                )
+
+            # ---- Fisher discriminant (LDA) + ROC from convergence labels ----
+            lda_result = None
+            fidelity_labels = None
+            if ws_name + "_Optimizer_Diagnostics" in mtd:
+                opt_table = mtd[ws_name + "_Optimizer_Diagnostics"]
+
+                # instrPars must be loaded first; we need all_spec_nos to map
+                # the diagnostics table (which only has rows for spectra where
+                # iMinuit cross-validation succeeded, len ≤ n_spectra) back to
+                # the full detector array.  Without this alignment,
+                # fisher_lda_with_roc(features, fidelity_labels) raises an
+                # IndexError whenever any spectrum fails iMinuit convergence.
+                instrPars = loadInstrParsFileIntoArray(
+                    ic.InstrParsPath, ic.firstSpec, ic.lastSpec,
+                )
+                theta_deg = instrPars[:, 2]
+                n_det = len(spectra)
+                all_spec_nos = instrPars[:, 0]
+
+                spec_nos_tab = np.array(opt_table.column("Spec Idx"), dtype=float)
+                chi2_rel_tab = np.array(opt_table.column("Chi2 Rel Diff"), dtype=float)
+                par_rel_tab = np.array(opt_table.column("Max Par Rel Diff"), dtype=float)
+                migrad_valid_tab = np.array(opt_table.column("Migrad Valid"), dtype=float) > 0.5
+
+                # Default: treat unmatched spectra as poor-fidelity
+                agreement_full = np.full(n_det, np.inf)
+                migrad_valid_full = np.zeros(n_det, dtype=bool)
+                for k, sno in enumerate(spec_nos_tab):
+                    row = np.where(np.isclose(all_spec_nos, sno))[0]
+                    if len(row) == 1:
+                        agreement_full[row[0]] = max(float(chi2_rel_tab[k]), float(par_rel_tab[k]))
+                        migrad_valid_full[row[0]] = bool(migrad_valid_tab[k])
+
+                fidelity_labels = build_fidelity_labels(
+                    agreement_full,
+                    migrad_valid_full,
+                    hi_fidelity_thr=0.01,
+                    poor_fidelity_thr=0.05,
+                )
+                diagnostics["fidelity_labels"] = fidelity_labels
+
+                width_proxy = np.zeros(len(spectra), dtype=float)
+                fit_table_name = ws_name + "_Best_Fit_NCP_Parameters"
+                if fit_table_name in mtd and "Width 0" in mtd[fit_table_name].keys():
+                    width_proxy = np.array(mtd[fit_table_name].column("Width 0"), dtype=float)
+
+                features = build_detector_feature_matrix(
+                    spectra,
+                    theta_deg,
+                    width_proxy,
+                    umap_embedding=getattr(detector, "embedding_coords_", None),
+                )
+
+                lda_result = fisher_lda_with_roc(features, fidelity_labels)
+                if lda_result is not None and fig_dir is not None:
+                    try:
+                        plot_fisher_roc(
+                            lda_result["fpr"],
+                            lda_result["tpr"],
+                            float(lda_result["auc"]),
+                            save_path=fig_dir / f"{ws_name}_fisher_roc.pdf",
+                        )
+                    except Exception as exc:
+                        warnings.warn(f"Phase 6 Fisher ROC plot failed: {exc}")
+
+            p_fail = None if lda_result is None else np.array(lda_result["p_fail"], dtype=float)
+            det_weights = detector_quality_weights(det_rms, p_fail)
+            diagnostics["detector_weights"] = det_weights
+
+            if not hasattr(yFitIC, "detectorQualityWeightsByWorkspace"):
+                yFitIC.detectorQualityWeightsByWorkspace = {}
+            yFitIC.detectorQualityWeightsByWorkspace[ws_name] = det_weights
+
             # Store pass-1 embedding for before/after visualisation
             embedding_before = detector.embedding_coords_.copy()
             labels_before = labels.copy()
@@ -746,11 +889,20 @@ def _runPreFitStatistics(
                         embedding_after, labels_after,
                         save_path=fig_dir / f"{ws_name}_umap_before_after.pdf",
                     )
-                    # Also save the standalone before-only scatter
-                    plot_outlier_scatter(
-                        embedding_before, labels_before,
-                        save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
-                    )
+                    # Save UMAP outlier map. If LDA is available, overlay
+                    # failure probability on the same canonical filename.
+                    if (lda_result is not None) and (p_fail is not None):
+                        plot_umap_lda_overlay(
+                            embedding_before,
+                            p_fail,
+                            labels=fidelity_labels,
+                            save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
+                        )
+                    else:
+                        plot_outlier_scatter(
+                            embedding_before, labels_before,
+                            save_path=fig_dir / f"{ws_name}_umap_outliers.pdf",
+                        )
                 except Exception as exc:
                     warnings.warn(f"Phase 6 outlier plot failed: {exc}")
 
