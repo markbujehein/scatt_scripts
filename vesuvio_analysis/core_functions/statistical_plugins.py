@@ -38,6 +38,8 @@ from numpy.typing import NDArray
 from scipy import stats
 from sklearn.cluster import DBSCAN
 from sklearn.covariance import EllipticEnvelope
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.metrics import auc, roc_curve
 from sklearn.preprocessing import StandardScaler
 
 from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
@@ -274,6 +276,12 @@ class BayesianBootstrap:
     ) -> NDArray[np.floating]:
         """Computes weighted-sum residual profiles for each bootstrap sample.
 
+        Before multiplying, rows where the residual is entirely NaN are
+        zeroed out and the Dirichlet weights for those rows are zeroed and
+        renormalized over the remaining valid spectra.  This prevents a
+        single masked or failed spectrum from propagating NaN through the
+        entire matrix multiply (``0 * NaN == NaN`` in IEEE 754).
+
         Args:
             residuals: Per-spectrum residuals from the NCP fit,
                 shape (n_spectra, n_bins).
@@ -281,12 +289,283 @@ class BayesianBootstrap:
         Returns:
             Weighted residuals, shape (n_samples, n_bins). Each row is
             the weighted sum ``w @ residuals`` where ``w`` is a
-            Dirichlet weight vector.
+            Dirichlet weight vector renormalized over valid spectra.
         """
-        n_spectra = residuals.shape[0]
-        weights = self.generate_weights(n_spectra)
+        n_spectra, n_bins = residuals.shape
+
+        # Identify rows that are entirely non-finite (masked / failed fits).
+        bad_rows = ~np.any(np.isfinite(residuals), axis=1)   # (n_spectra,)
+        n_bad = int(np.sum(bad_rows))
+        if n_bad > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "BayesianBootstrap: %d/%d residual spectrum row(s) are "
+                "all-NaN (masked or failed fit).  Zeroing these rows "
+                "before weighting to prevent NaN propagation.",
+                n_bad, n_spectra,
+            )
+
+        # Work on a sanitized copy: replace bad rows with 0.
+        clean_residuals = residuals.copy()
+        clean_residuals[bad_rows, :] = 0.0
+        # Replace any remaining isolated NaNs (partial-bin masking) with 0.
+        np.nan_to_num(clean_residuals, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+        weights = self.generate_weights(n_spectra)   # (n_samples, n_spectra)
+
+        # Zero out weight elements for bad rows and renormalize each sample
+        # so the remaining valid-spectrum weights still sum to 1.
+        if n_bad > 0:
+            weights[:, bad_rows] = 0.0
+            row_sums = weights.sum(axis=1, keepdims=True)
+            # Avoid divide-by-zero if somehow ALL rows are bad.
+            safe_sums = np.where(row_sums > 0.0, row_sums, 1.0)
+            weights = weights / safe_sums
+
         # Matrix multiply: (n_samples, n_spectra) @ (n_spectra, n_bins)
-        return weights @ residuals
+        return weights @ clean_residuals
+
+
+def detector_relative_difference_metrics(
+    y_obs: NDArray[np.floating],
+    y_fit: NDArray[np.floating],
+    eps: float = 1e-10,
+) -> Dict[str, NDArray[np.floating]]:
+    """Compute detector-wise calibration diagnostics from relative residuals.
+
+    Implements the AppStat-style relative-difference observable
+    ``delta = (Y_obs - Y_fit) / Y_fit`` with a small denominator floor for
+    numerical stability.
+
+    Returns detector-wise bias (mean delta) and RMS (sqrt(mean(delta^2))).
+    """
+    denom = np.where(np.abs(y_fit) > eps, y_fit, np.sign(y_fit) * eps + (y_fit == 0) * eps)
+    delta = (y_obs - y_fit) / denom
+    delta = np.where(np.isfinite(delta), delta, 0.0)
+    bias = np.mean(delta, axis=1)
+    rms = np.sqrt(np.mean(np.square(delta), axis=1))
+    return {"delta": delta, "bias": bias, "rms": rms}
+
+
+def apply_detector_intensity_calibration(
+    y_obs: NDArray[np.floating],
+    y_err: NDArray[np.floating],
+    detector_bias: NDArray[np.floating],
+    detector_mask: NDArray[np.bool_],
+    max_abs_bias: float = 0.5,
+) -> Tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]:
+    """Apply multiplicative detector calibration ``d_calib = d / (1 + f(x))``.
+
+    The detector-level correction function ``f(x)`` is taken as clipped bias.
+    """
+    bias = detector_bias.copy()
+    bias = np.clip(bias, -max_abs_bias, max_abs_bias)
+    corr = np.ones_like(bias)
+    corr[detector_mask] = 1.0 + bias[detector_mask]
+    corr = np.where(corr <= 0.05, 0.05, corr)
+
+    y_new = y_obs.copy()
+    e_new = y_err.copy()
+    y_new[detector_mask] = y_new[detector_mask] / corr[detector_mask, np.newaxis]
+    e_new[detector_mask] = e_new[detector_mask] / corr[detector_mask, np.newaxis]
+    return y_new, e_new, corr
+
+
+def build_fidelity_labels(
+    agreement: NDArray[np.floating],
+    migrad_valid: NDArray[np.bool_],
+    hi_fidelity_thr: float = 0.01,
+    poor_fidelity_thr: float = 0.05,
+) -> NDArray[np.intp]:
+    """Build convergence-based labels for Fisher discriminant training.
+
+    Labels:
+      - ``0`` high-fidelity: agreement < 1% and valid MIGRAD
+      - ``1`` poor-fidelity: agreement > 5% or invalid MIGRAD
+      - ``-1`` unlabeled ambiguity region
+    """
+    labels = np.full(agreement.shape[0], -1, dtype=np.intp)
+    hi = (agreement < hi_fidelity_thr) & migrad_valid
+    poor = (agreement > poor_fidelity_thr) | (~migrad_valid)
+    labels[hi] = 0
+    labels[poor] = 1
+    return labels
+
+
+def build_detector_feature_matrix(
+    spectra: NDArray[np.floating],
+    theta_deg: NDArray[np.floating],
+    width_proxy: NDArray[np.floating],
+    umap_embedding: Optional[NDArray[np.floating]] = None,
+) -> NDArray[np.floating]:
+    """Assemble detector features for Fisher/LDA classification.
+
+    Features include total counts, spectrum RMS shape proxy, fitted width,
+    scattering angle, and optional UMAP coordinates.
+    """
+    total_counts = np.sum(spectra, axis=1)
+    row_std = np.std(spectra, axis=1)
+    cols = [
+        total_counts[:, np.newaxis],
+        row_std[:, np.newaxis],
+        width_proxy[:, np.newaxis],
+        theta_deg[:, np.newaxis],
+    ]
+    if umap_embedding is not None and umap_embedding.shape[0] == spectra.shape[0]:
+        cols.append(umap_embedding[:, :2])
+    features = np.hstack(cols)
+    return np.where(np.isfinite(features), features, 0.0)
+
+
+def fisher_lda_with_roc(
+    features: NDArray[np.floating],
+    labels: NDArray[np.intp],
+) -> Optional[Dict[str, NDArray[np.floating] | float | LinearDiscriminantAnalysis]]:
+    """Train Fisher/LDA on labeled detectors and compute ROC diagnostics.
+
+    Methodology follows the AppStat Week-5 discriminator/ROC workflow:
+    Fisher linear discriminant for compression + ROC/AUC for separability.
+    """
+    mask = labels >= 0
+    if np.sum(mask) < 8:
+        return None
+    y = labels[mask]
+    if len(np.unique(y)) < 2:
+        return None
+
+    model = LinearDiscriminantAnalysis(solver="svd")
+    model.fit(features[mask], y)
+
+    score_all = model.decision_function(features)
+    score_lab = score_all[mask]
+
+    fpr, tpr, thr = roc_curve(y, score_lab)
+    roc_auc = float(auc(fpr, tpr))
+
+    if hasattr(model, "predict_proba"):
+        p_fail_all = model.predict_proba(features)[:, 1]
+    else:
+        p_fail_all = 1.0 / (1.0 + np.exp(-score_all))
+
+    return {
+        "model": model,
+        "scores": score_all,
+        "p_fail": p_fail_all,
+        "fpr": fpr,
+        "tpr": tpr,
+        "thresholds": thr,
+        "auc": roc_auc,
+    }
+
+
+def detector_quality_weights(
+    rms: NDArray[np.floating],
+    p_fail: Optional[NDArray[np.floating]] = None,
+    min_w: float = 0.05,
+) -> NDArray[np.floating]:
+    """Map calibration and LDA failure probability into detector weights.
+
+    Lower RMS and lower failure probability yield larger weights.
+    """
+    rms_scale = float(np.nanmedian(rms) + np.nanstd(rms) + 1e-8)
+    w_rms = np.exp(-np.square(rms / rms_scale))
+    if p_fail is None:
+        w = w_rms
+    else:
+        w = w_rms * (1.0 - np.clip(p_fail, 0.0, 1.0))
+    w = np.clip(w, min_w, 1.0)
+    return w
+
+
+def plot_detector_calibration_distribution(
+    bias: NDArray[np.floating],
+    rms: NDArray[np.floating],
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Plot detector bias and RMS distributions for calibration QA."""
+    set_thesis_style()
+    fig, (ax0, ax1) = figure_factory(ncols=2, aspect_ratio=0.55)
+
+    ax0.hist(bias, bins=30, color=COLORBLIND_PALETTE[0], alpha=0.75)
+    ax0.axvline(0.0, color="black", linestyle="--", linewidth=1.0)
+    ax0.set_xlabel(r"Bias $\langle\delta\rangle$")
+    ax0.set_ylabel("Detectors")
+    ax0.set_title("Detector Bias Distribution")
+
+    ax1.hist(rms, bins=30, color=COLORBLIND_PALETTE[2], alpha=0.75)
+    ax1.set_xlabel(r"RMS$(\delta)$")
+    ax1.set_ylabel("Detectors")
+    ax1.set_title("Detector RMS Distribution")
+
+    plt.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_fisher_roc(
+    fpr: NDArray[np.floating],
+    tpr: NDArray[np.floating],
+    roc_auc: float,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Plot ROC curve for Fisher/LDA detector-failure prediction."""
+    set_thesis_style()
+    fig, ax = figure_factory()
+    ax.plot(fpr, tpr, color=COLORBLIND_PALETTE[3], label=f"Fisher LDA (AUC={roc_auc:.3f})")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="black", linewidth=1.0, label="Chance")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC — Convergence-Failure Prediction")
+    ax.legend()
+    plt.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
+
+
+def plot_umap_lda_overlay(
+    embedding_coords: NDArray[np.floating],
+    p_fail: NDArray[np.floating],
+    labels: Optional[NDArray[np.intp]] = None,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Overlay LDA failure probability onto the UMAP detector embedding."""
+    set_thesis_style()
+    fig, ax = figure_factory()
+    sc = ax.scatter(
+        embedding_coords[:, 0],
+        embedding_coords[:, 1],
+        c=p_fail,
+        cmap="viridis",
+        s=24,
+        alpha=0.9,
+    )
+    if labels is not None:
+        poor = labels == 1
+        if np.any(poor):
+            ax.scatter(
+                embedding_coords[poor, 0],
+                embedding_coords[poor, 1],
+                facecolors="none",
+                edgecolors=COLORBLIND_PALETTE[3],
+                s=60,
+                linewidths=1.0,
+                label="Poor-Fidelity",
+            )
+            ax.legend(fontsize=8)
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    ax.set_title("UMAP + Fisher/LDA Failure Probability")
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_label("Predicted failure probability")
+    plt.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path)
+        plt.close(fig)
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -787,9 +1066,7 @@ def plot_fisher_discriminant(
         function scores.  The decision boundary is placed at the
         score threshold that maximises the Youden J-statistic.
     """
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from sklearn.metrics import roc_auc_score
-    from sklearn.metrics import roc_curve
 
     if feature_names is None:
         feature_names = [f"f{k}" for k in range(features.shape[1])]
@@ -813,11 +1090,11 @@ def plot_fisher_discriminant(
     weights = lda.coef_.ravel()
 
     # AUC
-    fpr, tpr, thresholds = roc_curve(y_binary, scores)
+    fpr_arr, tpr_arr, thresholds = roc_curve(y_binary, scores)
     auc_val = float(roc_auc_score(y_binary, scores))
 
     # Decision boundary: threshold maximising Youden J = TPR - FPR
-    j_stat = tpr - fpr
+    j_stat = tpr_arr - fpr_arr
     best_idx = int(np.argmax(j_stat))
     boundary = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(np.mean(scores))
 

@@ -481,13 +481,20 @@ def createTableInitialParameters(ic: Any) -> None:
     meansTableWS.addColumn(type='float', name="Initial Centers")
     meansTableWS.addColumn(type='str', name="Bounds Centers")
 
+    def _fmt_bounds(b: np.ndarray) -> np.ndarray:
+        """Return a display copy of a bounds array with nan replaced by ±inf."""
+        d = np.array(b, dtype=float)
+        d[np.isnan(d) & (d >= 0)] = np.inf
+        d[np.isnan(d)] = -np.inf
+        return d
+
     print("\nCreated Table with Initial Parameters:")
     for m, iw, bw, ii, bi, inc, bc in zip(ic.masses.astype(float), ic.initPars[1::3], ic.bounds[1::3], ic.initPars[0::3], ic.bounds[0::3], ic.initPars[2::3], ic.bounds[2::3]):
-        meansTableWS.addRow([m, iw, str(bw), ii, str(bi), inc, str(bc)])
+        meansTableWS.addRow([m, iw, str(_fmt_bounds(bw)), ii, str(_fmt_bounds(bi)), inc, str(_fmt_bounds(bc))])
         print("\nMass: ", m)
-        print(f"{'Initial Intensity:':>20s} {ii:<8.4f} Bounds: {bi}")
-        print(f"{'Initial Width:':>20s} {iw:<8.4f} Bounds: {bw}")
-        print(f"{'Initial Center:':>20s} {inc:<8.4f} Bounds: {bc}")
+        print(f"{'Initial Intensity:':>20s} {ii:<8.4f} Bounds: {_fmt_bounds(bi)}")
+        print(f"{'Initial Width:':>20s} {iw:<8.4f} Bounds: {_fmt_bounds(bw)}")
+        print(f"{'Initial Center:':>20s} {inc:<8.4f} Bounds: {_fmt_bounds(bc)}")
     print("\n")    
 
 
@@ -660,6 +667,7 @@ def fitNcpToWorkspace(IC: Any, ws: Any) -> np.ndarray:
     _print_optimizer_agreement_summary()
     _plot_optimizer_comparison(IC)
     createTableWSForFitPars(ws.name(), IC.noOfMasses, arrFitPars)
+    createTableWSForOptimizerDiagnostics(ws.name())
     arrBestFitPars = arrFitPars[:, 1:-2]
     ncpForEachMass, ncpTotal = calculateNcpArr(IC, arrBestFitPars, resolutionPars, instrPars, kinematicArrays, ySpacesForEachMass)
     ncpSumWSs = createNcpWorkspaces(ncpForEachMass, ncpTotal, ws, IC)
@@ -978,6 +986,27 @@ def createTableWSForFitPars(
     for row in arrFitPars:    # Pass array onto table ws
         tableWS.addRow(row)
     return 
+
+
+def createTableWSForOptimizerDiagnostics(wsName: str) -> None:
+    """Create a per-spectrum optimizer diagnostics TableWorkspace."""
+    if not _fit_comparison_log:
+        return
+
+    tableWS = CreateEmptyTableWorkspace(OutputWorkspace=wsName + "_Optimizer_Diagnostics")
+    tableWS.addColumn(type='float', name="Spec Idx")
+    tableWS.addColumn(type='float', name="Chi2 Rel Diff")
+    tableWS.addColumn(type='float', name="Max Par Rel Diff")
+    tableWS.addColumn(type='float', name="Migrad Valid")
+
+    for row in _fit_comparison_log:
+        tableWS.addRow([
+            float(row.get("specNo", np.nan)),
+            float(row.get("chi2_rel_diff", np.nan)),
+            float(row.get("max_par_diff", np.nan)),
+            1.0 if bool(row.get("migrad_valid", False)) else 0.0,
+        ])
+    return
 
 
 def calculateNcpArr(
@@ -1517,6 +1546,7 @@ def fitNcpToSingleSpec(
     ]
 
     # --- iMinuit MIGRAD + Hesse fit (parallel cross-validation) ---
+    migrad_valid = False
     try:
         cost_fn = NCPCostFunction(
             dataY, dataE, ySpacesForEachMass,
@@ -1551,6 +1581,7 @@ def fitNcpToSingleSpec(
         m.hesse()
 
         # --- Migrad convergence and bound-hit diagnostics ---
+        migrad_valid = bool(m.valid)
         if not m.valid:
             logger.warning(
                 "OptimizerCheck Spec %.0f: MIGRAD did NOT converge "
@@ -1657,6 +1688,9 @@ def fitNcpToSingleSpec(
             'iminuit_pars': iminuit_pars.copy(),
             'par_names': par_names,
             'par_rel_diff': par_rel_diff.copy(),
+            'chi2_rel_diff': chi2_rel_diff,
+            'max_par_diff': max_par_diff,
+            'migrad_valid': migrad_valid,
         })
     except Exception:
         logger.debug(
@@ -2396,6 +2430,10 @@ class resultsObject:
         allMeanIntensities = []
         allStdWidths = []
         allStdIntensities = []
+        allDiagSpec = []
+        allDiagChi2 = []
+        allDiagPar = []
+        allDiagMigrad = []
         j=0
         while True:
             try:
@@ -2435,7 +2473,24 @@ class resultsObject:
                 allStdWidths.append(meansTable.column("Std Widths"))
                 allMeanIntensities.append(meansTable.column("Mean Intensities"))
                 allStdIntensities.append(meansTable.column("Std Intensities"))  
-                
+
+                # Extract optimizer diagnostics table if it was created for this iteration.
+                # The table has one row per spectrum where iMinuit cross-validation ran;
+                # rows are padded with NaN so each iteration has a fixed-size array.
+                diag_table_name = wsIterName + "_Optimizer_Diagnostics"
+                if diag_table_name in mtd:
+                    _dt = mtd[diag_table_name]
+                    allDiagSpec.append(list(_dt.column("Spec Idx")))
+                    allDiagChi2.append(list(_dt.column("Chi2 Rel Diff")))
+                    allDiagPar.append(list(_dt.column("Max Par Rel Diff")))
+                    allDiagMigrad.append(list(_dt.column("Migrad Valid")))
+                else:
+                    # Table absent (e.g. no iMinuit run for this iteration).
+                    allDiagSpec.append([])
+                    allDiagChi2.append([])
+                    allDiagPar.append([])
+                    allDiagMigrad.append([])
+
                 j+=1
             except KeyError:
                 break
@@ -2449,6 +2504,21 @@ class resultsObject:
         self.all_mean_intensities = np.array(allMeanIntensities)
         self.all_std_widths = np.array(allStdWidths)
         self.all_std_intensities = np.array(allStdIntensities)
+
+        # Pad per-iteration diagnostics to a common length so they form a
+        # regular 2-D float array.  Missing rows are filled with NaN.
+        _max_diag = max((len(x) for x in allDiagSpec), default=0)
+        def _pad_diag(lst_of_lists: list, fill: float = np.nan) -> np.ndarray:
+            out = np.full((len(lst_of_lists), max(_max_diag, 1)), fill, dtype=float)
+            for i, row in enumerate(lst_of_lists):
+                if row:
+                    out[i, :len(row)] = row
+            return out
+
+        self.diag_spec_nos    = _pad_diag(allDiagSpec)
+        self.diag_chi2_rel    = _pad_diag(allDiagChi2)
+        self.diag_par_rel     = _pad_diag(allDiagPar)
+        self.diag_migrad_valid = _pad_diag(allDiagMigrad)
 
         # Pass all attributes of ic into attributes to be used whithin this object
         self.maskedDetectorIdx = ic.maskedDetectorIdx
@@ -2475,6 +2545,10 @@ class resultsObject:
                  all_std_widths=self.all_std_widths,
                  all_std_intensities=self.all_std_intensities,
                  all_tot_ncp=self.all_tot_ncp,
-                 all_ncp_for_each_mass=self.all_ncp_for_each_mass)
+                 all_ncp_for_each_mass=self.all_ncp_for_each_mass,
+                 diag_spec_nos=self.diag_spec_nos,
+                 diag_chi2_rel=self.diag_chi2_rel,
+                 diag_par_rel=self.diag_par_rel,
+                 diag_migrad_valid=self.diag_migrad_valid)
 
            
