@@ -63,8 +63,9 @@ def completeICFromInputs(IC: Any, scriptName: str, wsIC: Any) -> None:
     elif IC.modeRunning == "FORWARD":
         shadow_validate_forward_initial_conditions(IC)
 
-    IC.maskedSpecNo = IC.maskedSpecAllNo[(IC.maskedSpecAllNo>=IC.firstSpec) & (IC.maskedSpecAllNo<=IC.lastSpec)]
-    IC.maskedDetectorIdx = IC.maskedSpecNo - IC.firstSpec
+    _masked_all = np.asarray(getattr(IC, "maskedSpecAllNo", []), dtype=int)
+    IC.maskedSpecNo = _masked_all[(_masked_all >= IC.firstSpec) & (_masked_all <= IC.lastSpec)]
+    IC.maskedDetectorIdx = (IC.maskedSpecNo - IC.firstSpec).astype(int)
 
     # Extract some attributes from wsIC
     IC.mode = wsIC.mode

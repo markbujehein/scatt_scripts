@@ -1153,10 +1153,17 @@ def createWS(
 
 
 def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: Any) -> None:
-    """Save a PDF plot comparing the summed data to the fitted NCP profiles.
+    """Save a publication-quality two-panel NCP fit PDF.
 
-    Includes an annotation text box with final chi²/ndof and any masked
-    Spectrum IDs for transparent traceability.
+    Delegates to
+    :func:`~vesuvio_analysis.core_functions.statistical_plugins.plot_sum_ncp_fits_publication`
+    for thesis-grade output: a main panel showing the summed data plus NCP
+    components followed by a residuals panel (1:3 height ratio), a metadata
+    textbox, LaTeX-rendered parameter labels, and a white-background
+    inward-tick style.
+
+    The figure title is derived from ``IC.name`` following the convention
+    ``'{Sample} @ {Temp} K | {Bank} | Summed NCP Fit ({Model})'``.
 
     Skipped when running a bootstrap sample (``IC.runningSampleWS`` is
     ``True``).
@@ -1166,72 +1173,71 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
         wsTotNCPSum: Summed-spectra total NCP workspace.
         wsMNCPSum: List of summed-spectra NCP workspaces, one per mass.
         IC: Completed initial-conditions object with ``masses``,
+            ``modeRunning``, ``firstSpec``, ``lastSpec``, ``maskedSpecNo``,
             ``runningSampleWS``, and ``figSavePath``.
     """
-
     if IC.runningSampleWS:   # Skip saving figure if running bootstrap
-        return         
+        return
 
-    set_thesis_style()
-    fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
-    ax.errorbar(wsDataSum, "k.", label="Spectra")
+    from vesuvio_analysis.core_functions.statistical_plugins import (
+        _parse_script_name_components,
+        plot_sum_ncp_fits_publication,
+    )
 
-    ax.plot(wsTotNCPSum, "r-", label="Total NCP")
-    for m, wsNcp in zip(IC.masses, wsMNCPSum):
-        ax.plot(wsNcp, label=f"NCP m={m}")
-    
-    ax.set_xlabel("TOF")
-    ax.set_ylabel("Counts")
-    ax.set_title("Sum of NCP fits")
-    ax.legend()
+    # --- Extract NumPy arrays from Mantid workspaces ---
+    x_raw = wsDataSum.readX(0)
+    data_y = wsDataSum.readY(0).copy()
+    data_e = wsDataSum.readE(0).copy()
+    # Handle histogram (n+1 bin edges) vs point-data (n bin centres).
+    tof: np.ndarray = (
+        0.5 * (x_raw[:-1] + x_raw[1:])
+        if len(x_raw) == len(data_y) + 1
+        else np.asarray(x_raw, dtype=float)
+    )
 
-    # --- Annotation: chi²/ndof and masked Spectrum IDs ---
-    annot_lines = []
-    # Compute chi²/ndof from summed workspace data
-    try:
-        sum_y = wsDataSum.extractY()[0]
-        fit_y = wsTotNCPSum.extractY()[0]
-        sum_e = wsDataSum.extractE()[0]
-        valid = (sum_y != 0) & (sum_e != 0)
-        if np.any(valid):
-            chi2 = float(np.sum(((sum_y[valid] - fit_y[valid]) / sum_e[valid]) ** 2))
-            ndof = max(int(np.sum(valid)) - 3 * len(IC.masses), 1)
-            annot_lines.append(f"$\\chi^2/\\mathrm{{ndof}}$ = {chi2:.1f}/{ndof} = {chi2/ndof:.2f}")
-    except Exception:
-        pass
-    # Retrieve masked Spectrum IDs from the workspace
-    try:
-        ws_name = wsDataSum.name().replace("_Sum", "")
-        if ws_name in mtd:
-            _ws = mtd[ws_name]
-            masked_ids = []
-            for i in range(_ws.getNumberHistograms()):
-                try:
-                    if _ws.getDetector(i).isMasked():
-                        masked_ids.append(int(_ws.getSpectrum(i).getSpectrumNo()))
-                except Exception:
-                    pass
-            if masked_ids:
-                annot_lines.append(f"Masked Spec IDs: {masked_ids}")
-    except Exception:
-        pass
-    if annot_lines:
-        annot_text = "\n".join(annot_lines)
-        ax.text(
-            0.98, 0.02, annot_text,
-            transform=ax.transAxes,
-            fontsize=7,
-            verticalalignment="bottom",
-            horizontalalignment="right",
-            fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.8),
+    total_ncp = wsTotNCPSum.readY(0).copy()
+    mass_ncp_arrays = [wsNcp.readY(0).copy() for wsNcp in wsMNCPSum]
+
+    # --- Build thesis-quality figure title from IC.name ---
+    sample, temp_val, model = _parse_script_name_components(IC.name)
+    title = (
+        f"{sample} @ {temp_val} K | {IC.modeRunning} | "
+        f"Summed NCP Fit ({model})"
+    )
+
+    # --- Build metadata dict from IC attributes ---
+    all_spec_ids = list(range(int(IC.firstSpec), int(IC.lastSpec) + 1))
+    masked_set = {int(s) for s in getattr(IC, "maskedSpecNo", [])}
+    included_ids = [s for s in all_spec_ids if s not in masked_set]
+
+    valid_mask = (
+        (data_y != 0) & (data_e != 0)
+        & np.isfinite(data_y) & np.isfinite(data_e)
+    )
+    metadata: Dict[str, Any] = {
+        "included_spec_ids": included_ids,
+        "n_outliers": len(masked_set),
+    }
+    if np.any(valid_mask):
+        chi2 = float(
+            np.sum(
+                ((data_y[valid_mask] - total_ncp[valid_mask]) / data_e[valid_mask]) ** 2
+            )
         )
+        ndof = max(int(np.sum(valid_mask)) - 3 * int(len(IC.masses)), 1)
+        metadata["chi2"] = chi2
+        metadata["ndof"] = ndof
 
-    fileName = wsDataSum.name()+"_NCP_Fits.pdf"
+    # --- Delegate to publication plotter ---
+    fileName = wsDataSum.name() + "_NCP_Fits.pdf"
     savePath = IC.figSavePath / fileName
-    plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
+    plot_sum_ncp_fits_publication(
+        tof, data_y, data_e, total_ncp,
+        mass_ncp_arrays, list(IC.masses),
+        title, metadata,
+        save_path=savePath,
+    )
     print(f"Saved: {fileName} to {IC.figSavePath}")
-    plt.close(fig)
     return
 
 

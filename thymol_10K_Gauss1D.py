@@ -73,7 +73,8 @@ class GeneralInitialConditions:
     # Preliminary procedure configuration (used when H-ratio estimation is needed)
     preliminaryNoOfIterations = 10  # Number of iterations for automatic H-ratio convergence when H is detected but HToMassIdxRatio is unknown
 
-    maskedSpecAllNo = np.array([18, 34, 45, 52, 62, 173, 174, 178])
+    # maskedSpecAllNo = np.array([18, 34, 45, 52, 62, 173, 174, 178])
+    maskedSpecAllNo = np.array([], dtype=int)
 
     subEmptyFromRaw = True
     scaleEmpty = 1

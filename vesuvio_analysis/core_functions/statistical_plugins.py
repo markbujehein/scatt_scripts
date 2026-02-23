@@ -29,10 +29,12 @@ Notes:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import numpy as np
 from numpy.typing import NDArray
 from scipy import stats
@@ -42,9 +44,86 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import auc, roc_curve
 from sklearn.preprocessing import StandardScaler
 
-from vesuvio_analysis.core_functions.plot_style import COLORBLIND_PALETTE, figure_factory, set_thesis_style
+from vesuvio_analysis.core_functions.plot_style import (
+    COLORBLIND_PALETTE,
+    EXPERIMENTAL_STYLE,
+    FULL_WIDTH_CM,
+    THEORETICAL_STYLE,
+    cm_to_inches,
+    figure_factory,
+    set_thesis_style,
+)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# NCP publication-plot helpers
+# ---------------------------------------------------------------------------
+
+#: Maps raw parameter names to their LaTeX equivalents for legend rendering.
+_PARAM_LABEL_MAP: Dict[str, str] = {
+    "sigma": r"$\sigma_p$",
+    "x0": r"$y_\mathrm{center}$",
+}
+
+
+def _apply_latex_labels(label: str) -> str:
+    """Replace raw parameter names in *label* with LaTeX equivalents.
+
+    Substitutions are driven by :data:`_PARAM_LABEL_MAP`, which maps
+    ``'sigma'`` → ``r'$\sigma_p$'`` and ``'x0'`` → ``r'$y_\mathrm{center}$'``
+    so that any legend entry containing these tokens follows Nanoscience
+    conventions when rendered by Matplotlib's mathtext engine.
+
+    Args:
+        label: Raw legend label string.
+
+    Returns:
+        Label string with parameter tokens replaced by their LaTeX forms.
+    """
+    for raw, latex in _PARAM_LABEL_MAP.items():
+        label = label.replace(raw, latex)
+    return label
+
+
+def _parse_script_name_components(ic_name: str) -> Tuple[str, str, str]:
+    """Parse ``IC.name`` into ``(sample, temp_k, model)`` components.
+
+    ``IC.name`` follows the convention
+    ``'{scriptName}_{modeRunning}_'`` where *scriptName* is structured
+    as ``'{sample}_{tempK}_{model}'`` with the temperature token matching
+    the pattern ``r'\\d+[Kk]'`` (e.g. ``'10K'`` or ``'300K'``).
+
+    Args:
+        ic_name: The ``IC.name`` attribute, e.g.
+            ``'thymol_10K_Gauss1D_FORWARD_'``.
+
+    Returns:
+        A ``(sample, temp_k, model)`` tuple, where *temp_k* is the
+        numeric part only (e.g. ``'10'`` from ``'10K'``).  Returns
+        ``(raw_name, '?', '?')`` when no temperature token is found.
+    """
+    # Strip optional trailing underscore, then remove the mode suffix.
+    name = ic_name.rstrip("_")
+    for mode in ("_FORWARD", "_BACKWARD", "_JOINT"):
+        if name.upper().endswith(mode.upper()):
+            name = name[: -len(mode)]
+            break
+
+    tokens = name.split("_")
+    temp_idx: Optional[int] = None
+    for i, tok in enumerate(tokens):
+        if re.fullmatch(r"\d+[Kk]", tok):
+            temp_idx = i
+            break
+
+    if temp_idx is None:
+        return name, "?", "?"
+
+    sample = "_".join(tokens[:temp_idx]) or "Unknown"
+    temp_val = tokens[temp_idx][:-1]          # strip trailing 'K'
+    model = "_".join(tokens[temp_idx + 1 :]) or "?"
+    return sample, temp_val, model
 
 
 # ---------------------------------------------------------------------------
@@ -1026,4 +1105,170 @@ def plot_bootstrap_convergence(
     if save_path is not None:
         fig.savefig(save_path)
         plt.close(fig)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Publication-quality NCP fit figure
+# ---------------------------------------------------------------------------
+
+
+def plot_sum_ncp_fits_publication(
+    tof: NDArray[np.floating],
+    data_y: NDArray[np.floating],
+    data_e: NDArray[np.floating],
+    total_ncp: NDArray[np.floating],
+    mass_ncps: List[NDArray[np.floating]],
+    masses: List[float],
+    title: str,
+    metadata: Dict[str, Any],
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Publication-quality two-panel NCP fit figure with residuals subplot.
+
+    Renders the summed data alongside fitted NCP profiles in the upper
+    panel (height ratio 3) and the normalised fit residuals in the lower
+    panel (height ratio 1).  All five thesis-publication requirements are
+    addressed:
+
+    - **Title**: pre-formatted string passed in as *title*.
+    - **Metadata box**: anchored ``'upper left'`` showing included spectra,
+      outlier count, and :math:`\\chi^2/\\mathrm{ndof}`.
+    - **Legend labels**: parameter names transformed via
+      :data:`_PARAM_LABEL_MAP` (``'sigma'`` → ``$\\sigma_p$``,
+      ``'x0'`` → ``$y_\\mathrm{center}$``).
+    - **Residuals panel**: :math:`(d_i - f_i)/\\sigma_i` with 1-:math:`\\sigma`
+      error bars and a dashed zero-line.
+    - **Visual consistency**: white background, inward ticks on all axes.
+
+    This function is Mantid-free; call it after extracting NumPy arrays
+    from Mantid workspaces in ``plotSumNCPFits`` (``analysis_functions``).
+
+    Args:
+        tof: 1-D TOF x-axis, shape ``(n_bins,)``.
+        data_y: Summed-spectra data counts, shape ``(n_bins,)``.
+        data_e: 1-:math:`\\sigma` data errors, shape ``(n_bins,)``.
+        total_ncp: Total NCP fit profile, shape ``(n_bins,)``.
+        mass_ncps: Per-mass NCP components, each shape ``(n_bins,)``.
+        masses: Atomic masses (u) corresponding to *mass_ncps*.
+        title: Pre-formatted figure title string.
+        metadata: Optional display metadata.  Recognised keys:
+
+            - ``'included_spec_ids'``: ``list[int]`` of spectrum IDs
+              used in the sum.
+            - ``'n_outliers'``: ``int`` count of masked spectra.
+            - ``'chi2'``: ``float`` :math:`\\chi^2` value.
+            - ``'ndof'``: ``int`` degrees of freedom.
+
+        save_path: When provided the figure is saved (300 dpi, white
+            background) and closed; otherwise it is returned open.
+
+    Returns:
+        The Matplotlib :class:`~matplotlib.figure.Figure`.
+    """
+    set_thesis_style()
+
+    fig_w = cm_to_inches(FULL_WIDTH_CM)
+    fig_h = cm_to_inches(FULL_WIDTH_CM * 0.85)   # slightly taller for two panels
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.patch.set_facecolor("white")
+
+    gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1], hspace=0.06)
+    ax_main = fig.add_subplot(gs[0])
+    ax_res = fig.add_subplot(gs[1], sharex=ax_main)
+
+    # --- Upper panel: data + NCP components ---
+    ax_main.errorbar(
+        tof, data_y, yerr=data_e,
+        color="black",
+        linestyle="None", marker="o", markersize=2,
+        capsize=0, elinewidth=0.6, alpha=1.0, zorder=3,
+        label=_apply_latex_labels("Data"),
+    )
+    ax_main.plot(
+        tof, total_ncp,
+        color="#D62728",
+        linestyle="-", linewidth=1.5, alpha=0.85, zorder=2,
+        label=_apply_latex_labels("Total NCP"),
+    )
+    for k, (m, ncp_y) in enumerate(zip(masses, mass_ncps)):
+        raw_label = f"NCP  $m = {m:.4g}$ u"
+        ax_main.plot(
+            tof, ncp_y,
+            color=COLORBLIND_PALETTE[k % len(COLORBLIND_PALETTE)],
+            linestyle="--", linewidth=0.9, alpha=0.85, zorder=2,
+            label=_apply_latex_labels(raw_label),
+        )
+
+    ax_main.set_ylabel(r"Counts (a.u.)")
+    ax_main.set_title(title, fontsize=10, pad=4)
+    ax_main.set_facecolor("white")
+    ax_main.tick_params(axis="both", direction="in", which="both",
+                        top=True, right=True)
+    ax_main.legend(fontsize=7, framealpha=0.85, loc="upper right")
+    plt.setp(ax_main.get_xticklabels(), visible=False)
+
+    # --- Metadata textbox (upper left, anchored inside main panel) ---
+    meta_lines: List[str] = []
+    if "included_spec_ids" in metadata:
+        spec_ids: List[int] = list(metadata["included_spec_ids"])
+        if len(spec_ids) > 8:
+            meta_lines.append(
+                f"Included Spectra: {spec_ids[0]}\u2013{spec_ids[-1]}"
+                f"  ({len(spec_ids)} total)"
+            )
+        else:
+            meta_lines.append(f"Included Spectra: {spec_ids}")
+    if "n_outliers" in metadata:
+        meta_lines.append(f"Outliers Masked: {int(metadata['n_outliers'])}")
+    if "chi2" in metadata and "ndof" in metadata:
+        chi2_v = float(metadata["chi2"])
+        ndof_v = int(metadata["ndof"])
+        meta_lines.append(
+            rf"$\chi^2/\mathrm{{ndof}}$: {chi2_v:.1f}/{ndof_v} = {chi2_v / ndof_v:.2f}"
+        )
+    if meta_lines:
+        ax_main.text(
+            0.02, 0.98,
+            "\n".join(meta_lines),
+            transform=ax_main.transAxes,
+            fontsize=7.5,
+            verticalalignment="top",
+            horizontalalignment="left",
+            fontfamily="monospace",
+            bbox=dict(
+                boxstyle="round,pad=0.4",
+                facecolor="white",
+                alpha=0.88,
+                edgecolor="#AAAAAA",
+                linewidth=0.6,
+            ),
+        )
+
+    # --- Lower panel: normalised residuals ---
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pull = np.where(data_e > 0, (data_y - total_ncp) / data_e, np.nan)
+    valid = np.isfinite(pull)
+    ax_res.errorbar(
+        tof[valid], pull[valid],
+        yerr=np.ones(int(valid.sum())),
+        color="black",
+        linestyle="None", marker="o", markersize=2,
+        capsize=2, elinewidth=0.6, zorder=3,
+    )
+    ax_res.axhline(0.0, color="#888888", linestyle="--", linewidth=0.9)
+    ax_res.set_xlabel(r"TOF ($\mu$s)")
+    ax_res.set_ylabel(r"Residuals ($\sigma$)", fontsize=9)
+    ax_res.set_facecolor("white")
+    ax_res.tick_params(axis="both", direction="in", which="both",
+                       top=True, right=True)
+
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(
+            save_path, bbox_inches="tight", pad_inches=0.05, facecolor="white",
+        )
+        plt.close(fig)
+        logger.info("plot_sum_ncp_fits_publication: saved to %s", save_path)
     return fig
