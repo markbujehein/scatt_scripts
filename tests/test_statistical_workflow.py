@@ -489,5 +489,125 @@ class TestPhase6HistogramAlignment(unittest.TestCase):
         self.assertEqual(residuals.shape, (n_spectra, n_bins))
 
 
+# ---------------------------------------------------------------------------
+# New feature tests: plot_outlier_scatter summary_info, plot_fisher_discriminant
+# ---------------------------------------------------------------------------
+
+
+class TestPlotOutlierScatterSummary(unittest.TestCase):
+    """Verifies the new summary_info parameter of plot_outlier_scatter."""
+
+    def _make_data(self, n=30, seed=5):
+        rng = np.random.default_rng(seed)
+        coords = rng.normal(size=(n, 2))
+        labels = np.zeros(n, dtype=int)
+        labels[:4] = -1
+        return coords, labels
+
+    def test_summary_info_does_not_raise(self):
+        """Passing summary_info must not raise an exception."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_outlier_scatter,
+        )
+        coords, labels = self._make_data()
+        summary = {
+            "n_total": len(labels),
+            "n_outliers": int((labels == -1).sum()),
+            "n_clusters": 2,
+            "n_neighbors": 15,
+            "min_dist": 0.1,
+        }
+        fig = plot_outlier_scatter(coords, labels, summary_info=summary)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_summary_info_none_still_works(self):
+        """summary_info=None must behave identically to the old signature."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_outlier_scatter,
+        )
+        coords, labels = self._make_data()
+        fig = plot_outlier_scatter(coords, labels, summary_info=None)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_summary_info_saves_file(self):
+        """Summary-annotated figure must be saved to disk when save_path given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_outlier_scatter,
+        )
+        coords, labels = self._make_data()
+        summary = {"n_total": len(labels), "n_outliers": 4}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "summary_scatter.pdf"
+            plot_outlier_scatter(coords, labels, save_path=out,
+                                 summary_info=summary)
+            self.assertTrue(out.is_file())
+
+
+class TestPlotFisherDiscriminant(unittest.TestCase):
+    """Verifies the new plot_fisher_discriminant function."""
+
+    def _make_fisher_data(self, n=40, seed=7):
+        rng = np.random.default_rng(seed)
+        # 35 inliers with feature distributions centred at (45, 500, 10)
+        inlier_features = rng.normal(
+            loc=[45.0, 500.0, 10.0], scale=[2.0, 20.0, 1.0], size=(35, 3)
+        )
+        # 5 outliers with markedly different features
+        outlier_features = rng.normal(
+            loc=[90.0, 50.0, 30.0], scale=[2.0, 5.0, 2.0], size=(5, 3)
+        )
+        features = np.vstack([inlier_features, outlier_features])
+        labels = np.array([0] * 35 + [-1] * 5, dtype=int)
+        return features, labels
+
+    def test_returns_figure(self):
+        """plot_fisher_discriminant must return a Figure without raising."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_discriminant,
+        )
+        features, labels = self._make_fisher_data()
+        fig = plot_fisher_discriminant(
+            features, labels, feature_names=["Angle", "Counts", "Width"]
+        )
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_saves_file(self):
+        """plot_fisher_discriminant must save to disk when save_path given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_discriminant,
+        )
+        features, labels = self._make_fisher_data()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "fisher.pdf"
+            plot_fisher_discriminant(features, labels, save_path=out)
+            self.assertTrue(out.is_file())
+
+    def test_single_class_fallback(self):
+        """When only one class is present, must return a Figure gracefully."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_discriminant,
+        )
+        rng = np.random.default_rng(0)
+        features = rng.normal(size=(20, 3))
+        labels = np.zeros(20, dtype=int)   # all inliers, no outliers
+        fig = plot_fisher_discriminant(features, labels)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_default_feature_names(self):
+        """When feature_names is omitted, default names must be generated."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_discriminant,
+        )
+        features, labels = self._make_fisher_data()
+        # Should not raise even without explicit feature_names
+        fig = plot_fisher_discriminant(features, labels)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close("all")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
