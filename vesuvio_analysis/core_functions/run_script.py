@@ -129,6 +129,30 @@ def runScript(
     if userCtr.runRoutine and bootIC.runBootstrap:
         raise ValueError("Main routine and bootstrap both set to run!")
 
+    # --- Configuration-drift guard: bootstrap ↔ main procedure alignment ---
+    if bootIC.runBootstrap:
+        # Auto-default: if the user did not explicitly set the bootstrap
+        # procedure, inherit it from the primary fit so the bootstrap always
+        # operates on the same data domain.
+        if getattr(bootIC, "procedure", None) is None:
+            bootIC.procedure = userCtr.procedure
+
+        _boot_proc = getattr(bootIC, "procedure", None)
+        _main_proc = getattr(userCtr, "procedure", None)
+        _single_bank_modes = ("FORWARD", "BACKWARD")
+        if _boot_proc == "JOINT" and _main_proc in _single_bank_modes:
+            raise ValueError(
+                f"Bootstrap procedure 'JOINT' is incompatible with main "
+                f"procedure '{_main_proc}'.  A JOINT bootstrap requires both "
+                "detector banks to have been fitted (including the "
+                "HToMassIdxRatio estimation for the backward bank), but the "
+                f"primary fit only ran the '{_main_proc}' bank.\n"
+                "Fix: set BootstrapInitialConditions.procedure = "
+                f'"{_main_proc}" to match the primary fit, '
+                'or set UserScriptControls.procedure = "JOINT" '
+                "to run both banks during the primary fit."
+            )
+
     # --- Logging setup ---
     direction = getattr(userCtr, "procedure", None) or "NONE"
     _log_output_dir = getattr(
@@ -1026,6 +1050,33 @@ def _runBayesianBootstrapProcedure(
     elif proc == "FORWARD":
         res = runIndependentIterativeProcedure(fwdIC)
     elif proc == "JOINT":
+        # Pre-flight: the joint procedure calls runJoint which consumes
+        # bckwdIC.HToMassIdxRatio when H is present.  If the primary fit
+        # ran only a single bank this ratio was never estimated, so we must
+        # catch the misconfiguration here rather than letting it crash inside
+        # Mantid with an opaque AssertionError.
+        if isHPresent(fwdIC.masses) and getattr(bckwdIC, "HToMassIdxRatio", None) is None:
+            raise ValueError(
+                "Cannot run a JOINT Bayesian Bootstrap: "
+                "bckwdIC.HToMassIdxRatio is not set.  "
+                "The backward-bank H/mass intensity ratio must be estimated "
+                "by a prior JOINT or BACKWARD primary fit before the bootstrap "
+                "can propagate backward constraints into the forward fit.  "
+                "Set BootstrapInitialConditions.procedure = 'FORWARD' to "
+                "bootstrap only the forward bank, or run the full JOINT "
+                "primary procedure first."
+            )
+        # Verify both bank final workspaces are present in mtd.
+        bckwd_ws = bckwdIC.name + str(bckwdIC.noOfMSIterations)
+        fwd_ws = fwdIC.name + str(fwdIC.noOfMSIterations)
+        missing = [ws for ws in (bckwd_ws, fwd_ws) if ws not in mtd]
+        if missing:
+            raise ValueError(
+                f"Cannot run JOINT Bayesian Bootstrap: workspace(s) "
+                f"{missing} not found in the Mantid Analysis Data Service.  "
+                "Ensure the full JOINT primary fit has completed successfully "
+                "before running a JOINT bootstrap."
+            )
         res = runJointBackAndForwardProcedure(bckwdIC, fwdIC)
     else:
         raise ValueError(f"Invalid bootstrap procedure: {proc}")
