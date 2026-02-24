@@ -55,7 +55,9 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import numpy as np
 from numpy.typing import NDArray
+import pandas as pd
 from scipy import stats
+import seaborn as sns
 from sklearn.cluster import DBSCAN
 from sklearn.covariance import EllipticEnvelope
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -600,6 +602,171 @@ def plot_feature_annotated(
         fig.savefig(save_path)
         plt.close(fig)
     return fig
+
+
+def plot_fisher_decision_dashboard(
+    summary_features: NDArray[np.floating],
+    fisher_scores: NDArray[np.floating],
+    fidelity_labels: NDArray[np.intp],
+    spearman_r: Optional[float] = None,
+    spearman_p: Optional[float] = None,
+    save_path: Optional[Path] = None,
+) -> "sns.axisgrid.JointGrid":
+    """Fisher Decision Dashboard — seaborn jointplot of Counts vs LDA score.
+
+    Replaces the plain Total-Counts/RMS scatter with a publication-quality
+    ``seaborn.jointplot`` that shows *why* a detector was flagged: high-count
+    detectors that still fail the Fisher threshold appear in the upper-left
+    quadrant, directly separating hardware noise from genuine physics.
+
+    Layout:
+        - **Central scatter**: Total Counts (X) vs Fisher Discriminant Score
+          (Y), hued by Fidelity Class (Hi-Fidelity / Poor-Fidelity).
+        - **Top marginal**: KDE of Total Counts per fidelity class.
+        - **Right marginal**: KDE of Fisher Score per fidelity class.
+        - **Corner annotation**: Spearman ρ (Physics Metric) when provided.
+
+    Args:
+        summary_features: Summary feature matrix, shape ``(n_det, >=1)``.
+            Column 0 must be Total Counts.
+        fisher_scores: LDA discriminant scores, shape ``(n_det,)``.
+        fidelity_labels: Convergence labels (``0`` = Hi-Fidelity,
+            ``1`` = Poor-Fidelity, ``-1`` = unlabeled).  Unlabeled
+            detectors are rendered with reduced opacity under the
+            'Unlabeled' class.
+        spearman_r: Spearman rank correlation between Total Counts and
+            Fisher Score.  Displayed as a Physics Metric corner inset.
+        spearman_p: Two-sided p-value for the Spearman correlation.
+        save_path: File path for the output PDF.
+
+    Returns:
+        The :class:`seaborn.axisgrid.JointGrid` figure object.
+    """
+    set_thesis_style()
+
+    total_counts = np.asarray(summary_features[:, 0], dtype=float)
+    scores = np.asarray(fisher_scores, dtype=float)
+    fid = np.asarray(fidelity_labels, dtype=int)
+
+    _label_map = {0: "Hi-Fidelity", 1: "Poor-Fidelity", -1: "Unlabeled"}
+    fid_str = pd.array([_label_map.get(int(v), "Unlabeled") for v in fid],
+                       dtype="string")
+
+    df = pd.DataFrame({
+        "Total Counts": total_counts,
+        "Fisher Score": scores,
+        "Fidelity": fid_str,
+    })
+
+    palette = {
+        "Hi-Fidelity": COLORBLIND_PALETTE[0],
+        "Poor-Fidelity": COLORBLIND_PALETTE[3],
+        "Unlabeled": "#AAAAAA",
+    }
+
+    g = sns.jointplot(
+        data=df,
+        x="Total Counts",
+        y="Fisher Score",
+        hue="Fidelity",
+        kind="scatter",
+        palette=palette,
+        marginal_kws={"fill": True, "linewidth": 0.8, "alpha": 0.5},
+        joint_kws={"alpha": 0.6, "s": 25},
+        height=6,
+    )
+
+    g.ax_joint.set_title(
+        "Fisher Decision Dashboard — Counts vs Discriminant Score",
+        fontsize=9, pad=8,
+    )
+    g.ax_joint.tick_params(direction="in", which="both", top=True, right=True)
+
+    # Physics Metric inset — Spearman ρ in non-obstructive lower-right corner
+    if spearman_r is not None and np.isfinite(float(spearman_r)):
+        _p_str = (
+            f"\n$p={float(spearman_p):.2e}$"
+            if (spearman_p is not None and np.isfinite(float(spearman_p)))
+            else ""
+        )
+        g.ax_joint.text(
+            0.97, 0.03,
+            f"$\\rho_s = {float(spearman_r):.3f}${_p_str}",
+            transform=g.ax_joint.transAxes,
+            fontsize=7, ha="right", va="bottom",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
+                      alpha=0.85, edgecolor="#AAAAAA"),
+        )
+
+    g.figure.tight_layout()
+
+    if save_path is not None:
+        g.figure.savefig(save_path, bbox_inches="tight", dpi=150)
+        plt.close(g.figure)
+    return g
+
+
+def plot_feature_pairplot(
+    summary_features: NDArray[np.floating],
+    fidelity_labels: NDArray[np.intp],
+    feature_names: Optional[List[str]] = None,
+    save_path: Optional[Path] = None,
+) -> "sns.axisgrid.PairGrid":
+    """Pairwise feature audit: seaborn pairplot of summary features.
+
+    Provides the 'Minimal Domain Knowledge' transparency required for
+    peer review: a researcher can see at a glance whether fit failures
+    correlate with specific physical dimensions (e.g. RMS vs Sigma).
+    Points are colour-coded by fidelity class.
+
+    Args:
+        summary_features: Feature matrix, shape ``(n_det, n_features)``.
+        fidelity_labels: Convergence labels (``0`` = Hi-Fidelity,
+            ``1`` = Poor-Fidelity, ``-1`` = unlabeled).
+        feature_names: Human-readable column names.  Defaults to
+            ``['Total Counts', 'RMS', 'Skewness', 'Kurtosis']``.
+        save_path: File path for the output PDF.
+
+    Returns:
+        The :class:`seaborn.axisgrid.PairGrid` figure object.
+    """
+    set_thesis_style()
+
+    if feature_names is None:
+        n_feat = summary_features.shape[1]
+        _defaults = ["Total Counts", "RMS", "Skewness", "Kurtosis"]
+        feature_names = _defaults[:n_feat] + [
+            f"Feature {i}" for i in range(n_feat - len(_defaults))
+        ] if n_feat > len(_defaults) else _defaults[:n_feat]
+
+    _label_map = {0: "Hi-Fidelity", 1: "Poor-Fidelity", -1: "Unlabeled"}
+    fid_str = [
+        _label_map.get(int(v), "Unlabeled") for v in fidelity_labels
+    ]
+
+    df = pd.DataFrame(summary_features, columns=feature_names)
+    df["Fidelity"] = fid_str
+
+    palette = {
+        "Hi-Fidelity": COLORBLIND_PALETTE[0],
+        "Poor-Fidelity": COLORBLIND_PALETTE[3],
+        "Unlabeled": "#AAAAAA",
+    }
+
+    g = sns.pairplot(
+        df, hue="Fidelity",
+        palette=palette,
+        diag_kind="kde",
+        plot_kws={"alpha": 0.6, "s": 15},
+        diag_kws={"fill": True, "linewidth": 0.8},
+    )
+    g.figure.suptitle("Feature Pairwise Audit", y=1.02, fontsize=10)
+
+    if save_path is not None:
+        g.figure.savefig(save_path, bbox_inches="tight", dpi=150)
+        plt.close(g.figure)
+    return g
 
 
 def plot_fisher_distribution(
@@ -1931,7 +2098,7 @@ def plot_sum_ncp_fits_publication(
         else:
             meta_lines.append(f"Included Spectra: {spec_ids}")
     if "n_outliers" in metadata:
-        meta_lines.append(f"Outliers Masked: {int(metadata['n_outliers'])}")
+        meta_lines.append(f"Detectors masked: {int(metadata['n_outliers'])}")
     if "chi2" in metadata and "ndof" in metadata:
         chi2_v = float(metadata["chi2"])
         ndof_v = int(metadata["ndof"])

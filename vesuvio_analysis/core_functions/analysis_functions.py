@@ -13,7 +13,7 @@ from iminuit import Minuit
 from mantid.simpleapi import *
 from scipy import optimize
 
-from vesuvio_analysis.core_functions.fit_in_yspace import passDataIntoWS, replaceZerosWithNCP, switchFirstTwoAxis
+from vesuvio_analysis.core_functions.fit_in_yspace import passDataIntoWS, replaceZerosWithNCP, switchFirstTwoAxis, _MODEL_DISPLAY_NAMES
 from vesuvio_analysis.core_functions.iminuit_costs import NCPCostFunction
 from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory, set_print_options, COLORBLIND_PALETTE
 
@@ -1302,9 +1302,13 @@ def plotSumNCPFits(wsDataSum: Any, wsTotNCPSum: Any, wsMNCPSum: List[Any], IC: A
 
     # --- Build thesis-quality figure title from IC.name ---
     sample, temp_val, model = _parse_script_name_components(IC.name)
+    # Prefer the injected y-space fit model (set by run_script) over the
+    # script-name fragment so that e.g. ANSIO_GAUSSIAN displays correctly.
+    raw_fit_model = getattr(IC, "_yfit_model", "") or model
+    model_display = _MODEL_DISPLAY_NAMES.get(raw_fit_model, raw_fit_model)
     title = (
         f"{sample} @ {temp_val} K | {IC.modeRunning} | "
-        f"Summed NCP Fit ({model})"
+        f"Summed NCP Fit ({model_display})"
     )
 
     # --- Build metadata dict from IC attributes ---

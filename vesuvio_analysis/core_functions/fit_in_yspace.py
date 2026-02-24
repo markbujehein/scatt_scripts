@@ -31,6 +31,14 @@ repoPath = Path(__file__).absolute().parent  # Path to the repository
 # Helpers for global-fit plot metadata and LaTeX labelling
 # ---------------------------------------------------------------------------
 
+#: Width/sigma parameter base-names that must remain strictly positive.
+#: Applied as lower bounds (1e-6, None) to iMinuit via ``m.limits`` in both
+#: single-spectrum and global-fit paths.  Strip trailing digit group indices
+#: before lookup.
+_SIGMA_PARAM_NAMES: frozenset = frozenset({
+    "sigma", "sigma1", "sig_x", "sig_y", "sig_z", "sig_para", "sig_perp",
+})
+
 #: Maps known model parameter base-names to LaTeX math strings (no $ delimiters).
 _BASE_PARAM_LATEX: Dict[str, str] = {
     "sig_x":    r"\sigma_x",
@@ -155,7 +163,7 @@ def fitInYSpaceProcedure(
         if yFitIC.symmetrisationFlag:
             wsJoYAvg = symmetrizeWs(wsJoYAvg)
 
-        fitProfileMinuit(yFitIC, wsJoYAvg, wsResSum)
+        fitProfileMinuit(yFitIC, wsJoYAvg, wsResSum, IC=IC, mass=mass)
         fitProfileMantidFit(yFitIC, wsJoYAvg, wsResSum)
 
         printYSpaceFitResults(wsJoYAvg.name())
@@ -179,7 +187,7 @@ def fitInYSpaceProcedure(
         all_results.append(yfitResults)
 
         if yFitIC.globalFit:
-            runGlobalFit(wsJoY, wsRes, IC, yFitIC)
+            runGlobalFit(wsJoY, wsRes, IC, yFitIC, mass=mass)
 
     # Primary-mass result (mass index 0) is returned for backward compat
     yfitResults = all_results[0]
@@ -853,7 +861,10 @@ def weightedSymArr(
     return dataYS, dataES
 
 
-def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
+def fitProfileMinuit(
+    yFitIC: Any, wsYSpaceSym: Any, wsRes: Any, IC: Any = None,
+    mass: float = float("nan"),
+) -> None:
     """Fit the y-space profile using iMinuit.
 
     Builds a convolved model (J(y) model ⊗ resolution), creates the
@@ -871,6 +882,10 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
         wsYSpaceSym: The (optionally symmetrised) weighted-average
             J(y) workspace (1 spectrum).
         wsRes: The summed resolution workspace (1 spectrum).
+        IC: Optional initial-conditions object forwarded to the plot
+            for metadata annotation (spectra range, outlier count).
+        mass: Physical mass (amu) of the species being fitted, shown
+            in the plot title and metadata annotation box.
     """
 
     dataX, dataY, dataE = extractFirstSpectra(wsYSpaceSym)
@@ -915,6 +930,12 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
         m.limits["d"] = (0, None)
         m.limits["R"] = (0, None)
 
+    # Hard physics constraint: sigma/width params must be strictly positive to
+    # avoid singular Hessian and unphysical zero-width solutions.
+    for _par in m.parameters:
+        if _par.rstrip("0123456789") in _SIGMA_PARAM_NAMES:
+            m.limits[_par] = (1e-6, None)
+
     if yFitIC.fitModel=="SINGLE_GAUSSIAN":
         m.simplex()
         m.migrad()
@@ -943,7 +964,7 @@ def fitProfileMinuit(yFitIC: Any, wsYSpaceSym: Any, wsRes: Any) -> None:
 
     # Create workspace to store best fit curve and errors on the fit
     wsMinFit = createFitResultsWorkspace(wsYSpaceSym, dataX, dataY, dataE, dataYFit, dataYSigma, Residuals)
-    saveMinuitPlot(yFitIC, wsMinFit, m)
+    saveMinuitPlot(yFitIC, wsMinFit, m, IC=IC, chi2=chi2, mass=mass)
 
     # Calculate correlation matrix
     corrMatrix = m.covariance.correlation()
@@ -1241,33 +1262,136 @@ def createFitResultsWorkspace(
     return wsMinFit
 
 
-def saveMinuitPlot(yFitIC: Any, wsMinuitFit: Any, mObj: Minuit) -> None:
-    """Save a PDF plot of the Minuit fit result.
+def saveMinuitPlot(
+    yFitIC: Any,
+    wsMinuitFit: Any,
+    mObj: Minuit,
+    IC: Any = None,
+    chi2: float = float("nan"),
+    mass: float = float("nan"),
+) -> None:
+    """Save an enhanced PDF plot of the Minuit fit result.
+
+    Layout: top panel (data + best-fit model, 3:1 height) above a bottom
+    panel showing the raw residuals ``data − fit``.  When *IC* or *chi2*
+    are provided a semi-transparent annotation box listing spectra range,
+    outlier count, and reduced chi² is anchored to the upper-left of the
+    data panel.  Parameter labels in the legend use LaTeX notation via
+    ``_latex_par_label``.
 
     Args:
-        yFitIC: Y-space fit configuration with ``figSavePath``.
-        wsMinuitFit: The 3-spectrum fit-result workspace.
+        yFitIC: Y-space fit configuration with ``figSavePath`` and
+            ``fitModel``.
+        wsMinuitFit: The 3-spectrum fit-result workspace (spectra 0 = data,
+            1 = fit, 2 = residuals).
         mObj: The ``Minuit`` object (used for the legend).
+        IC: Optional initial-conditions object supplying ``scriptName``,
+            ``modeRunning``, ``firstSpec``, ``lastSpec``, and
+            ``maskedSpecNo``.  Pass ``None`` to omit the metadata box.
+        chi2: Reduced chi-squared shown in the annotation box.
+        mass: Physical mass (amu) of the fitted species; included in the
+            plot title and metadata annotation box when finite.
     """
+    # --- LaTeX-formatted parameter legend ---
+    leg_lines = [
+        f"{_latex_par_label(p)} = {v:.3f} \u00b1 {e:.3f}"
+        for p, v, e in zip(mObj.parameters, mObj.values, mObj.errors)
+    ]
+    leg = "\n".join(leg_lines)
 
-    leg = ""
-    for p, v, e in zip(mObj.parameters, mObj.values, mObj.errors):
-        leg += f"${p}={v:.2f} \pm {e:.2f}$\n"
+    # --- Dynamic title derived from IC or workspace name ---
+    if IC is not None:
+        sample, temp = _parse_script_metadata(getattr(IC, "scriptName", ""))
+        bank = getattr(IC, "modeRunning", "Bank")
+    else:
+        sample, temp = _parse_script_metadata(wsMinuitFit.name())
+        bank = ""
+    raw_model = getattr(yFitIC, "fitModel", "")
+    model_display = _MODEL_DISPLAY_NAMES.get(raw_model, raw_model or "Minuit")
+    bank_sep = f" | {bank}" if bank else ""
+    mass_sep = f" | Mass {mass:.4g}" if not np.isnan(mass) else ""
+    plot_title = f"{sample} @ {temp}{bank_sep}{mass_sep} | {model_display} Fit"
 
+    # --- Figure layout: data panel (3) + residuals panel (1) ---
     set_thesis_style()
-    fig, ax = figure_factory(subplot_kw={"projection": "mantid"})
-    # Experimental: weighted-average J(y) spectrum — points + error bars
-    ax.errorbar(wsMinuitFit, wkspIndex=0, color=COLORBLIND_PALETTE[7],
-                label="Weighted Avg", **EXPERIMENTAL_STYLE)
-    # Theoretical: Minuit best-fit model curve — smooth line, no error bars
-    ax.plot(wsMinuitFit, wkspIndex=1, color=COLORBLIND_PALETTE[3],
-            label=leg, **THEORETICAL_STYLE)
-    ax.set_xlabel(r"$y$ ($\AA^{-1}$)")
-    ax.set_ylabel(r"$J(y)$ (a.u.)")
-    ax.set_title("Minuit Fit")
-    ax.legend()
+    width_in = cm_to_inches(FULL_WIDTH_CM)
+    fig = plt.figure(figsize=(width_in, width_in * 0.75))
+    gs = GridSpec(2, 1, height_ratios=[3, 1], hspace=0.08, figure=fig)
 
-    fileName = wsMinuitFit.name()+".pdf"
+    try:
+        ax_data = fig.add_subplot(gs[0], projection="mantid")
+        ax_resid = fig.add_subplot(gs[1], projection="mantid")
+    except Exception:
+        ax_data = fig.add_subplot(gs[0])
+        ax_resid = fig.add_subplot(gs[1])
+
+    # Experimental: weighted-average J(y) — points + error bars
+    ax_data.errorbar(
+        wsMinuitFit, wkspIndex=0,
+        color=COLORBLIND_PALETTE[7],
+        label="Weighted Avg",
+        **EXPERIMENTAL_STYLE,
+    )
+    # Theoretical: Minuit best-fit model curve — smooth line
+    ax_data.plot(
+        wsMinuitFit, wkspIndex=1,
+        color=COLORBLIND_PALETTE[3],
+        label=leg,
+        **THEORETICAL_STYLE,
+    )
+    ax_data.set_title(plot_title)
+    ax_data.tick_params(labelbottom=False)
+    ax_data.set_xlabel("")
+    ax_data.set_ylabel(r"$J(y)$ (a.u.)")
+    ax_data.legend(fontsize=9)
+
+    # Residuals panel — relative divergence (d-f)/f, NBI AppStat convention.
+    # Extract raw arrays from the workspace (spectrum 2 = data-fit stored as
+    # absolute residuals; spectrum 0 = data, spectrum 1 = fit).
+    try:
+        _data_y = wsMinuitFit.readY(0)
+        _fit_y = wsMinuitFit.readY(1)
+        _x_vals = wsMinuitFit.readX(0)
+        _x_mid = 0.5 * (_x_vals[:-1] + _x_vals[1:]) if len(_x_vals) == len(_data_y) + 1 else _x_vals
+        _fit_safe = np.where(np.abs(_fit_y) > 1e-12, _fit_y, np.nan)
+        _rel_resid = (_data_y - _fit_y) / _fit_safe
+        ax_resid.scatter(_x_mid, _rel_resid, s=6,
+                         color=COLORBLIND_PALETTE[0], alpha=0.8, zorder=3)
+    except Exception:
+        # Fallback: plot raw residual workspace spectrum if array access fails
+        ax_resid.plot(
+            wsMinuitFit, wkspIndex=2,
+            color=COLORBLIND_PALETTE[0],
+            linestyle="None", marker=".", markersize=3,
+        )
+    ax_resid.axhline(0, color="0.4", linewidth=0.8, linestyle="--")
+    ax_resid.set_xlabel(r"$y$ ($\AA^{-1}$)")
+    ax_resid.set_ylabel(r"$(d-f)/f$", fontsize=9)
+
+    # --- Metadata annotation box (upper-left of data panel) ---
+    if IC is not None or not np.isnan(chi2):
+        n_masked = len(getattr(IC, "maskedSpecNo", [])) if IC is not None else 0
+        first_spec = getattr(IC, "firstSpec", "?") if IC is not None else "?"
+        last_spec = getattr(IC, "lastSpec", "?") if IC is not None else "?"
+        chi2_str = f"{chi2:.3f}" if not np.isnan(chi2) else "N/A"
+        mass_line = f"Mass: {mass:.4f} amu\n" if not np.isnan(mass) else ""
+        box_text = (
+            f"{mass_line}"
+            f"Spectra: {first_spec}\u2013{last_spec}\n"
+            f"Detectors masked: {n_masked}\n"
+            f"Reduced $\\chi^2$: {chi2_str}"
+        )
+        ax_data.annotate(
+            box_text,
+            xy=(0.02, 0.97), xycoords="axes fraction",
+            va="top", ha="left", fontsize=9,
+            bbox=dict(
+                boxstyle="round,pad=0.4",
+                facecolor="white", edgecolor="0.7", alpha=0.85,
+            ),
+        )
+
+    fileName = wsMinuitFit.name() + ".pdf"
     savePath = yFitIC.figSavePath / fileName
     plt.savefig(savePath, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
@@ -1961,7 +2085,8 @@ class ResultsYFitObject:
 
 
 def runGlobalFit(
-    wsYSpace: Any, wsRes: Any, IC: Any, yFitIC: Any
+    wsYSpace: Any, wsRes: Any, IC: Any, yFitIC: Any,
+    mass: float = float("nan"),
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Perform a simultaneous (global) fit across detector groups.
 
@@ -2026,6 +2151,12 @@ def runGlobalFit(
         m.limits["d"] = (0, np.inf)     # Shared parameters
         m.limits["R"] = (0, np.inf) 
 
+    # Hard physics constraint: sigma/width params must be strictly positive
+    # (applies to both shared and indexed-unshared copies, e.g. "sigma1_2").
+    for _par in m.parameters:
+        if _par.rstrip("0123456789") in _SIGMA_PARAM_NAMES:
+            m.limits[_par] = (1e-6, np.inf)
+
     t0 = time.time()
     if yFitIC.fitModel=="SINGLE_GAUSSIAN":
         m.simplex()
@@ -2075,7 +2206,7 @@ def runGlobalFit(
 
     if yFitIC.showPlots:
         plotGlobalFit(dataX, dataY, dataE, m, totCost, wsYSpace.name(),
-                      IC=IC, yFitIC=yFitIC, chi2=chi2)
+                      IC=IC, yFitIC=yFitIC, chi2=chi2, mass=mass)
     
     return np.array(m.values), np.array(m.errors)     # Pass into array to store values in variable
 
@@ -2670,22 +2801,25 @@ def plotGlobalFit(
     IC: Any = None,
     yFitIC: Any = None,
     chi2: float = float("nan"),
+    mass: float = float("nan"),
 ) -> None:
-    """Plot the global fit results per detector group with metadata overlay.
+    """Plot the global fit results per detector group with per-group residuals.
 
-    Produces a figure with two sections:
+    Produces a figure with *n_groups* columns.  Each column contains:
 
-    * **Upper (4:4 height ratio)**: one subplot per detector group showing
-      J(y) data (black error bars) overlaid with the global model curve
-      (coloured line) and a legend with LaTeX-formatted parameter values.
-      The first panel carries a semi-transparent annotation box listing
-      the included spectra, outlier count, and global reduced chi-squared.
-    * **Lower (1 height ratio)**: a single panel spanning all columns
-      showing normalised residuals ``(data - model) / sigma`` across the
-      full y-range for all groups.
+    * **Top panel (3 height units)**: J(y) data (black error bars) overlaid
+      with the global model curve (coloured line) and a legend with
+      LaTeX-formatted parameter values.  The first column additionally
+      carries a semi-transparent annotation box listing the included
+      spectra, outlier count, and global reduced chi-squared.
+    * **Bottom panel (1 height unit)**: normalised residuals
+      ``(data − model) / sigma`` for that group only.
+
+    For more than 4 groups the columns are wrapped into successive rows of
+    ``[data, residuals]`` pairs (at most 4 groups per row).
 
     The figure is titled ``"{sample} @ {temp} | {bank} | Global {model} Fit"``
-    and saved to ``yFitIC.figSavePath`` as ``{wsName}_Global_Fit.pdf``.
+    and saved to ``yFitIC.figSavePath`` as ``{wsName}_Fitted_Minuit.pdf``.
 
     Skipped if more than 10 groups are present.
 
@@ -2708,11 +2842,7 @@ def plotGlobalFit(
         print("\nToo many axes to show in figure, skipping the plot ...\n")
         return
 
-    set_thesis_style()
-
     n_groups = len(dataY)
-    rows_data = 2
-    n_cols = max(1, int(np.ceil(n_groups / rows_data)))
 
     # --- Parse sample / temperature / bank / model from IC and yFitIC ---
     sample, temp, bank = "Unknown", "?K", "Bank"
@@ -2723,132 +2853,145 @@ def plotGlobalFit(
     if yFitIC is not None:
         raw_model = getattr(yFitIC, "fitModel", "")
         model_display = _MODEL_DISPLAY_NAMES.get(raw_model, raw_model)
-    plot_title = f"{sample} @ {temp} | {bank} | Global {model_display} Fit"
+    mass_sep = f" | Mass {mass:.4g}" if not np.isnan(mass) else ""
+    plot_title = f"{sample} @ {temp} | {bank}{mass_sep} | Global {model_display} Fit"
 
-    # --- Figure layout: two data rows (height 4 each) + residuals row (height 1) ---
+    # --- Grid layout: at most 4 groups per row, each row = [data(3), resid(1)] ---
+    n_cols = min(n_groups, 4)
+    n_row_pairs = int(np.ceil(n_groups / n_cols))  # pairs of (data + residual) rows
+    total_rows = n_row_pairs * 2
+    hr = [3, 1] * n_row_pairs   # height_ratios alternates 3, 1
+
+    set_thesis_style()
     width_in = cm_to_inches(FULL_WIDTH_CM)
-    height_in = width_in * 1.0   # tall enough for both sections
-    fig = plt.figure(figsize=(width_in, height_in))
+    height_in = width_in * (0.5 * n_row_pairs)
+    fig = plt.figure(figsize=(width_in, max(height_in, 4.0)))
     gs = GridSpec(
-        nrows=3,
+        nrows=total_rows,
         ncols=n_cols,
-        height_ratios=[4, 4, 1],
-        hspace=0.55,
+        height_ratios=hr,
+        hspace=0.12,
         wspace=0.35,
         figure=fig,
     )
+    fig.suptitle(plot_title, fontsize=12, fontweight="bold", y=1.09)
 
-    # Build axes for data groups (mantid projection when available)
-    axs_data: List[Any] = []
-    for r in range(rows_data):
+    axs_data: list = []
+    axs_resid: list = []
+    for pair_row in range(n_row_pairs):
+        data_row_idx = pair_row * 2
+        resid_row_idx = pair_row * 2 + 1
         for c in range(n_cols):
-            try:
-                ax = fig.add_subplot(gs[r, c], projection="mantid")
-            except Exception:
-                ax = fig.add_subplot(gs[r, c])
-            axs_data.append(ax)
+            axs_data.append(fig.add_subplot(gs[data_row_idx, c]))
+            axs_resid.append(fig.add_subplot(gs[resid_row_idx, c]))
 
-    # Single residuals axis spanning all columns
-    ax_resid = fig.add_subplot(gs[2, :])
+    # --- Fill each group's subplot pair ---
+    cost_list = list(totCost)  # materialise once — avoids re-iterating on each step
+    for i, (x, y, yerr) in enumerate(zip(dataX, dataY, dataE)):
+        if i >= len(axs_data):
+            break
+        ax_d = axs_data[i]
+        ax_r = axs_resid[i]
 
-    fig.suptitle(plot_title, fontsize=12, y=1.005)
-
-    # --- Experimental: J(y) data per group — black error bars ---
-    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_data)):
-        ax.errorbar(
+        # Data points — open circles, reduced alpha to let fit line breathe through
+        _global_data_kw = {
+            **EXPERIMENTAL_STYLE,
+            "alpha": 0.3,
+            "marker": "o",
+            "mfc": "none",
+            "markersize": 2,
+        }
+        ax_d.errorbar(
             x, y, yerr,
             color=COLORBLIND_PALETTE[7],
             label=f"Group {i}",
-            **EXPERIMENTAL_STYLE,
+            **_global_data_kw,
         )
 
-    # --- Theoretical: model curves + residual accumulation ---
-    all_resid_x: List[np.ndarray] = []
-    all_resid_y: List[np.ndarray] = []
-    for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_data)):
+        # Model curve + per-group LaTeX legend
+        costFun = cost_list[i]
         signature = describe(costFun)
-        values = mObj.values[signature]
-        errors = mObj.errors[signature]
-
-        x_dense = np.linspace(
-            float(x.min()), float(x.max()),
-            min(max(500, 5 * len(x)), 2000),
-        )
+        values = np.asarray(mObj.values[signature])
+        errors = np.asarray(mObj.errors[signature])
+        x_dense = np.linspace(float(x.min()), float(x.max()),
+                              min(max(500, 5 * len(x)), 2000))
         yfit_smooth = costFun.model(x_dense, *values)
-
-        # LaTeX parameter labels — group index is implicit from the panel.
         leg_lines = [
             f"{_latex_par_label(p)} = {v:.3f} \u00b1 {e:.3f}"
             for p, v, e in zip(signature, values, errors)
         ]
+        # Anisotropy ratio σ_x/σ_y: append when both transverse widths are fitted
+        _sx = next((v for p, v in zip(signature, values)
+                    if p.rstrip("0123456789") == "sig_x"), None)
+        _sy = next((v for p, v in zip(signature, values)
+                    if p.rstrip("0123456789") == "sig_y"), None)
+        if _sx is not None and _sy is not None and abs(_sy) > 1e-6:
+            leg_lines.append(rf"$\sigma_x/\sigma_y$ = {_sx / _sy:.3f}")
         colour = COLORBLIND_PALETTE[i % len(COLORBLIND_PALETTE)]
-        ax.plot(
+        _global_fit_kw = {**THEORETICAL_STYLE, "linewidth": 1.2}
+        ax_d.plot(
             x_dense, yfit_smooth,
             color=colour,
             label="\n".join(leg_lines),
-            **THEORETICAL_STYLE,
+            **_global_fit_kw,
         )
-        ax.set_xlabel("$y$ (Å$^{-1}$)", fontsize=10)
-        ax.set_ylabel("$J(y)$ (Å)", fontsize=10)
-        ax.legend(fontsize=7, loc="upper right")
+        ax_d.tick_params(labelbottom=False)
+        ax_d.set_ylabel(r"$J(y)$ (Å)", fontsize=9)
+        ax_d.legend(fontsize=8, loc="upper right", framealpha=0.5)
 
-        # Normalised residuals at data x-points (skip zero-error bins)
+        # Per-group relative divergence residuals — (d-f)/f, NBI AppStat convention.
+        # Skip bins where the model is effectively zero to avoid division instability.
         yfit_at_data = costFun.model(x, *values)
-        valid = dataE[i] != 0
-        all_resid_x.append(x[valid])
-        all_resid_y.append((dataY[i][valid] - yfit_at_data[valid]) / dataE[i][valid])
+        fit_safe = np.where(np.abs(yfit_at_data) > 1e-12, yfit_at_data, np.nan)
+        rel_resid = (y - yfit_at_data) / fit_safe
+        valid_pts = np.isfinite(rel_resid)
+        ax_r.scatter(x[valid_pts], rel_resid[valid_pts], s=6, color=colour, alpha=0.65, zorder=3)
+        ax_r.axhline(0, color="0.4", linewidth=0.8, linestyle="--")
+        ax_r.set_ylim(-0.3, 0.3)
+        ax_r.set_xlabel(r"$y$ (Å$^{-1}$)", fontsize=9)
+        if i % n_cols == 0:
+            ax_r.set_ylabel(r"$(d-f)/f$", fontsize=8)
+        ax_r.tick_params(direction="in")
 
-    # --- Metadata annotation box on the first group subplot (upper-left) ---
-    if IC is not None and axs_data:
-        n_masked = len(getattr(IC, "maskedSpecNo", []))
-        first_spec = getattr(IC, "firstSpec", "?")
-        last_spec = getattr(IC, "lastSpec", "?")
-        box_text = (
-            f"Spectra: {first_spec}\u2013{last_spec}\n"
-            f"Outliers masked: {n_masked}\n"
-            f"Reduced $\\chi^2$: {chi2:.3f}"
+    # --- Metadata header strip — positioned above the grid, below the suptitle.
+    # Using fig.text keeps it out of all group legends and axes areas.
+    if (IC is not None or not np.isnan(chi2)) and axs_data:
+        n_masked = len(getattr(IC, "maskedSpecNo", [])) if IC is not None else 0
+        first_spec = getattr(IC, "firstSpec", "?") if IC is not None else "?"
+        last_spec = getattr(IC, "lastSpec", "?") if IC is not None else "?"
+        chi2_str = f"{chi2:.3f}" if not np.isnan(chi2) else "N/A"
+        mass_str = f"  |  Mass: {mass:.4g} amu" if not np.isnan(mass) else ""
+        meta_line = (
+            f"Spectra: {first_spec}\u2013{last_spec}"
+            f"  |  Detectors masked: {n_masked}"
+            f"{mass_str}"
+            f"  |  Reduced \u03c7\u00b2: {chi2_str}"
         )
-        axs_data[0].annotate(
-            box_text,
-            xy=(0.02, 0.97),
-            xycoords="axes fraction",
-            va="top",
-            ha="left",
-            fontsize=9,
+        fig.text(
+            0.5, 1.03,
+            meta_line,
+            ha="center", va="bottom",
+            fontsize=8,
+            transform=fig.transFigure,
             bbox=dict(
-                boxstyle="round,pad=0.4",
-                facecolor="white",
-                edgecolor="0.7",
-                alpha=0.85,
+                boxstyle="round,pad=0.3",
+                facecolor="0.97", edgecolor="0.8", alpha=0.7,
             ),
         )
 
-    # --- Hide unused data axes when n_groups < rows_data * n_cols ---
+    # --- Hide unused subplot pairs when n_groups < n_row_pairs * n_cols ---
     for ax in axs_data[n_groups:]:
         ax.set_visible(False)
+    for ax in axs_resid[n_groups:]:
+        ax.set_visible(False)
 
-    # --- Global residuals panel ---
-    if all_resid_x:
-        rx = np.concatenate(all_resid_x)
-        ry = np.concatenate(all_resid_y)
-        sort_idx = np.argsort(rx)
-        rx, ry = rx[sort_idx], ry[sort_idx]
-        ax_resid.scatter(
-            rx, ry,
-            s=8,
-            color=COLORBLIND_PALETTE[0],
-            alpha=0.6,
-            zorder=3,
-        )
-        ax_resid.axhline(0, color="0.4", linewidth=0.8, linestyle="--")
-        ax_resid.set_xlabel("$y$ (Å$^{-1}$)", fontsize=10)
-        ax_resid.set_ylabel("$(d{-}f)/\\sigma$", fontsize=9)
-        ax_resid.tick_params(direction="in")
-
-    # --- Save and display ---
+    # --- Save ---
     if yFitIC is not None:
         fig_save_path = getattr(yFitIC, "figSavePath", None)
         if fig_save_path is not None:
-            fig.savefig(fig_save_path / f"{wsName}_Global_Fit.pdf")
-    fig.show()
+            fig.savefig(
+                fig_save_path / f"{wsName}_Fitted_Minuit.pdf",
+                bbox_inches="tight", pad_inches=0.05,
+            )
+    plt.close(fig)
     return

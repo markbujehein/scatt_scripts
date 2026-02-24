@@ -965,5 +965,66 @@ class TestPhase6DiagnosticPlots(unittest.TestCase):
             self.assertTrue(out.is_file())
 
 
+    def test_fisher_decision_dashboard_returns_grid(self):
+        """plot_fisher_decision_dashboard must return a seaborn JointGrid."""
+        import seaborn as sns
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_decision_dashboard,
+        )
+        rng = np.random.default_rng(42)
+        n = 30
+        features = rng.normal(size=(n, 4))
+        scores = rng.uniform(-2.0, 2.0, n)
+        fidelity = np.array([0] * 20 + [1] * 10, dtype=np.intp)
+        grid = plot_fisher_decision_dashboard(features, scores, fidelity,
+                                              spearman_r=0.42, spearman_p=0.01)
+        self.assertIsInstance(grid, sns.JointGrid)
+        plt.close("all")
+
+    def test_fisher_decision_dashboard_saves_file(self):
+        """plot_fisher_decision_dashboard must save a file when save_path given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_fisher_decision_dashboard,
+        )
+        rng = np.random.default_rng(7)
+        n = 20
+        features = rng.normal(size=(n, 4))
+        scores = rng.uniform(-1.5, 1.5, n)
+        fidelity = np.zeros(n, dtype=np.intp)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "fisher_dashboard.pdf"
+            plot_fisher_decision_dashboard(features, scores, fidelity,
+                                           save_path=out)
+            self.assertTrue(out.is_file())
+
+    def test_feature_pairplot_returns_pairgrid(self):
+        """plot_feature_pairplot must return a seaborn PairGrid."""
+        import seaborn as sns
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_feature_pairplot,
+        )
+        rng = np.random.default_rng(99)
+        n = 30
+        features = rng.normal(size=(n, 4))
+        fidelity = np.array([0] * 20 + [1] * 10, dtype=np.intp)
+        grid = plot_feature_pairplot(features, fidelity)
+        self.assertIsInstance(grid, sns.PairGrid)
+        plt.close("all")
+
+    def test_feature_pairplot_saves_file(self):
+        """plot_feature_pairplot must save a file when save_path given."""
+        from vesuvio_analysis.core_functions.statistical_plugins import (
+            plot_feature_pairplot,
+        )
+        rng = np.random.default_rng(3)
+        n = 20
+        features = rng.normal(size=(n, 4))
+        fidelity = np.zeros(n, dtype=np.intp)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "pairplot.pdf"
+            plot_feature_pairplot(features, fidelity, save_path=out)
+            self.assertTrue(out.is_file())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

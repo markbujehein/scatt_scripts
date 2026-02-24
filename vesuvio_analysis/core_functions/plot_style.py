@@ -80,9 +80,9 @@ COLORBLIND_PALETTE: list[str] = [
 EXPERIMENTAL_STYLE: dict = {
     "linestyle": "None",
     "marker": "o",
-    "markersize": 4,
-    "capsize": 3,
-    "elinewidth": 0.8,
+    "markersize": 3,
+    "capsize": 2,
+    "elinewidth": 1.0,
     "alpha": 1.0,
     "zorder": 3,  # foreground — on top of theoretical curves
 }

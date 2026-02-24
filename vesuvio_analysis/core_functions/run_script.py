@@ -160,6 +160,12 @@ def runScript(
     completeBootIC(bootIC, bckwdIC, fwdIC, yFitIC)
     completeYFitIC(yFitIC, scriptName)
 
+    # Inject y-space fit model onto NCP ICs so plotSumNCPFits titles reflect
+    # the actual fitting model rather than the script-name fragment.
+    _yfit_model_str = getattr(yFitIC, "fitModel", "")
+    for _ncp_ic in (bckwdIC, fwdIC):
+        _ncp_ic._yfit_model = _yfit_model_str
+
     checkInputs(userCtr)
     checkInputs(bootIC)
     if userCtr.runRoutine and bootIC.runBootstrap:
