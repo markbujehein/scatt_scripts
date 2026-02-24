@@ -65,6 +65,12 @@ class GeneralInitialConditions:
         preliminaryNoOfIterations: Number of iterations for automatic H-ratio
             convergence when hydrogen is detected but HToMassIdxRatio is unknown.
             Applied only in JOINT procedures.
+        maskedSpecAllNo: Array of absolute spectrum numbers to permanently
+            exclude from any fit (e.g. dead or noisy detectors).
+        subEmptyFromRaw: When True the empty-can spectrum is subtracted from
+            the raw data prior to any fitting.
+        scaleEmpty: Scaling factor applied to the empty-can spectrum.
+        scaleRaw: Scaling factor applied to the raw data spectrum.
     """
 
     # Sample slab parameters
@@ -123,6 +129,8 @@ class BackwardInitialConditions(GeneralInitialConditions):
             used in the multiple-scattering correction.
         multiple_scattering_order: Maximum order of multiple scattering to model.
         number_of_events: Number of Monte Carlo events for the MS correction.
+        runHistData: Boolean.  With True the workspace is kept in histogram mode
+            during NCP fitting; normally this is False.
     """
 
     # subEmptyFromRaw = True
@@ -224,6 +232,8 @@ class ForwardInitialConditions(GeneralInitialConditions):
         transmission_guess: Estimated neutron transmission of the sample.
         multiple_scattering_order: Maximum order of multiple scattering to model.
         number_of_events: Number of Monte Carlo events for the MS correction.
+        runHistData: Boolean.  With True the workspace is kept in histogram mode
+            during NCP fitting; normally this is False.
     """
 
     # subEmptyFromRaw = False
@@ -316,12 +326,15 @@ class YSpaceFitInitialConditions:
         maskTypeProcedure: Method used to handle masked bins during fitting.
             Options: 'NCP' (replace with NCP estimate), 'NAN' (leave as NaN),
             None (no masking applied).
+        runHistData: Boolean flag; if True, data are kept as histograms when
+            passed into fitting routines instead of being converted to point
+            data.  Mostly used for backward-compatibility with older scripts.
     """
 
     showPlots = True
     symmetrisationFlag = True
     rebinParametersForYSpaceFit = "-25, 0.5, 25"  # Needs to be symmetric
-    fitModel = "SINGLE_GAUSSIAN"  # Options: 'SINGLE_GAUSSIAN', 'GC_C4', 'GC_C6', 'GC_C4_C6', 'DOUBLE_WELL', 'ANSIO_GAUSSIAN'
+    fitModel = "ANSIO_GAUSSIAN"  # Options: 'SINGLE_GAUSSIAN', 'GC_C4', 'GC_C6', 'GC_C4_C6', 'DOUBLE_WELL', 'ANSIO_GAUSSIAN'
     runMinos = True
     globalFit = True  # Performs global fit with Minuit by default
     nGlobalFitGroups = 3  # Number or string "ALL"
@@ -474,7 +487,7 @@ class BootstrapAnalysis:
 
 
 # Initialize classes and run script below
-# Not for useers
+# Not for users
 
 start_time = time.time()
 

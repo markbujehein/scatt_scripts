@@ -208,6 +208,55 @@ def compute_anisotropy_residuals(
     }
 
 
+def compute_sigma_ratio_correlation(
+    sig_x: NDArray[np.floating],
+    sig_y: NDArray[np.floating],
+    theta_deg: NDArray[np.floating],
+) -> Dict[str, Any]:
+    """Compute Spearman correlation between the σ_x/σ_y anisotropy ratio and θ.
+
+    For anisotropic models (``ANSIO_GAUSSIAN``, ``DOUBLE_WELL``) fitted
+    independently per group or per detector, reports whether the momentum
+    distribution anisotropy itself varies with scattering angle.  A
+    significant correlation indicates a physical angular dependence of the
+    nuclear momentum state (e.g. rotation-translation coupling).
+
+    Args:
+        sig_x: Per-group longitudinal momentum widths (σ_x or σ_∥),
+            shape ``(n_groups,)``.
+        sig_y: Per-group transverse momentum widths (σ_y or σ_⊥),
+            shape ``(n_groups,)``.
+        theta_deg: Mean scattering angle of each group in degrees,
+            shape ``(n_groups,)``.
+
+    Returns:
+        Dict with keys:
+            - ``ratio``: σ_x / σ_y per group.
+            - ``theta``: scattering angles (input, unchanged).
+            - ``spearman_r``: Spearman ρ between θ and ratio.
+            - ``spearman_p``: p-value of the Spearman test.
+    """
+    eps = 1e-10
+    sig_y_safe = np.where(np.abs(sig_y) > eps, sig_y, eps)
+    ratio = sig_x / sig_y_safe
+
+    finite = np.isfinite(ratio) & np.isfinite(theta_deg)
+    if np.sum(finite) >= 5 and np.ptp(ratio[finite]) > 0:
+        sr = stats.spearmanr(theta_deg[finite], ratio[finite])
+        spearman_r = float(sr.statistic)
+        spearman_p = float(sr.pvalue)
+    else:
+        spearman_r = float("nan")
+        spearman_p = float("nan")
+
+    return {
+        "ratio": ratio,
+        "theta": theta_deg,
+        "spearman_r": spearman_r,
+        "spearman_p": spearman_p,
+    }
+
+
 def generate_physical_interpretation_hint(
     n_clusters: int,
     spearman_r: float,
@@ -715,6 +764,10 @@ def plot_residuals_vs_angle(
 _PARAM_LABEL_MAP: Dict[str, str] = {
     "sigma": r"$\sigma_p$",
     "x0": r"$y_\mathrm{center}$",
+    "sig_x": r"$\sigma_x$",
+    "sig_y": r"$\sigma_y$",
+    "sig_para": r"$\sigma_\parallel$",
+    "sig_perp": r"$\sigma_\perp$",
 }
 
 

@@ -663,6 +663,7 @@ def _runPreFitStatistics(
     )
     from vesuvio_analysis.core_functions.analysis_functions import (
         loadInstrParsFileIntoArray,
+        plot_optimizer_divergence_spectra,
     )
 
     diagnostics: Dict[str, Any] = {}
@@ -965,6 +966,24 @@ def _runPreFitStatistics(
                     DeprecationWarning,
                     stacklevel=2,
                 )
+
+            # ---- Optimizer divergence plots (Transparency First metadata) ----
+            try:
+                _fs_map: Dict[float, float] = (
+                    {
+                        float(sno): float(fs)
+                        for sno, fs in zip(all_spec_nos, fisher_scores)
+                    }
+                    if fisher_scores is not None
+                    else {}
+                )
+                plot_optimizer_divergence_spectra(
+                    ic,
+                    debug_mode=getattr(userCtr, "debug_mode", False),
+                    fisher_scores_map=_fs_map,
+                )
+            except Exception as _opt_exc:
+                warnings.warn(f"Optimizer divergence plots failed: {_opt_exc}")
 
             # ---- Diagnostic plots ----
             features_before = detector.summary_features_.copy()

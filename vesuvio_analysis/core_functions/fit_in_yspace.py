@@ -7,7 +7,9 @@ if TYPE_CHECKING:
 
 from dataclasses import replace
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import numpy as np
+import re
 from mantid.simpleapi import *
 from scipy import optimize
 from scipy import  signal
@@ -15,11 +17,78 @@ from pathlib import Path
 from iminuit import Minuit, cost, util
 from iminuit.util import describe
 from vesuvio_analysis.core_functions.iminuit_costs import GlobalNCPCostFunction
-from vesuvio_analysis.core_functions.plot_style import set_thesis_style, figure_factory, COLORBLIND_PALETTE, EXPERIMENTAL_STYLE, THEORETICAL_STYLE
+from vesuvio_analysis.core_functions.plot_style import (
+    set_thesis_style, figure_factory, COLORBLIND_PALETTE,
+    EXPERIMENTAL_STYLE, THEORETICAL_STYLE,
+    FULL_WIDTH_CM, cm_to_inches,
+)
 import jacobi
 import time
 
 repoPath = Path(__file__).absolute().parent  # Path to the repository
+
+# ---------------------------------------------------------------------------
+# Helpers for global-fit plot metadata and LaTeX labelling
+# ---------------------------------------------------------------------------
+
+#: Maps known model parameter base-names to LaTeX math strings (no $ delimiters).
+_BASE_PARAM_LATEX: Dict[str, str] = {
+    "sig_x":    r"\sigma_x",
+    "sig_y":    r"\sigma_y",
+    "sig_z":    r"\sigma_z",
+    "sig_para": r"\sigma_{\parallel}",
+    "sig_perp": r"\sigma_{\perp}",
+    "y0":       r"y_0",
+    "x0":       r"y_0",
+    "A":        r"A",
+    "sigma":    r"\sigma",
+    "sigma1":   r"\sigma_1",
+    "c4":       r"c_4",
+    "c6":       r"c_6",
+    "d":        r"d",
+    "R":        r"R",
+}
+
+#: Human-readable model names for the global-fit plot title.
+_MODEL_DISPLAY_NAMES: Dict[str, str] = {
+    "SINGLE_GAUSSIAN":     "Single Gaussian",
+    "GC_C4":               r"GC $C_4$",
+    "GC_C6":               r"GC $C_6$",
+    "GC_C4_C6":            r"GC $C_4{+}C_6$",
+    "DOUBLE_WELL":         "Double Well",
+    "ANSIO_GAUSSIAN":      "Anisotropic Gaussian",
+    "MULTIVARIATE_GAUSSIAN": "Multivariate Gaussian",
+}
+
+
+def _latex_par_label(par_name: str) -> str:
+    """Return a LaTeX math label for an iMinuit parameter name.
+
+    Handles both shared names (``'sig_x'``) and indexed unshared names
+    (``'A0'``, ``'y00'``).  The trailing group index is stripped; the
+    group is implicit from the subplot panel.
+    """
+    if par_name in _BASE_PARAM_LATEX:
+        return f"${_BASE_PARAM_LATEX[par_name]}$"
+    # Strip a trailing numeric group index by matching known bases longest-first.
+    for base in sorted(_BASE_PARAM_LATEX, key=len, reverse=True):
+        if par_name.startswith(base) and par_name[len(base):].isdigit():
+            return f"${_BASE_PARAM_LATEX[base]}$"
+    # Generic fallback: strip trailing digits and wrap.
+    base_generic = par_name.rstrip("0123456789")
+    return f"${base_generic or par_name}$"
+
+
+def _parse_script_metadata(script_name: str) -> Tuple[str, str]:
+    """Extract sample name and temperature token from a script name.
+
+    E.g. ``'thymol_10K_Gauss1D'`` returns ``('thymol', '10K')``.
+    Falls back to ``(script_name, '?K')`` when the pattern is absent.
+    """
+    m = re.match(r"^([A-Za-z][^_]*)_(\d+[Kk])", script_name)
+    if m:
+        return m.group(1), m.group(2).upper()
+    return script_name, "?K"
 
 
 def fitInYSpaceProcedure(
@@ -30,22 +99,22 @@ def fitInYSpaceProcedure(
 ) -> "ResultsYFitObject":
     """Perform the full y-space fitting procedure on a corrected TOF workspace.
 
-    Orchestrates the conversion from TOF to y-space, optional
-    symmetrisation, iMinuit fitting, Mantid Fit validation, and
-    optional global fit.  All intermediate workspaces are stored in the
-    AnalysisDataService.
+    Loops over **all** masses in ``IC.masses`` and for each species:
 
-    Steps:
-        1. Extract NCP profiles from named workspaces.
-        2. Compute Mantid resolution for the first mass.
-        3. Subtract all masses except the first to isolate mass₀.
-        4. Convert to y-space, rebin, normalise, and weight-average.
-        5. Optionally symmetrise about y = 0.
-        6. Fit with iMinuit (``fitProfileMinuit``).
-        7. Fit with Mantid Fit (``fitProfileMantidFit``).
-        8. Optionally run a global fit across detector groups.
+    1. Computes the Mantid resolution at that mass.
+    2. Subtracts all other mass NCPs to isolate the target species.
+    3. Converts to y-space, rebins, normalises, and weight-averages.
+    4. Optionally symmetrises about y = 0.
+    5. Fits with iMinuit (``fitProfileMinuit``).
+    6. Fits with Mantid Fit (``fitProfileMantidFit``).
+    7. Saves results to a mass-indexed ``.npz`` file.
+    8. Optionally runs a global fit across detector groups.
 
-    Expects workspace ``wsTOF.name()`` and its associated
+    Intermediate workspaces are named ``<wsTOF>_Mass{i}`` and
+    ``<wsTOF>_Resolution_Mass{i}`` (with ``_Resolution`` retained for
+    the primary species at index 0 for backward compatibility).
+
+    Expects ``wsTOF.name()`` and its associated
     ``_TOF_Fitted_Profile_*`` workspaces to be present in ``mtd``.
 
     Args:
@@ -56,34 +125,66 @@ def fitInYSpaceProcedure(
         wsTOF: Mantid workspace containing the fully-corrected TOF
             data from the last MS/GC iteration.
         stream_manager: Optional :class:`StreamManager` for capturing
-            y-space data streams.  When ``None`` (default),
-            no additional persistence is performed.
+            y-space data streams for the primary mass (index 0).
+            When ``None`` (default), no additional persistence is
+            performed.
 
     Returns:
-        A ``ResultsYFitObject`` containing y-space fit results and
-        saved to ``.npz``.
+        The ``ResultsYFitObject`` for the primary mass (index 0),
+        saved to ``IC.ySpaceFitSavePath``.  Results for additional
+        masses are saved alongside with a ``_mass{i}`` suffix.
     """
     from .stream_manager import DataLevel
 
     ncpForEachMass = extractNCPFromWorkspaces(wsTOF, IC)
-    wsResSum, wsRes = calculateMantidResolutionFirstMass(IC, yFitIC, wsTOF)
 
-    wsTOFMass0 = subtractAllMassesExceptFirst(IC, wsTOF, ncpForEachMass)
-    
-    wsJoY, wsJoYAvg = ySpaceReduction(wsTOFMass0, IC.masses[0], yFitIC, ncpForEachMass[:, 0, :])
-    
-    if yFitIC.symmetrisationFlag:
-        wsJoYAvg = symmetrizeWs(wsJoYAvg)
+    all_results: list = []
 
-    fitProfileMinuit(yFitIC, wsJoYAvg, wsResSum)
-    fitProfileMantidFit(yFitIC, wsJoYAvg, wsResSum)
-    
-    printYSpaceFitResults(wsJoYAvg.name())
+    for mass_idx in range(IC.noOfMasses):
+        mass = IC.masses[mass_idx]
+        print(f"\n--- Y-space fit: mass index {mass_idx} (m = {mass} u) ---\n")
 
-    yfitResults = ResultsYFitObject(IC, yFitIC, wsTOF.name(), wsJoYAvg.name())
-    yfitResults.save()
+        wsResSum, wsRes = calculateMantidResolutionFirstMass(IC, yFitIC, wsTOF, mass_idx)
 
-    # L3 — capture y-space fit results
+        wsTOFMassI = subtractAllMassesExceptFirst(IC, wsTOF, ncpForEachMass, mass_idx)
+
+        wsJoY, wsJoYAvg = ySpaceReduction(
+            wsTOFMassI, mass, yFitIC, ncpForEachMass[:, mass_idx, :]
+        )
+
+        if yFitIC.symmetrisationFlag:
+            wsJoYAvg = symmetrizeWs(wsJoYAvg)
+
+        fitProfileMinuit(yFitIC, wsJoYAvg, wsResSum)
+        fitProfileMantidFit(yFitIC, wsJoYAvg, wsResSum)
+
+        printYSpaceFitResults(wsJoYAvg.name())
+
+        # Determine per-mass save path and resolution workspace name
+        base_path = IC.ySpaceFitSavePath
+        if mass_idx == 0:
+            save_path = base_path
+            res_sum_name = wsTOF.name() + "_Resolution_Sum"
+        else:
+            save_path = base_path.parent / (
+                base_path.stem + f"_mass{mass_idx}" + base_path.suffix
+            )
+            res_sum_name = wsTOF.name() + f"_Resolution_Mass{mass_idx}_Sum"
+
+        yfitResults = ResultsYFitObject(
+            IC, yFitIC, wsTOF.name(), wsJoYAvg.name(),
+            res_sum_name=res_sum_name, save_path=save_path,
+        )
+        yfitResults.save()
+        all_results.append(yfitResults)
+
+        if yFitIC.globalFit:
+            runGlobalFit(wsJoY, wsRes, IC, yFitIC)
+
+    # Primary-mass result (mass index 0) is returned for backward compat
+    yfitResults = all_results[0]
+
+    # L3 — capture y-space fit results for the primary species
     if stream_manager is not None:
         stream_manager.capture(
             "joy_avg", yfitResults.YSpaceSymSumDataY,
@@ -107,9 +208,6 @@ def fitInYSpaceProcedure(
         )
         stream_manager.set_metadata("fit_model", str(yFitIC.fitModel))
 
-    if yFitIC.globalFit:
-        runGlobalFit(wsJoY, wsRes, IC, yFitIC) 
-        
     return yfitResults
 
 
@@ -151,9 +249,9 @@ def extractNCPFromWorkspaces(wsFinal: Any, ic: Any) -> np.ndarray:
 
 
 def calculateMantidResolutionFirstMass(
-    IC: Any, yFitIC: Any, ws: Any
+    IC: Any, yFitIC: Any, ws: Any, mass_idx: int = 0
 ) -> Tuple[Any, Any]:
-    """Compute the Mantid VesuvioResolution for the first mass.
+    """Compute the Mantid VesuvioResolution for a given mass.
 
     Calls ``VesuvioResolution`` per spectrum, rebins to the y-space
     grid, sums across spectra, and normalises.  The resolution
@@ -165,6 +263,8 @@ def calculateMantidResolutionFirstMass(
         yFitIC: Y-space fit configuration with
             ``rebinParametersForYSpaceFit``.
         ws: The corrected TOF workspace.
+        mass_idx: Index into ``IC.masses`` selecting the species to
+            compute the resolution for.  Defaults to 0 (primary mass).
 
     Returns:
         A 2-tuple ``(wsResSum, wsRes)`` where *wsResSum* is the
@@ -172,9 +272,13 @@ def calculateMantidResolutionFirstMass(
         per-spectrum resolution workspace.
     """
 
-    mass = IC.masses[0]
+    mass = IC.masses[mass_idx]
 
-    resName = ws.name()+"_Resolution"
+    # Use legacy name for mass 0 (backward compat); mass-indexed name otherwise
+    if mass_idx == 0:
+        resName = ws.name() + "_Resolution"
+    else:
+        resName = ws.name() + f"_Resolution_Mass{mass_idx}"
     for index in range(ws.getNumberHistograms()):
         VesuvioResolution(Workspace=ws,WorkspaceIndex=index,Mass=mass,OutputWorkspaceYSpace="tmp")
         Rebin(InputWorkspace="tmp", Params=yFitIC.rebinParametersForYSpaceFit, OutputWorkspace="tmp")
@@ -193,12 +297,12 @@ def calculateMantidResolutionFirstMass(
 
 
 def subtractAllMassesExceptFirst(
-    ic: Any, ws: Any, ncpForEachMass: np.ndarray
+    ic: Any, ws: Any, ncpForEachMass: np.ndarray, mass_idx: int = 0
 ) -> Any:
-    """Subtract all NCP profiles except the first mass from the TOF data.
+    """Subtract all NCP profiles except mth mass from the TOF data.
 
-    Isolates the contribution of mass₀ (typically hydrogen) by
-    summing and subtracting the NCP of all heavier masses.  Masked
+    Isolates the contribution of a single species (``IC.masses[mass_idx]``)
+    by summing and subtracting the NCPs of all other masses.  Masked
     bins are preserved.
 
     Args:
@@ -207,31 +311,34 @@ def subtractAllMassesExceptFirst(
         ws: The corrected TOF workspace.
         ncpForEachMass: NCP per spectrum and mass, shape
             ``(n_spectra, n_masses, n_bins)``.
+        mass_idx: Index of the mass to *keep* (all others are subtracted).
+            Defaults to 0 (primary mass).
 
     Returns:
-        A Mantid workspace named ``ws.name() + "_Mass0"`` containing
-        only the mass₀ signal.
+        A Mantid workspace named ``ws.name() + f"_Mass{mass_idx}"``
+        containing only the selected species signal.
     """
 
-    ncpForEachMass = switchFirstTwoAxis(ncpForEachMass)
-    # Select all masses other than the first one
-    ncpForEachMassExceptFirst = ncpForEachMass[1:, :, :]
-    # Sum the ncpTotal for remaining masses
-    ncpTotalExceptFirst = np.sum(ncpForEachMassExceptFirst, axis=0)
+    ncp_t = switchFirstTwoAxis(ncpForEachMass)  # (n_masses, n_spectra, n_bins)
+    # Select all masses other than mass_idx
+    other_indices = [i for i in range(ncp_t.shape[0]) if i != mass_idx]
+    ncpForEachMassExceptSelected = ncp_t[other_indices, :, :]
+    # Sum the ncpTotal for all other masses
+    ncpTotalExceptSelected = np.sum(ncpForEachMassExceptSelected, axis=0)
 
     dataX, dataY, dataE = extractWS(ws)
 
     # Adjust for last column missing or not
-    dataY[:, :ncpTotalExceptFirst.shape[1]] -= ncpTotalExceptFirst
+    dataY[:, :ncpTotalExceptSelected.shape[1]] -= ncpTotalExceptSelected
 
     # Ignore any masked bins (columns) from initial ws
     mask = np.all(ws.extractY()==0, axis=0)
     dataY[:, mask] = 0
 
-    wsSubMass = CloneWorkspace(InputWorkspace=ws, OutputWorkspace=ws.name()+"_Mass0")
+    wsSubMass = CloneWorkspace(InputWorkspace=ws, OutputWorkspace=ws.name() + f"_Mass{mass_idx}")
     passDataIntoWS(dataX, dataY, dataE, wsSubMass)
     MaskDetectors(Workspace=wsSubMass, WorkspaceIndexList=ic.maskedDetectorIdx)  
-    SumSpectra(InputWorkspace=wsSubMass.name(), OutputWorkspace=wsSubMass.name()+"_Sum")
+    SumSpectra(InputWorkspace=wsSubMass.name(), OutputWorkspace=wsSubMass.name() + "_Sum")
     return wsSubMass
 
 
@@ -936,15 +1043,17 @@ def selectModelAndPars(
         sharedPars = ["sigma1", "c6"]     # Used only in Global fit   
 
     elif modelFlag=="DOUBLE_WELL":
-        def model(x, A, d, R, sig1, sig2):
+        # sig_para: momentum width along the symmetry axis (theta=0, parallel),
+        # sig_perp: momentum width transverse to the axis (theta=pi/2).
+        def model(x, A, d, R, sig_para, sig_perp):
             h = 2.04
             theta = np.linspace(0, np.pi, 300)[:, np.newaxis]   # 300 points seem like a good estimate for ~10 examples
             y = x[np.newaxis, :]
 
-            sigTH = np.sqrt( sig1**2*np.cos(theta)**2 + sig2**2*np.sin(theta)**2 )
-            alpha = 2*( d*sig2*sig1*np.sin(theta) / sigTH )**2
-            beta = ( 2*sig1**2*d*np.cos(theta) / sigTH**2 ) * y
-            denom = 2.506628 * sigTH * (1 + R**2 + 2*R*np.exp(-2*d**2*sig1**2))
+            sigTH = np.sqrt( sig_para**2*np.cos(theta)**2 + sig_perp**2*np.sin(theta)**2 )
+            alpha = 2*( d*sig_perp*sig_para*np.sin(theta) / sigTH )**2
+            beta = ( 2*sig_para**2*d*np.cos(theta) / sigTH**2 ) * y
+            denom = 2.506628 * sigTH * (1 + R**2 + 2*R*np.exp(-2*d**2*sig_para**2))
             jp = np.exp( -y**2/(2*sigTH**2)) * (1 + R**2 + 2*R*np.exp(-alpha)*np.cos(beta)) / denom
             jp *= np.sin(theta)
 
@@ -953,17 +1062,18 @@ def selectModelAndPars(
             JBest *= A
             return JBest
 
-        defaultPars = {"A":1, "d":1, "R":1, "sig1":3, "sig2":5}  # TODO: Starting parameters and bounds?
-        sharedPars = ["d", "R", "sig1", "sig2"]      # Only varying parameter is amplitude A     
+        defaultPars = {"A":1, "d":1, "R":1, "sig_para":3, "sig_perp":5}  # TODO: Starting parameters and bounds?
+        sharedPars = ["d", "R", "sig_para", "sig_perp"]      # Only varying parameter is amplitude A     
 
     elif modelFlag=="ANSIO_GAUSSIAN":
-        # Ansiotropic case
-        def model(x, A, sig1, sig2):
+        # Ansiotropic case: sig_x is the longitudinal (theta=0) width,
+        # sig_y is the transverse (theta=pi/2) width.
+        def model(x, A, sig_x, sig_y):
             h = 2.04
             theta = np.linspace(0, np.pi, 300)[:, np.newaxis]
             y = x[np.newaxis, :]
 
-            sigTH = np.sqrt( sig1**2*np.cos(theta)**2 + sig2**2*np.sin(theta)**2 )
+            sigTH = np.sqrt( sig_x**2*np.cos(theta)**2 + sig_y**2*np.sin(theta)**2 )
             jp = np.exp( -y**2/(2*sigTH**2)) / (2.506628*sigTH)
             jp *= np.sin(theta)
 
@@ -972,8 +1082,8 @@ def selectModelAndPars(
             JBest *= A
             return JBest
 
-        defaultPars = {"A":1, "sig1":3, "sig2":5}
-        sharedPars = ["sig1", "sig2"]           
+        defaultPars = {"A":1, "sig_x":3, "sig_y":5}
+        sharedPars = ["sig_x", "sig_y"]           
 
     elif modelFlag=="MULTIVARIATE_GAUSSIAN":
         def model(x, A, sig_x, sig_y, sig_z):
@@ -1776,11 +1886,18 @@ class ResultsYFitObject:
     """
 
     def __init__(
-        self, ic: Any, yFitIC: Any, wsFinalName: str, wsYSpaceAvgName: str
+        self,
+        ic: Any,
+        yFitIC: Any,
+        wsFinalName: str,
+        wsYSpaceAvgName: str,
+        res_sum_name: Optional[str] = None,
+        save_path: Optional[Any] = None,
     ) -> None:
         # Extract most relevant information from ws
         wsFinal = mtd[wsFinalName]
-        wsResSum = mtd[wsFinalName + "_Resolution_Sum"]
+        _res_sum = res_sum_name if res_sum_name is not None else (wsFinalName + "_Resolution_Sum")
+        wsResSum = mtd[_res_sum]
 
         wsJoYAvg = mtd[wsYSpaceAvgName]
         wsSubMassName = wsYSpaceAvgName.split("_JoY_")[0]
@@ -1825,7 +1942,7 @@ class ResultsYFitObject:
         self.popt = popt
         self.perr = perr
 
-        self.savePath = ic.ySpaceFitSavePath
+        self.savePath = save_path if save_path is not None else ic.ySpaceFitSavePath
         self.fitModel = yFitIC.fitModel
 
 
@@ -1957,7 +2074,8 @@ def runGlobalFit(
     print("\n")
 
     if yFitIC.showPlots:
-        plotGlobalFit(dataX, dataY, dataE, m, totCost, wsYSpace.name())
+        plotGlobalFit(dataX, dataY, dataE, m, totCost, wsYSpace.name(),
+                      IC=IC, yFitIC=yFitIC, chi2=chi2)
     
     return np.array(m.values), np.array(m.errors)     # Pass into array to store values in variable
 
@@ -2549,8 +2667,25 @@ def plotGlobalFit(
     mObj: Minuit,
     totCost: Any,
     wsName: str,
+    IC: Any = None,
+    yFitIC: Any = None,
+    chi2: float = float("nan"),
 ) -> None:
-    """Plot the global fit results per detector group.
+    """Plot the global fit results per detector group with metadata overlay.
+
+    Produces a figure with two sections:
+
+    * **Upper (4:4 height ratio)**: one subplot per detector group showing
+      J(y) data (black error bars) overlaid with the global model curve
+      (coloured line) and a legend with LaTeX-formatted parameter values.
+      The first panel carries a semi-transparent annotation box listing
+      the included spectra, outlier count, and global reduced chi-squared.
+    * **Lower (1 height ratio)**: a single panel spanning all columns
+      showing normalised residuals ``(data - model) / sigma`` across the
+      full y-range for all groups.
+
+    The figure is titled ``"{sample} @ {temp} | {bank} | Global {model} Fit"``
+    and saved to ``yFitIC.figSavePath`` as ``{wsName}_Global_Fit.pdf``.
 
     Skipped if more than 10 groups are present.
 
@@ -2560,59 +2695,160 @@ def plotGlobalFit(
         dataE: Error values per group, same shape.
         mObj: The ``Minuit`` object after the global fit.
         totCost: The summed cost function (iterable over groups).
-        wsName: Base workspace name for the figure title.
+        wsName: Base workspace name used for the file save name.
+        IC: Completed initial-conditions object supplying ``scriptName``,
+            ``modeRunning``, ``maskedSpecNo``, ``firstSpec``, and
+            ``lastSpec``.  Pass ``None`` to omit the metadata overlay.
+        yFitIC: Y-space fit config supplying ``fitModel`` and
+            ``figSavePath``.  Pass ``None`` to omit the model label and
+            figure saving.
+        chi2: Global reduced chi-squared shown in the annotation box.
     """
-
-    if len(dataY) > 10:    
+    if len(dataY) > 10:
         print("\nToo many axes to show in figure, skipping the plot ...\n")
         return
 
     set_thesis_style()
-    rows = 2
-    n_cols = int(np.ceil(len(dataY) / rows))
-    fig, axs = figure_factory(
-        "full_width",
-        aspect_ratio=0.8,
-        nrows=rows,
+
+    n_groups = len(dataY)
+    rows_data = 2
+    n_cols = max(1, int(np.ceil(n_groups / rows_data)))
+
+    # --- Parse sample / temperature / bank / model from IC and yFitIC ---
+    sample, temp, bank = "Unknown", "?K", "Bank"
+    model_display = wsName
+    if IC is not None:
+        sample, temp = _parse_script_metadata(getattr(IC, "scriptName", ""))
+        bank = getattr(IC, "modeRunning", "Bank")
+    if yFitIC is not None:
+        raw_model = getattr(yFitIC, "fitModel", "")
+        model_display = _MODEL_DISPLAY_NAMES.get(raw_model, raw_model)
+    plot_title = f"{sample} @ {temp} | {bank} | Global {model_display} Fit"
+
+    # --- Figure layout: two data rows (height 4 each) + residuals row (height 1) ---
+    width_in = cm_to_inches(FULL_WIDTH_CM)
+    height_in = width_in * 1.0   # tall enough for both sections
+    fig = plt.figure(figsize=(width_in, height_in))
+    gs = GridSpec(
+        nrows=3,
         ncols=n_cols,
-        subplot_kw={"projection": "mantid"},
+        height_ratios=[4, 4, 1],
+        hspace=0.55,
+        wspace=0.35,
+        figure=fig,
     )
-    if hasattr(fig, "canvas"):
-        # fig.canvas.setWindowTitle(wsName + "_Plot_of_Global_Fit")
-        try:
-            set_title = getattr(fig.canvas, "setWindowTitle", None)
-            if set_title is None:
-                set_title = getattr(fig.canvas, "set_window_title", None)
-            if set_title is not None:
-                set_title(wsName + "_Plot_of_Global_Fit")
-        except Exception:
-            # Backend may not support setting a window title; ignore and continue.
-            pass
-    axs_flat = np.asarray(axs).flat
 
-    # Experimental: J(y) data per detector group — points + error bars
-    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_flat)):
-        ax.errorbar(x, y, yerr, color=COLORBLIND_PALETTE[7],
-                    label=f"Data Group {i}", **EXPERIMENTAL_STYLE)
+    # Build axes for data groups (mantid projection when available)
+    axs_data: List[Any] = []
+    for r in range(rows_data):
+        for c in range(n_cols):
+            try:
+                ax = fig.add_subplot(gs[r, c], projection="mantid")
+            except Exception:
+                ax = fig.add_subplot(gs[r, c])
+            axs_data.append(ax)
 
-    # Theoretical: global fit model — smooth line on dense grid
-    for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_flat)):
+    # Single residuals axis spanning all columns
+    ax_resid = fig.add_subplot(gs[2, :])
+
+    fig.suptitle(plot_title, fontsize=12, y=1.005)
+
+    # --- Experimental: J(y) data per group — black error bars ---
+    for i, (x, y, yerr, ax) in enumerate(zip(dataX, dataY, dataE, axs_data)):
+        ax.errorbar(
+            x, y, yerr,
+            color=COLORBLIND_PALETTE[7],
+            label=f"Group {i}",
+            **EXPERIMENTAL_STYLE,
+        )
+
+    # --- Theoretical: model curves + residual accumulation ---
+    all_resid_x: List[np.ndarray] = []
+    all_resid_y: List[np.ndarray] = []
+    for i, (x, costFun, ax) in enumerate(zip(dataX, totCost, axs_data)):
         signature = describe(costFun)
         values = mObj.values[signature]
         errors = mObj.errors[signature]
 
-        # Evaluate on a dense grid so the model line is visually smooth even for coarse data.
-        # Cap at 2000 points to avoid excessive evaluation cost for large datasets.
-        x_dense = np.linspace(float(x.min()), float(x.max()), min(max(500, 5 * len(x)), 2000))
-
+        x_dense = np.linspace(
+            float(x.min()), float(x.max()),
+            min(max(500, 5 * len(x)), 2000),
+        )
         yfit_smooth = costFun.model(x_dense, *values)
 
-        leg = [f"${p} = {v:.3f} \\pm {e:.3f}$"
-               for p, v, e in zip(signature, values, errors)]
+        # LaTeX parameter labels — group index is implicit from the panel.
+        leg_lines = [
+            f"{_latex_par_label(p)} = {v:.3f} \u00b1 {e:.3f}"
+            for p, v, e in zip(signature, values, errors)
+        ]
         colour = COLORBLIND_PALETTE[i % len(COLORBLIND_PALETTE)]
-        ax.plot(x_dense, yfit_smooth, color=colour,
-                label="\n".join(leg), **THEORETICAL_STYLE)
-        ax.legend()
-    fig.tight_layout()
+        ax.plot(
+            x_dense, yfit_smooth,
+            color=colour,
+            label="\n".join(leg_lines),
+            **THEORETICAL_STYLE,
+        )
+        ax.set_xlabel("$y$ (Å$^{-1}$)", fontsize=10)
+        ax.set_ylabel("$J(y)$ (Å)", fontsize=10)
+        ax.legend(fontsize=7, loc="upper right")
+
+        # Normalised residuals at data x-points (skip zero-error bins)
+        yfit_at_data = costFun.model(x, *values)
+        valid = dataE[i] != 0
+        all_resid_x.append(x[valid])
+        all_resid_y.append((dataY[i][valid] - yfit_at_data[valid]) / dataE[i][valid])
+
+    # --- Metadata annotation box on the first group subplot (upper-left) ---
+    if IC is not None and axs_data:
+        n_masked = len(getattr(IC, "maskedSpecNo", []))
+        first_spec = getattr(IC, "firstSpec", "?")
+        last_spec = getattr(IC, "lastSpec", "?")
+        box_text = (
+            f"Spectra: {first_spec}\u2013{last_spec}\n"
+            f"Outliers masked: {n_masked}\n"
+            f"Reduced $\\chi^2$: {chi2:.3f}"
+        )
+        axs_data[0].annotate(
+            box_text,
+            xy=(0.02, 0.97),
+            xycoords="axes fraction",
+            va="top",
+            ha="left",
+            fontsize=9,
+            bbox=dict(
+                boxstyle="round,pad=0.4",
+                facecolor="white",
+                edgecolor="0.7",
+                alpha=0.85,
+            ),
+        )
+
+    # --- Hide unused data axes when n_groups < rows_data * n_cols ---
+    for ax in axs_data[n_groups:]:
+        ax.set_visible(False)
+
+    # --- Global residuals panel ---
+    if all_resid_x:
+        rx = np.concatenate(all_resid_x)
+        ry = np.concatenate(all_resid_y)
+        sort_idx = np.argsort(rx)
+        rx, ry = rx[sort_idx], ry[sort_idx]
+        ax_resid.scatter(
+            rx, ry,
+            s=8,
+            color=COLORBLIND_PALETTE[0],
+            alpha=0.6,
+            zorder=3,
+        )
+        ax_resid.axhline(0, color="0.4", linewidth=0.8, linestyle="--")
+        ax_resid.set_xlabel("$y$ (Å$^{-1}$)", fontsize=10)
+        ax_resid.set_ylabel("$(d{-}f)/\\sigma$", fontsize=9)
+        ax_resid.tick_params(direction="in")
+
+    # --- Save and display ---
+    if yFitIC is not None:
+        fig_save_path = getattr(yFitIC, "figSavePath", None)
+        if fig_save_path is not None:
+            fig.savefig(fig_save_path / f"{wsName}_Global_Fit.pdf")
     fig.show()
     return

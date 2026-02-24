@@ -12,15 +12,15 @@ for N in Ns:
     h = 2.04
     theta = np.linspace(0, np.pi, N)[:, np.newaxis]
 
-    def modelTrpz(x, A, d, R, sig1, sig2):  # Numerical integration using trapz
+    def modelTrpz(x, A, d, R, sig_para, sig_perp):  # Numerical integration using trapz
         y = x[np.newaxis, :]
 
-        sigTH = np.sqrt( sig1**2*np.cos(theta)**2 + sig2**2*np.sin(theta)**2 )
+        sigTH = np.sqrt( sig_para**2*np.cos(theta)**2 + sig_perp**2*np.sin(theta)**2 )
 
-        alpha = 2*( d*sig2*sig1*np.sin(theta) / sigTH )**2
-        beta = ( 2*sig1**2*d*np.cos(theta) / sigTH**2 ) * y
+        alpha = 2*( d*sig_perp*sig_para*np.sin(theta) / sigTH )**2
+        beta = ( 2*sig_para**2*d*np.cos(theta) / sigTH**2 ) * y
 
-        denom = 2.506628 * sigTH * (1 + R**2 + 2*R*np.exp(-2*d**2*sig1**2))
+        denom = 2.506628 * sigTH * (1 + R**2 + 2*R*np.exp(-2*d**2*sig_para**2))
         jp = np.exp( -y**2/(2*sigTH**2)) * (1 + R**2 + 2*R*np.exp(-alpha)*np.cos(beta)) / denom
         jp *= np.sin(theta)
 
@@ -30,7 +30,7 @@ for N in Ns:
         return JBest
 
     
-    defaultPars = {"A":1, "d":1, "R":1, "sig1":3, "sig2":5}  # TODO: Starting parameters and bounds?
+    defaultPars = {"A":1, "d":1, "R":1, "sig_para":3, "sig_perp":5}  # TODO: Starting parameters and bounds?
     
     y = np.linspace(-20, 20, 100)
     result = modelTrpz(y, **defaultPars)

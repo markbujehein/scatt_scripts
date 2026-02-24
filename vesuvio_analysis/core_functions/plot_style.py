@@ -178,6 +178,10 @@ def set_thesis_style(width_cm: float = FULL_WIDTH_CM, fraction: float = 1.0) -> 
         "lines.markersize": 5,
         "patch.linewidth": 1.0,
 
+        # --- Background (NBI AppStat: white canvas) ---
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+
         # --- Axes ---
         "axes.linewidth": 0.8,
         "axes.prop_cycle": mpl.cycler(color=COLORBLIND_PALETTE),
